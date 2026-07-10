@@ -27,6 +27,10 @@ export function clearAuditSession() {
 
 export function initializeBackgroundAuditor(session) {
     _session = session
+    if (!_session || String(_session.username || '').trim().toLowerCase() !== 'admin') {
+        stopAuditor()
+        return
+    }
     _startAuditLoop()
 }
 
@@ -35,6 +39,10 @@ function _startAuditLoop() {
 
     const runAudit = async () => {
         if (_isAuditing || !_session) return
+        if (String(_session.username || '').trim().toLowerCase() !== 'admin') {
+            stopAuditor()
+            return
+        }
         _isAuditing = true
         try {
             const cooperativeId = _session.cooperative_id || _session.cooperativeId
@@ -92,7 +100,8 @@ async function _auditPenaltyRevenueReversals(cooperativeId) {
     // Group positive-amount penalty/revenue detail rows by original remittance_id
     const groups = {}
     for (const detail of allDetails) {
-        if (!targetEntIds.has(detail.enterprise_id)) continue
+        const entId = detail.enterprise_id || detail.item
+        if (!entId || !targetEntIds.has(entId)) continue
         const amt = parseFloat(detail.amount || 0)
         if (amt <= 0) continue
 
@@ -122,7 +131,8 @@ async function _auditPenaltyRevenueReversals(cooperativeId) {
         const reversalDetails = details.map(d => {
             const negAmt = -Math.abs(parseFloat(d.amount || 0))
             totalNegAmount += negAmt
-            const ent = entMap[d.enterprise_id]
+            const entId = d.enterprise_id || d.item
+            const ent = entMap[entId]
             const name = ent ? ent.account_name : 'Unknown'
             if (!entNames.includes(name)) entNames.push(name)
             const isPenalty = ent && (ent.is_penalty == 1 || ent.is_penalty === '1' || ent.is_penalty === 'true' || ent.is_penalty === true)
@@ -131,7 +141,8 @@ async function _auditPenaltyRevenueReversals(cooperativeId) {
                 id: generateId(cooperativeId),
                 remittance_id: reversalId,
                 cooperative_id: String(cooperativeId),
-                enterprise_id: d.enterprise_id,
+                enterprise_id: entId,
+                item: entId,
                 amount: negAmt,
                 notes: '',
                 auto_description: `Audit reversal of ${label} entry`,
@@ -145,7 +156,8 @@ async function _auditPenaltyRevenueReversals(cooperativeId) {
         })
 
         const hasPenalty = details.some(d => {
-            const ent = entMap[d.enterprise_id]
+            const entId = d.enterprise_id || d.item
+            const ent = entMap[entId]
             return ent && (ent.is_penalty == 1 || ent.is_penalty === '1' || ent.is_penalty === 'true' || ent.is_penalty === true)
         })
         const primaryLabel = hasPenalty ? 'Penalty/Revenue' : 'Revenue'

@@ -14,7 +14,7 @@ import {
     getDoc, Timestamp, serverTimestamp, arrayUnion
 } from '../firebase.js'
 
-const CURRENT_SCHEMA_VERSION = 10
+const CURRENT_SCHEMA_VERSION = 11
 
 // Internal state (not exposed to UI)
 let _session = null

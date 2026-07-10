@@ -1080,7 +1080,7 @@ function render() {
 
           ${state.stage === 1 ? `
           <div style="margin-top: 1rem;">
-            <button type="button" class="secondary-button" data-action="google-login" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 0.5rem; border-color: #d1d5db; color: #374151;" ${state.isSubmitting ? 'disabled' : ''}>
+            <button type="button" class="secondary-button" data-action="google-login" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 0.5rem;" ${state.isSubmitting ? 'disabled' : ''}>
               <svg width="18" height="18" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
               Sign In with Google
             </button>
@@ -1141,44 +1141,80 @@ function render() {
 }
 
 function renderThemeToggle() {
-  const btn = document.getElementById('theme-toggle-btn');
-  if (!btn) return;
-  const theme = document.documentElement.getAttribute('data-theme');
+  const theme = document.documentElement.getAttribute('data-theme') || 'dark';
   const isDark = theme === 'dark';
-  btn.innerHTML = isDark
-    ? `<svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707M17.657 17.657l.707-.707M6.343 6.343l.707-.707M12 8a4 4 0 100 8 4 4 0 000-8z"></path></svg> <span>Light</span>`
-    : `<svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path></svg> <span>Dark</span>`;
+  const svgContent = isDark
+    ? `<svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707M17.657 17.657l.707-.707M6.343 6.343l.707-.707M12 8a4 4 0 100 8 4 4 0 000-8z"></path></svg>`
+    : `<svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path></svg>`;
+
+  const btn = document.getElementById('theme-toggle-btn');
+  if (btn) btn.innerHTML = isDark ? `${svgContent} <span>Light</span>` : `${svgContent} <span>Dark</span>`;
+
+  const mobileBtn = document.getElementById('theme-toggle-mobile-btn');
+  if (mobileBtn) mobileBtn.innerHTML = svgContent;
+
+  const dashboardBtn = document.getElementById('theme-toggle-btn-dashboard');
+  if (dashboardBtn) dashboardBtn.innerHTML = svgContent;
 }
 
 function renderDashboard() {
+  const activeTabTitles = {
+    dashboard: 'Dashboard',
+    members: 'Members',
+    payments: 'Remittance',
+    ledger: 'Ledger',
+    reports: 'Reports',
+    reconciliation: 'Reconciliation',
+    settings: 'Settings'
+  };
+  const activeTitle = activeTabTitles[state.activeTab] || 'CoopLog';
+
   app.innerHTML = `
-    <div class="dashboard-layout">
-      <!-- Mobile Nav Toggle -->
-      <button class="mobile-nav-toggle" data-action="toggle-mobile-nav">
-        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="24" height="24">
+    <!-- Mobile Top App Bar -->
+    <header class="mobile-top-bar">
+      <button class="mobile-menu-btn" data-action="toggle-mobile-nav" aria-label="Open navigation menu">
+        <svg width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path>
         </svg>
       </button>
+      <div class="mobile-page-title" id="mobile-page-title">${activeTitle}</div>
+      <div class="mobile-header-right" style="display: flex; align-items: center; gap: 0.5rem;">
+        <button class="icon-btn-circle" id="mask-toggle-mobile-btn" style="display: none;" title="Toggle balance mask">
+          <!-- Will be filled dynamically -->
+        </button>
+        <div id="mobile-notification-bell-placeholder"></div>
+        <button class="icon-btn-circle" data-action="toggle-theme" id="theme-toggle-mobile-btn" title="Toggle theme">
+          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path>
+          </svg>
+        </button>
+      </div>
+    </header>
 
+    <div class="dashboard-layout">
+      <!-- Desktop Collapsible Sidebar -->
       <aside class="sidebar">
         <div class="sidebar-header">
-          <div style="display: flex; gap: 1rem; align-items: center; width: 100%;">
-            <div id="coop-logo-container" style="width: 48px; height: 48px; border-radius: 50%; background: var(--accent-primary); color: white; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 1.25rem; overflow: hidden; flex-shrink: 0;">
+          <div style="display: flex; gap: 0.75rem; align-items: center; width: 100%;">
+            <div id="coop-logo-container" style="width: 44px; height: 44px; border-radius: 50%; background: var(--accent-primary); color: white; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 1.15rem; overflow: hidden; flex-shrink: 0;">
               <!-- Will be filled dynamically -->
             </div>
-            <div style="flex: 1;">
-              <div style="font-weight: 700; color: var(--text-primary); font-size: 1rem; margin-bottom: 0.25rem;">${escapeHtml(state.welcomeUser.cooperativeName)}</div>
+            <div style="flex: 1; min-width: 0;" class="sidebar-brand-text">
+              <div style="font-weight: 700; color: var(--text-primary); font-size: 0.95rem; margin-bottom: 0.15rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(state.welcomeUser.cooperativeName)}</div>
               <div class="network-indicator ${networkIndicatorClass()}" style="padding: 0.15rem 0.5rem; font-size: 0.65rem;" role="status" aria-label="${networkIndicatorLabel()}">
                 <span class="indicator-icon" style="width: 12px; height: 12px; display: inline-flex; align-items: center; justify-content: center;">${networkIndicatorIcon()}</span>
                 <span>${networkIndicatorLabel()}</span>
               </div>
             </div>
-            <div id="notification-bell-placeholder"></div>
+            <div id="notification-bell-placeholder" class="sidebar-brand-text"></div>
+            <button class="collapse-sidebar-btn" id="collapse-sidebar-btn" title="Collapse Menu" style="margin-left: 0.25rem;">
+              <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M11 19l-7-7 7-7m8 14l-7-7 7-7"/></svg>
+            </button>
           </div>
         </div>
 
         ${!isSubscriptionActive() && String(state.welcomeUser.username || '').toLowerCase() !== 'admin' ? `
-          <div style="margin: 0.75rem 1rem; padding: 0.75rem; background: var(--warning-bg, #fef3c7); color: var(--warning, #d97706); border: 1px solid var(--warning, #d97706); border-radius: 0.5rem; font-size: 0.7rem; font-weight: 600; text-align: center; line-height: 1.4;">
+          <div class="sidebar-brand-text" style="margin: 0.75rem 1rem; padding: 0.75rem; background: var(--warning-bg, #fef3c7); color: var(--warning, #d97706); border: 1px solid var(--warning, #d97706); border-radius: 0.5rem; font-size: 0.7rem; font-weight: 600; text-align: center; line-height: 1.4;">
             ${INACTIVE_MSG}
           </div>
         ` : ''}
@@ -1186,60 +1222,68 @@ function renderDashboard() {
         <nav class="sidebar-nav">
           ${(state.welcomeUser.role === 'member' || hasPermission(state.welcomeUser.permissions, 'dashboard_view')) ? `
             <button class="nav-item ${state.activeTab === 'dashboard' ? 'active' : ''}" data-action="nav-tab" data-tab="dashboard">
-              Dashboard
+              <span class="nav-icon"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 5a1 1 0 011-1h4a1 1 0 011 1v5a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM14 5a1 1 0 011-1h4a1 1 0 011 1v2a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 16a1 1 0 011-1h4a1 1 0 011 1v3a1 1 0 01-1 1H5a1 1 0 01-1-1v-3zM14 14a1 1 0 011-1h4a1 1 0 011 1v5a1 1 0 01-1 1h-4a1 1 0 01-1-1v-5z"/></svg></span>
+              <span>Dashboard</span>
             </button>
           ` : ''}
           ${!isSubscriptionActive() && String(state.welcomeUser.username || '').toLowerCase() !== 'admin' ? '' : `
           ${(state.welcomeUser.role !== 'member' && hasPermission(state.welcomeUser.permissions, 'read_member')) ? `
             <button class="nav-item ${state.activeTab === 'members' ? 'active' : ''}" data-action="nav-tab" data-tab="members">
-              Members
+              <span class="nav-icon"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 7a4 4 0 11-8 0 4 4 0 018 0zM23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg></span>
+              <span>Members</span>
             </button>
           ` : ''}
           ${hasPermission(state.welcomeUser.permissions, 'read_remittance') ? `
             <button class="nav-item ${state.activeTab === 'payments' ? 'active' : ''}" data-action="nav-tab" data-tab="payments">
-              Remittance
+              <span class="nav-icon"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></span>
+              <span>Remittance</span>
             </button>
           ` : ''}
           ${(state.welcomeUser.role === 'member' || hasPermission(state.welcomeUser.permissions, 'read_ledger')) ? `
             <button class="nav-item ${state.activeTab === 'ledger' ? 'active' : ''}" data-action="nav-tab" data-tab="ledger/summary">
-              Ledger
+              <span class="nav-icon"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg></span>
+              <span>Ledger</span>
             </button>
           ` : ''}
           <button class="nav-item ${state.activeTab === 'withdrawal-request' ? 'active' : ''}" data-action="withdrawal-request">
-            Withdrawal Request
+            <span class="nav-icon"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19V5m0 0L5 12m7-7l7 7"/></svg></span>
+            <span>Withdrawal Request</span>
           </button>
           ${(state.welcomeUser.role !== 'member' && hasPermission(state.welcomeUser.permissions, 'read_member')) ? `
             <button class="nav-item ${state.activeTab === 'reports' ? 'active' : ''}" data-action="nav-tab" data-tab="reports">
-              Reports
+              <span class="nav-icon"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m0 0a2 2 0 002 2h2a2 2 0 002-2V5a2 2 0 00-2-2h-2a2 2 0 00-2 2v14"/></svg></span>
+              <span>Reports</span>
             </button>
           ` : ''}
           ${hasPermission(state.welcomeUser.permissions, 'read_reconcile') ? `
             <button class="nav-item ${state.activeTab === 'reconciliation' ? 'active' : ''}" data-action="nav-tab" data-tab="reconciliation">
-              Reconciliation
+              <span class="nav-icon"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/></svg></span>
+              <span>Reconciliation</span>
             </button>
           ` : ''}
           `}
           ${(state.welcomeUser.role === 'member' || hasPermission(state.welcomeUser.permissions, 'settings_manage')) ? `
             <button class="nav-item ${state.activeTab === 'settings' ? 'active' : ''}" data-action="nav-tab" data-tab="settings">
-              Settings
+              <span class="nav-icon"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065zM15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg></span>
+              <span>Settings</span>
             </button>
           ` : ''}
         </nav>
 
         <div class="sidebar-footer">
-          <div style="display: flex; gap: 0.75rem; align-items: center;">
-            <div id="user-avatar-container" style="width: 40px; height: 40px; border-radius: 50%; background: var(--accent-soft); color: var(--accent-primary); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 1rem; overflow: hidden; flex-shrink: 0;">
+          <div style="display: flex; gap: 0.75rem; align-items: center; width: 100%;">
+            <div id="user-avatar-container" style="width: 36px; height: 36px; border-radius: 50%; background: var(--accent-soft); color: var(--accent-primary); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.95rem; overflow: hidden; flex-shrink: 0;">
               <!-- Will be filled dynamically -->
             </div>
-            <div style="flex: 1;">
-              <div style="font-weight: 600; color: var(--text-primary); font-size: 0.9rem;">
+            <div style="flex: 1; min-width: 0;" class="sidebar-brand-text">
+              <div style="font-weight: 600; color: var(--text-primary); font-size: 0.85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
                 ${escapeHtml(state.welcomeUser.role === 'member' ? state.welcomeUser.fullName : state.welcomeUser.username)}
               </div>
             </div>
           </div>
-          <div style="display: flex; gap: 0.5rem; margin-top: 0.75rem;">
-            <button class="secondary-button" style="flex: 1; border: 1px solid var(--border-medium); background: transparent; padding: 0.5rem;" data-action="logout">
-              Log Out
+          <div style="display: flex; gap: 0.5rem; margin-top: 0.75rem; width: 100%;">
+            <button class="secondary-button" style="flex: 1; padding: 0.5rem; font-size: 0.8rem; border-radius: var(--radius-md);" data-action="logout" title="Log Out">
+              <span>Log Out</span>
             </button>
           </div>
         </div>
@@ -1250,6 +1294,45 @@ function renderDashboard() {
       <main class="main-content" id="dashboard-main-content">
         <!-- Content gets injected here -->
       </main>
+
+      <!-- Mobile Bottom Navigation Bar -->
+      <nav class="mobile-bottom-nav">
+        ${(state.welcomeUser.role === 'member' || hasPermission(state.welcomeUser.permissions, 'dashboard_view')) ? `
+          <button class="bottom-nav-item ${state.activeTab === 'dashboard' ? 'active' : ''}" data-action="nav-tab" data-tab="dashboard">
+            <svg class="nav-icon" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 5a1 1 0 011-1h4a1 1 0 011 1v5a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM14 5a1 1 0 011-1h4a1 1 0 011 1v2a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 16a1 1 0 011-1h4a1 1 0 011 1v3a1 1 0 01-1 1H5a1 1 0 01-1-1v-3zM14 14a1 1 0 011-1h4a1 1 0 011 1v5a1 1 0 01-1 1h-4a1 1 0 01-1-1v-5z"/></svg>
+            <span class="nav-label">Dashboard</span>
+          </button>
+        ` : ''}
+        ${!isSubscriptionActive() && String(state.welcomeUser.username || '').toLowerCase() !== 'admin' ? '' : `
+          ${(state.welcomeUser.role !== 'member' && hasPermission(state.welcomeUser.permissions, 'read_member')) ? `
+            <button class="bottom-nav-item ${state.activeTab === 'members' ? 'active' : ''}" data-action="nav-tab" data-tab="members">
+              <svg class="nav-icon" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 7a4 4 0 11-8 0 4 4 0 018 0zM23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
+              <span class="nav-label">Members</span>
+            </button>
+          ` : ''}
+          ${(state.welcomeUser.role === 'member' || hasPermission(state.welcomeUser.permissions, 'read_ledger')) ? `
+            <button class="bottom-nav-item ${state.activeTab === 'ledger' ? 'active' : ''}" data-action="nav-tab" data-tab="ledger/summary">
+              <svg class="nav-icon" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
+              <span class="nav-label">Ledger</span>
+            </button>
+          ` : ''}
+          ${hasPermission(state.welcomeUser.permissions, 'read_remittance') ? `
+            <button class="bottom-nav-item ${state.activeTab === 'payments' ? 'active' : ''}" data-action="nav-tab" data-tab="payments">
+              <svg class="nav-icon" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+              <span class="nav-label">Remittance</span>
+            </button>
+          ` : ''}
+        `}
+        ${(state.welcomeUser.role === 'member' || hasPermission(state.welcomeUser.permissions, 'settings_manage')) ? `
+          <button class="bottom-nav-item ${state.activeTab === 'settings' ? 'active' : ''}" data-action="nav-tab" data-tab="settings">
+            <svg class="nav-icon" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065zM15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+            <span class="nav-label">Settings</span>
+          </button>
+        ` : ''}
+      </nav>
+
+      <!-- Mobile Context FAB Container -->
+      <div id="mobile-context-fab-container"></div>
 
       ${renderGlobalModal()}
     </div>
@@ -1269,6 +1352,154 @@ function renderDashboard() {
   if (state.modal.isOpen) {
     if (state.modal.type === 'withdrawal-request') {
       setupLoanRequestListeners()
+    }
+  }
+
+  // Collapsible sidebar logic
+  const collapseBtn = document.getElementById('collapse-sidebar-btn');
+  const dashboardLayout = document.querySelector('.dashboard-layout');
+  
+  const updateCollapseIcon = (btn, collapsed) => {
+    if (collapsed) {
+      btn.innerHTML = `<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 5l7 7-7 7M5 5l7 7-7 7"/></svg>`;
+      btn.title = "Expand Menu";
+    } else {
+      btn.innerHTML = `<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M11 19l-7-7 7-7m8 14l-7-7 7-7"/></svg>`;
+      btn.title = "Collapse Menu";
+    }
+  };
+
+  // Restore collapsed preference
+  const isCollapsed = localStorage.getItem('cooplog-sidebar-collapsed') === 'true';
+  if (isCollapsed && dashboardLayout) {
+    dashboardLayout.classList.add('collapsed');
+  }
+  if (collapseBtn) {
+    updateCollapseIcon(collapseBtn, isCollapsed);
+    collapseBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const collapsed = dashboardLayout.classList.toggle('collapsed');
+      localStorage.setItem('cooplog-sidebar-collapsed', collapsed ? 'true' : 'false');
+      updateCollapseIcon(collapseBtn, collapsed);
+    });
+  }
+
+  // Mobile Top Bar Mask Toggle Logic
+  const maskBtnMobile = document.getElementById('mask-toggle-mobile-btn');
+  if (maskBtnMobile) {
+    maskBtnMobile.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const current = localStorage.getItem('cooplog-mask-balances') === 'true';
+      localStorage.setItem('cooplog-mask-balances', String(!current));
+      
+      const desktopMaskBtn = document.getElementById('toggle-mask-btn');
+      if (desktopMaskBtn) {
+        desktopMaskBtn.click();
+      } else {
+        renderDashboardContent();
+      }
+    });
+  }
+
+  // Setup Mobile Bottom Navigation tab change visual active state updates
+  document.querySelectorAll('.mobile-bottom-nav .bottom-nav-item').forEach(item => {
+    item.addEventListener('click', () => {
+      document.querySelectorAll('.mobile-bottom-nav .bottom-nav-item').forEach(btn => btn.classList.remove('active'));
+      item.classList.add('active');
+    });
+  });
+
+  // Render context-aware mobile FAB
+  updateMobileFab();
+}
+
+function updateMobileFab() {
+  const fabContainer = document.getElementById('mobile-context-fab-container');
+  if (!fabContainer) return;
+  
+  fabContainer.innerHTML = '';
+  
+  if (window.innerWidth >= 768) return; // Only show on mobile
+  
+  const isAdmin = hasPermission(state.welcomeUser.permissions, 'admin') || String(state.welcomeUser.username || '').toLowerCase() === 'admin';
+  
+  if (state.activeTab === 'dashboard') {
+    fabContainer.innerHTML = `
+      <button class="mobile-fab" data-action="withdrawal-request" title="Request Withdrawal">
+        <svg width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"></path>
+        </svg>
+      </button>
+    `;
+  } else if (state.activeTab === 'members') {
+    const canCreate = isAdmin || hasPermission(state.welcomeUser.permissions, 'create_member');
+    let html = '';
+    
+    // Toggle Filter FAB (looks like filter funnel)
+    // Mobile Filter Toggle FAB
+    html += `
+      <button class="mobile-fab secondary-fab" id="mobile-filter-fab" title="Toggle Filters" style="background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border-medium); margin-bottom: 0.25rem; width: 48px; height: 48px; border-radius: 12px; box-shadow: var(--shadow-md); display: flex; align-items: center; justify-content: center; transition: all 0.2s;">
+        <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 3c2.755 0 5.455.232 8.083.678.533.09.917.556.917 1.096v1.044a2.25 2.25 0 01-.659 1.591l-5.432 5.432a2.25 2.25 0 00-.659 1.591v2.927a2.25 2.25 0 01-1.244 2.013L9.75 21v-6.568a2.25 2.25 0 00-.659-1.591L3.659 7.409A2.25 2.25 0 013 5.818V4.874c0-.54.384-1.006.917-1.096A48.32 48.32 0 0112 3z"></path>
+        </svg>
+      </button>
+    `;
+    
+    if (canCreate) {
+      html += `
+        <button class="mobile-fab" data-action="nav-tab" data-tab="members/add" title="Add Member">
+          <svg width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z"></path>
+          </svg>
+        </button>
+      `;
+    }
+    
+    fabContainer.innerHTML = html;
+
+    // Attach toggle handler to mobile filter FAB
+    setTimeout(() => {
+      const filterFab = document.getElementById('mobile-filter-fab');
+      if (filterFab) {
+        filterFab.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const filtersRow = document.querySelector('.members-filters-row');
+          if (filtersRow) {
+            const isShown = filtersRow.classList.toggle('show-on-mobile');
+            if (isShown) {
+              filterFab.style.background = 'var(--accent-soft)';
+              filterFab.style.borderColor = 'var(--accent-primary)';
+              filterFab.style.color = 'var(--accent-primary)';
+            } else {
+              filterFab.style.background = 'var(--bg-card)';
+              filterFab.style.borderColor = 'var(--border-medium)';
+              filterFab.style.color = 'var(--text-primary)';
+            }
+          }
+        });
+      }
+    }, 50);
+  } else if (state.activeTab === 'payments') {
+    const canLog = hasPermission(state.welcomeUser.permissions, 'write_remittance') || isAdmin;
+    if (canLog) {
+      fabContainer.innerHTML = `
+        <button class="mobile-fab" id="mobile-log-payment-fab" title="Log Payment">
+          <svg width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+          </svg>
+        </button>
+      `;
+      setTimeout(() => {
+        const btn = document.getElementById('mobile-log-payment-fab');
+        btn?.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const clearBtn = document.getElementById('clear-log-btn');
+          if (clearBtn) {
+            clearBtn.click();
+            showToast('Form cleared to log a new payment', 'info');
+          }
+        });
+      }, 50);
     }
   }
 }
@@ -1359,7 +1590,21 @@ async function populateAvatars() {
 
 function updateNavSelection() {
   const currentHash = window.location.hash.substring(1)
+  
+  // Desktop Sidebar Nav Items
   document.querySelectorAll('.nav-item').forEach((btn) => {
+    const btnTab = btn.dataset.tab
+    if (currentHash === btnTab || (currentHash.startsWith(btnTab + '/') && btnTab !== '')) {
+      btn.classList.add('active')
+    } else if (btnTab === 'ledger/summary' && (currentHash === 'ledger' || currentHash === 'ledger/')) {
+      btn.classList.add('active')
+    } else {
+      btn.classList.remove('active')
+    }
+  })
+
+  // Mobile Bottom Nav Items
+  document.querySelectorAll('.bottom-nav-item').forEach((btn) => {
     const btnTab = btn.dataset.tab
     if (currentHash === btnTab || (currentHash.startsWith(btnTab + '/') && btnTab !== '')) {
       btn.classList.add('active')
@@ -1513,13 +1758,97 @@ async function renderDashboardContent() {
   } else if (state.activeTab === 'settings') {
     await renderSettings(container, displayUser)
   }
+
+  // Keep mobile page title in sync
+  const mobileTitleEl = document.getElementById('mobile-page-title');
+  if (mobileTitleEl) {
+    if (state.activeTab === 'dashboard') {
+      const isAdmin = String(state.welcomeUser.role).toLowerCase() === 'admin' || hasPermission(state.welcomeUser.permissions, 'admin_view');
+      const isMember = state.welcomeUser.role === 'member';
+      let subtitleText = '';
+      if (isMember) {
+        subtitleText = `Welcome back, ${state.welcomeUser.fullName || 'Member'}`;
+      } else {
+        subtitleText = `Viewing ${isAdmin ? 'Global' : 'Accessible'} cooperative data.`;
+      }
+      mobileTitleEl.innerHTML = `
+        <div style="display: flex; flex-direction: column; text-align: left; line-height: 1.2;">
+          <span style="font-size: 1.05rem; font-weight: 700; color: var(--text-primary);">Dashboard</span>
+          <span style="font-size: 0.7rem; color: var(--text-muted); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 170px;">${subtitleText}</span>
+        </div>
+      `;
+    } else if (state.activeTab === 'members') {
+      mobileTitleEl.innerHTML = `
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; width: 100%; padding-right: 0.5rem;">
+          <span style="font-size: 1.1rem; font-weight: 700; color: var(--text-primary); white-space: nowrap;">Members</span>
+          <div class="search-input-wrap" style="position: relative; flex: 1; max-width: 140px;">
+            <input type="text" id="member-search-input-mobile" placeholder="Search..." style="width: 100%; padding: 0.35rem 0.5rem 0.35rem 1.65rem; border-radius: var(--radius-md); border: 1px solid var(--border-medium); font-size: 0.75rem; background: var(--bg-input); color: var(--text-primary); outline: none;">
+            <svg class="search-icon" width="10" height="10" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="position: absolute; left: 0.5rem; top: 50%; transform: translateY(-50%); color: var(--text-muted);"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+          </div>
+        </div>
+      `;
+      setTimeout(() => {
+        const searchInputMobile = document.getElementById('member-search-input-mobile');
+        if (searchInputMobile) {
+          const desktopInput = document.getElementById('member-search-input');
+          if (desktopInput) {
+            searchInputMobile.value = desktopInput.value;
+          }
+          searchInputMobile.addEventListener('input', (e) => {
+            window.dispatchEvent(new CustomEvent('mobile-member-search', {
+              detail: { value: e.target.value }
+            }));
+          });
+        }
+      }, 50);
+    } else {
+      const activeTabTitles = {
+        payments: 'Remittance',
+        ledger: 'Ledger',
+        reports: 'Reports',
+        reconciliation: 'Reconciliation',
+        settings: 'Settings'
+      };
+      mobileTitleEl.textContent = activeTabTitles[state.activeTab] || 'CoopLog';
+    }
+  }
+
+  // Update mobile mask toggle button state and visibility
+  const maskBtnMobile = document.getElementById('mask-toggle-mobile-btn');
+  if (maskBtnMobile) {
+    if (state.activeTab === 'dashboard' || state.activeTab === 'ledger') {
+      maskBtnMobile.style.display = 'inline-flex';
+      const maskBalances = localStorage.getItem('cooplog-mask-balances') === 'true';
+      maskBtnMobile.innerHTML = maskBalances ? `
+        <!-- Visible eye icon -->
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+          <circle cx="12" cy="12" r="3"/>
+        </svg>
+      ` : `
+        <!-- Hidden eye icon -->
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M17.94 17.94A10.07 10.07 0 0 1 12 19c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+          <line x1="1" y1="1" x2="23" y2="23"/>
+        </svg>
+      `;
+    } else {
+      maskBtnMobile.style.display = 'none';
+    }
+  }
+
+  // Update context-aware mobile FAB
+  updateMobileFab();
 }
 
 // Global nav handler
 app.addEventListener('click', (e) => {
   const navItem = e.target.closest('[data-tab]')
-  if (navItem && e.target.closest('.sidebar-nav')) {
-    window.location.hash = navItem.dataset.tab
+  if (navItem && (e.target.closest('.sidebar-nav') || e.target.closest('.mobile-bottom-nav') || navItem.dataset.action === 'nav-tab' || navItem.closest('[data-action="nav-tab"]'))) {
+    const tabToGo = navItem.dataset.tab || navItem.closest('[data-tab]')?.dataset.tab;
+    if (tabToGo) {
+      window.location.hash = tabToGo;
+    }
   }
   
   // Issue 2: Make date pickers open when clicking anywhere on the input

@@ -104,9 +104,22 @@ export async function renderMembersPage(container, user) {
               transform: scale(1.08);
           }
 
-          @media (max-width: 600px) {
-              .members-page { padding: 0.75rem; height: calc(100dvh - 64px); } /* Header adjustment */
-              .members-content-area { margin-top: 0.5rem; }
+          @media (max-width: 768px) {
+              .members-page {
+                padding: 0 !important;
+                padding-top: 0.25rem !important;
+                height: 100% !important;
+                overflow: hidden;
+              }
+              .members-sticky-header { padding-bottom: 0; }
+              .members-content-area { margin-top: 0; }
+              .table-container {
+                border-radius: 0;
+                border: none;
+                box-shadow: none;
+                background: transparent;
+              }
+              .fab-container { display: none !important; }
           }
       </style>
 

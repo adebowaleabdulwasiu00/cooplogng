@@ -227,11 +227,12 @@ export async function getMemberLoans(cooperativeId, memberId = null) {
         if (d.is_deleted) continue
         const rem = remMap[d.remittance_id]
         if (!rem || rem.status !== 'Approved' || rem.is_deleted) continue
+        const entId = d.enterprise_id || d.item || ''
         if (!memberId || memberId === '0000000000') {
-            const key = `${rem.member_id}_${d.enterprise_id}`
+            const key = `${rem.member_id}_${entId}`
             entBal[key] = (entBal[key] || 0) + (Number(d.amount) || 0)
         } else if (rem.member_id === String(memberId)) {
-            const key = `${memberId}_${d.enterprise_id}`
+            const key = `${memberId}_${entId}`
             entBal[key] = (entBal[key] || 0) + (Number(d.amount) || 0)
         }
     }

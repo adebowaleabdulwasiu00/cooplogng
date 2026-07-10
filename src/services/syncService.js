@@ -31,7 +31,7 @@ export const SyncStatus = {
     NEEDS_VERIFY: 'needs_verify',
 }
 
-const CURRENT_SCHEMA_VERSION = 10
+const CURRENT_SCHEMA_VERSION = 11
 
 // ─── Initialization ───────────────────────────────────────────────────────────
 

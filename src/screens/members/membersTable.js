@@ -135,9 +135,17 @@ function updateRow(row, m) {
         if (chkTd) chkTd.remove()
     }
 
-    // Update name
+    // Update name and identifier
     const nameEl = row.querySelector('.member-row-name')
     if (nameEl) nameEl.innerText = escapeHtml(m.name)
+
+    const padRegNo = (val) => String(val || '').padStart(3, '0')
+    let identifierEl = row.querySelector('.member-row-identifier')
+    if (identifierEl) {
+        identifierEl.innerHTML = m.special_id 
+            ? `<div class="member-row-special-id">ID: ${escapeHtml(m.special_id)}</div>` 
+            : `<div class="member-row-mobile-reg-no">Reg No: ${padRegNo(m.registration_no || m.reg_no)}</div>`;
+    }
 
     // Update mobile cell
     const mobileEl = row.querySelector('.col-mobile')
@@ -224,7 +232,8 @@ export function renderMembersTable(container) {
     visibleMembers.forEach(m => {
         const isSelected = selectedIds.has(m.id)
         const specialIdHtml = m.special_id
-            ? `<div class="member-row-special-id">ID: ${escapeHtml(m.special_id)}</div>` : ''
+            ? `<div class="member-row-special-id">ID: ${escapeHtml(m.special_id)}</div>`
+            : `<div class="member-row-mobile-reg-no">Reg No: ${padRegNo(m.registration_no || m.reg_no)}</div>`
         const row = rowMap.get(m.id);
 
         if (!row) {
@@ -235,7 +244,10 @@ export function renderMembersTable(container) {
             newRow.innerHTML = `
                 <td class="col-profile"></td>
                 <td class="col-reg-no">${padRegNo(m.registration_no || m.reg_no)}</td>
-                <td class="col-name"><div class="member-row-name">${escapeHtml(m.name)}</div>${specialIdHtml}</td>
+                <td class="col-name">
+                    <div class="member-row-name">${escapeHtml(m.name)}</div>
+                    <div class="member-row-identifier">${specialIdHtml}</div>
+                </td>
                 <td class="col-mobile">${escapeHtml(m.mobile || '')}</td>
                 <td class="col-status"><div class="status-badge status-${escapeHtml(m.status)}">${escapeHtml(m.status)}</div></td>
                 <td class="col-created">
@@ -310,14 +322,18 @@ function handleScroll(e) {
                     nextBatch.forEach(m => {
                         const isSelected = selectedIds.has(m.id);
                         const specialIdHtml = m.special_id
-                            ? `<div class="member-row-special-id">ID: ${escapeHtml(m.special_id)}</div>` : '';
+                            ? `<div class="member-row-special-id">ID: ${escapeHtml(m.special_id)}</div>`
+                            : `<div class="member-row-mobile-reg-no">Reg No: ${padRegNo(m.registration_no || m.reg_no)}</div>`;
                         const tr = document.createElement('tr');
                         tr.className = `member-row ${isSelected ? 'selected' : ''}`;
                         tr.dataset.id = m.id;
                         tr.innerHTML = `
                             <td class="col-profile">${getProfileHtml(m)}</td>
                             <td class="col-reg-no">${padRegNo(m.registration_no || m.reg_no)}</td>
-                            <td class="col-name"><div class="member-row-name">${escapeHtml(m.name)}</div>${specialIdHtml}</td>
+                            <td class="col-name">
+                                <div class="member-row-name">${escapeHtml(m.name)}</div>
+                                <div class="member-row-identifier">${specialIdHtml}</div>
+                            </td>
                             <td class="col-mobile">${escapeHtml(m.mobile || '')}</td>
                             <td class="col-status"><div class="status-badge status-${escapeHtml(m.status)}">${escapeHtml(m.status)}</div></td>
                             <td class="col-created">

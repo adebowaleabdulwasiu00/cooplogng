@@ -177,50 +177,7 @@ export function render(container, deps) {
           gap: 0.6rem;
         }
 
-        .field {
-          display: flex;
-          flex-direction: column;
-          gap: 0.25rem;
-        }
-
-        .field label {
-          font-size: 0.75rem;
-          font-weight: 700;
-          color: var(--text-muted);
-          text-transform: uppercase;
-          letter-spacing: 0.06em;
-        }
-
-        .field input, .field select, .field textarea {
-          padding: 0.45rem 0.75rem;
-          border-radius: var(--radius-sm);
-          border: 1px solid var(--border-medium);
-          background: var(--bg-input);
-          color: var(--text-primary);
-          font-size: 0.875rem;
-          transition: all 0.15s ease;
-        }
-
-        /* Hide number input spinners */
-        input[type="number"]::-webkit-outer-spin-button,
-        input[type="number"]::-webkit-inner-spin-button {
-          -webkit-appearance: none;
-          margin: 0;
-        }
-        input[type="number"] {
-          -moz-appearance: textfield;
-        }
-
-        .field input:focus, .field select:focus, .field textarea:focus {
-          outline: none;
-          border-color: var(--accent-primary);
-          box-shadow: 0 0 0 3px var(--accent-soft);
-        }
-
-        .field textarea {
-          resize: vertical;
-          min-height: 46px;
-        }
+        /* Inherits global .field styling from style.css for Material Outlined Fields */
 
         /* Member Selector Row */
         .member-row {

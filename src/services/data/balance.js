@@ -20,7 +20,7 @@ export async function buildAccountBalance(cooperativeId, user = null, limitRid =
         if (limitRid !== null && (rem.r_id || 0) >= limitRid) continue
         const details = rem.details || []
         for (const d of details) {
-            const eid = d.enterprise_id
+            const eid = d.enterprise_id || d.item || ''
             if (isMemberQuery && entRevenueMap[eid]) continue
             if (!balances[eid]) balances[eid] = 0
             balances[eid] += parseFloat(d.amount || 0)
@@ -53,15 +53,16 @@ export async function buildMemberLedger(cooperativeId, memberId, user = null, li
         if (limitRid !== null && (rem.r_id || 0) > limitRid) continue
         const details = rem.details || []
         for (const d of details) {
-            if (entRevenueMap[d.enterprise_id]) continue
+            const eid = d.enterprise_id || d.item || ''
+            if (entRevenueMap[eid]) continue
             const amount = parseFloat(d.amount || 0)
             runningTotal += amount
             ledgerEntries.push({
                 id: d.id,
                 remittance_id: rem.id,
                 remittance_date: rem.remittance_date,
-                enterprise_id: d.enterprise_id,
-                enterprise_name: entMap[d.enterprise_id] || 'Unknown',
+                enterprise_id: eid,
+                enterprise_name: entMap[eid] || 'Unknown',
                 amount,
                 running_balance: runningTotal,
                 description: rem.description || '',

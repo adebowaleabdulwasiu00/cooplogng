@@ -78,35 +78,49 @@ export async function renderAccountBalance(container, user) {
 
 
     container.innerHTML = `
-    <div class="page-header" style="display: flex; flex-direction: column; gap: 1rem;">
+    <div class="page-header dashboard-page-header" style="display: flex; flex-direction: column; gap: 1rem;">
       <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
         <div>
           <h2 style="margin: 0; color: var(--text-primary);">Dashboard</h2>
           <p class="subtitle" style="margin: 0.25rem 0 0 0; color: var(--text-muted);">Welcome back!</p>
         </div>
-        <button id="toggle-mask-btn" class="ghost-button" style="
-        width: 2.25rem;
-        height: 2.25rem;
-        padding: 0.375rem;
-        border-radius: 0.5rem;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        transition: all 0.2s ease;
-      ">
-        ${maskBalances ? `
-          <!-- Visible eye -->
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M2 12C2 12 5.63636 5 12 5C18.3636 5 22 12 22 12C22 12 18.3636 19 12 19C5.63636 19 2 12 2 12Z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
-            <path d="M12 15C13.6569 15 15 13.6569 15 12C15 10.3431 13.6569 9 12 9C10.3431 9 9 10.3431 9 12C9 13.6569 10.3431 15 12 15Z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        ` : `
-          <!-- Hidden eye -->
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M17.9449 17.9449C16.3991 19.2325 14.2839 20 12 20C5.63636 20 2 12 2 12C3.8607 8.49382 6.66692 5.90325 10 4.99988M9.9 4.30021C10.5861 4.10767 11.2873 4.00024 12 4.00024C18.3636 4.00024 22 12 22 12C21.3037 13.3719 20.3339 14.6377 19.169 15.711M15 11.5C15 13.1569 13.6569 14.5 12 14.5C10.6362 14.5 9.47666 13.6048 9.09204 12.335M4 4L20 20" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        `}
-      </button>
+        <div style="display: flex; align-items: center; gap: 0.5rem;">
+          <button id="toggle-mask-btn" class="ghost-button" style="
+            width: 2.25rem;
+            height: 2.25rem;
+            padding: 0.375rem;
+            border-radius: 0.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+          ">
+            ${maskBalances ? `
+              <!-- Visible eye -->
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M2 12C2 12 5.63636 5 12 5C18.3636 5 22 12 22 12C22 12 18.3636 19 12 19C5.63636 19 2 12 2 12Z"/>
+                <path d="M12 15C13.6569 15 15 13.6569 15 12C15 10.3431 13.6569 9 12 9C10.3431 9 9 10.3431 9 12C9 13.6569 10.3431 15 12 15Z"/>
+              </svg>
+            ` : `
+              <!-- Hidden eye -->
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M17.9449 17.9449C16.3991 19.2325 14.2839 20 12 20C5.63636 20 2 12 2 12C3.8607 8.49382 6.66692 5.90325 10 4.99988M9.9 4.30021C10.5861 4.10767 11.2873 4.00024 12 4.00024C18.3636 4.00024 22 12 22 12C21.3037 13.3719 20.3339 14.6377 19.169 15.711M15 11.5C15 13.1569 13.6569 14.5 12 14.5C10.6362 14.5 9.47666 13.6048 9.09204 12.335M4 4L20 20"/>
+              </svg>
+            `}
+          </button>
+          <button id="theme-toggle-btn-dashboard" class="ghost-button" style="
+            width: 2.25rem;
+            height: 2.25rem;
+            padding: 0.375rem;
+            border-radius: 0.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+          " title="Toggle theme">
+            <!-- Filled dynamically by js -->
+          </button>
+        </div>
       </div>
 
 
@@ -688,7 +702,7 @@ export async function renderAccountBalance(container, user) {
             contentHtml += `<div style="padding: 2rem; color: var(--text-muted); text-align: center;">No recent activity found.</div>`
         } else {
             contentHtml += `
-        <table style="width: 100%; border-collapse: collapse;">
+        <table class="recent-activity-table" style="width: 100%; border-collapse: collapse;">
           <thead style="background: var(--bg-secondary);">
             <tr>
               <th style="padding: 0.75rem 1rem; text-align: left; font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted);">DATE</th>
@@ -871,15 +885,59 @@ export async function renderAccountBalance(container, user) {
                 })
                 // Update the eye icon
                 toggleMaskBtn.innerHTML = maskBalances ? `
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M2 12C2 12 5.63636 5 12 5C18.3636 5 22 12 22 12C22 12 18.3636 19 12 19C5.63636 19 2 12 2 12Z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
-                    <path d="M12 15C13.6569 15 15 13.6569 15 12C15 10.3431 13.6569 9 12 9C10.3431 9 9 10.3431 9 12C9 13.6569 10.3431 15 12 15Z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M2 12C2 12 5.63636 5 12 5C18.3636 5 22 12 22 12C22 12 18.3636 19 12 19C5.63636 19 2 12 2 12Z"/>
+                    <path d="M12 15C13.6569 15 15 13.6569 15 12C15 10.3431 13.6569 9 12 9C10.3431 9 9 10.3431 9 12C9 13.6569 10.3431 15 12 15Z"/>
                   </svg>
                 ` : `
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M17.9449 17.9449C16.3991 19.2325 14.2839 20 12 20C5.63636 20 2 12 2 12C3.8607 8.49382 6.66692 5.90325 10 4.99988M9.9 4.30021C10.5861 4.10767 11.2873 4.00024 12 4.00024C18.3636 4.00024 22 12 22 12C21.3037 13.3719 20.3339 14.6377 19.169 15.711M15 11.5C15 13.1569 13.6569 14.5 12 14.5C10.6362 14.5 9.47666 13.6048 9.09204 12.335M4 4L20 20" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M17.9449 17.9449C16.3991 19.2325 14.2839 20 12 20C5.63636 20 2 12 2 12C3.8607 8.49382 6.66692 5.90325 10 4.99988M9.9 4.30021C10.5861 4.10767 11.2873 4.00024 12 4.00024C18.3636 4.00024 22 12 22 12C21.3037 13.3719 20.3339 14.6377 19.169 15.711M15 11.5C15 13.1569 13.6569 14.5 12 14.5C10.6362 14.5 9.47666 13.6048 9.09204 12.335M4 4L20 20"/>
                   </svg>
                 `
+
+                // Keep mobile mask button in sync
+                const maskBtnMobile = document.getElementById('mask-toggle-mobile-btn');
+                if (maskBtnMobile) {
+                    maskBtnMobile.innerHTML = maskBalances ? `
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                        <circle cx="12" cy="12" r="3"/>
+                      </svg>
+                    ` : `
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M17.94 17.94A10.07 10.07 0 0 1 12 19c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+                        <line x1="1" y1="1" x2="23" y2="23"/>
+                      </svg>
+                    `;
+                }
+            })
+        }
+
+        const themeToggleBtnDash = document.getElementById('theme-toggle-btn-dashboard')
+        if (themeToggleBtnDash) {
+            const updateDashThemeIcon = () => {
+                const currentTheme = document.documentElement.getAttribute('data-theme') || 'dark';
+                const isDark = currentTheme === 'dark';
+                themeToggleBtnDash.innerHTML = isDark
+                    ? `<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707M17.657 17.657l.707-.707M6.343 6.343l.707-.707M12 8a4 4 0 100 8 4 4 0 000-8z"></path></svg>`
+                    : `<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path></svg>`;
+            }
+            updateDashThemeIcon()
+            themeToggleBtnDash.addEventListener('click', () => {
+                const current = document.documentElement.getAttribute('data-theme') || 'light';
+                const nextTheme = current === 'dark' ? 'light' : 'dark';
+                document.documentElement.setAttribute('data-theme', nextTheme);
+                localStorage.setItem('theme', nextTheme);
+                updateDashThemeIcon();
+                // Sync mobile button representation if active
+                const mobileThemeBtn = document.getElementById('theme-toggle-mobile-btn');
+                if (mobileThemeBtn) {
+                    const isDark = nextTheme === 'dark';
+                    const svgContent = isDark
+                        ? `<svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707M17.657 17.657l.707-.707M6.343 6.343l.707-.707M12 8a4 4 0 100 8 4 4 0 000-8z"></path></svg>`
+                        : `<svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path></svg>`;
+                    mobileThemeBtn.innerHTML = svgContent;
+                }
             })
         }
 

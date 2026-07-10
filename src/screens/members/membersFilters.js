@@ -433,21 +433,26 @@ export function renderMembersFilters(container, user) {
               to { transform: translateY(0); opacity: 1; }
           }
 
-          @media (max-width: 600px) {
+          @media (max-width: 768px) {
               .members-filters-row {
-                  flex-direction: column;
-                  align-items: stretch;
-                  max-height: 35vh;
-                  padding: 0.6rem;
-                  gap: 0.5rem;
+                  display: none !important;
+                  padding: 0.5rem;
+                  background: var(--bg-card);
+                  border-bottom: 1px solid var(--border-light);
+                  animation: slideDown 0.25s ease-out;
+              }
+              .members-filters-row.show-on-mobile {
+                  display: flex !important;
+                  flex-direction: column !important;
               }
               .search-and-selectors {
+                  display: flex;
                   flex-direction: column;
+                  width: 100%;
                   gap: 0.5rem;
               }
-              .search-input-wrap {
-                  max-width: none;
-                  width: 100%;
+              .members-filters-row .search-input-wrap {
+                  display: none !important;
               }
               .selectors-row {
                   display: flex;
@@ -462,59 +467,70 @@ export function renderMembersFilters(container, user) {
                   font-size: 0.75rem;
               }
               .action-buttons-group {
-                  display: contents; /* Merge with selectors-row if possible, but easier to just use flex on selectors-row */
-              }
-              /* Put buttons into the selectors row on mobile */
-              .members-filters-row {
-                  display: grid;
-                  grid-template-columns: 1fr;
-              }
-              .search-and-selectors {
-                  display: contents;
-              }
-              .search-input-wrap {
-                  grid-row: 1;
-              }
-              .selectors-row {
-                  grid-row: 2;
                   display: flex;
                   gap: 0.35rem;
               }
-              .action-buttons-group {
-                  display: flex;
-                  gap: 0.35rem;
-              }
-              .action-btn { 
+              .action-btn {
                   padding: 0.4rem;
-                  min-width: 40px;
+                  min-width: 36px;
                   justify-content: center;
               }
-              .btn-text { display: none !important; } /* Hide labels as requested */
-          }
+              .btn-text { display: none !important; }
+          }    }
       </style>
     `
 }
 
 export function attachFiltersListeners(container, user) {
     const searchInput = container.querySelector('#member-search-input')
+    const searchInputMobile = document.getElementById('member-search-input-mobile')
     const resetBtn = container.querySelector('#search-reset-btn')
+
+    if (searchInputMobile) {
+        searchInputMobile.value = searchTerm
+    }
+
+    const handleSearchInput = (val) => {
+        setSearchTerm(val)
+        if (searchInput) searchInput.value = val
+        const currentMobileInput = document.getElementById('member-search-input-mobile')
+        if (currentMobileInput) currentMobileInput.value = val
+        updateFilteredViews(container)
+    }
 
     if (searchInput) {
         searchInput.addEventListener('input', (e) => {
             if (searchTimeout) clearTimeout(searchTimeout)
             searchTimeout = setTimeout(() => {
-                setSearchTerm(e.target.value)
-                updateFilteredViews(container)
+                handleSearchInput(e.target.value)
             }, 300)
         })
     }
 
+    // Set initial value for mobile search if element exists
+    const initialMobileInput = document.getElementById('member-search-input-mobile')
+    if (initialMobileInput) {
+        initialMobileInput.value = searchTerm
+    }
+
+    // Clean up old window mobile search listener to prevent stale closure references
+    if (window._currentMobileSearchListener) {
+        window.removeEventListener('mobile-member-search', window._currentMobileSearchListener)
+    }
+    window._currentMobileSearchListener = (e) => {
+        if (searchTimeout) clearTimeout(searchTimeout)
+        searchTimeout = setTimeout(() => {
+            handleSearchInput(e.detail.value)
+        }, 300)
+    }
+    window.addEventListener('mobile-member-search', window._currentMobileSearchListener)
+
     if (resetBtn) {
         resetBtn.addEventListener('click', () => {
-            searchInput.value = ''
-            setSearchTerm('')
-            updateFilteredViews(container)
-            searchInput.focus()
+            handleSearchInput('')
+            if (searchInput) searchInput.focus()
+            const currentMobileInput = document.getElementById('member-search-input-mobile')
+            if (currentMobileInput) currentMobileInput.focus()
         })
     }
 

@@ -106,7 +106,7 @@ function renderDashboard() {
             </div>
           </div>
           <div style="display: flex; gap: 0.5rem; margin-top: 0.75rem;">
-            <button class="secondary-button" style="flex: 1; border: 1px solid var(--border-medium); background: transparent; padding: 0.5rem;" data-action="logout">
+            <button class="secondary-button" style="flex: 1; padding: 0.5rem; font-size: 0.8rem; border-radius: var(--radius-md);" data-action="logout">
               Log Out
             </button>
           </div>

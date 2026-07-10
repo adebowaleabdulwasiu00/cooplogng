@@ -44,6 +44,24 @@
   --radius-xl: 1.5rem;
   --radius-2xl: 2rem;
 
+  /* MD3 Spacing Tokens */
+  --space-xs: 0.25rem;
+  --space-sm: 0.5rem;
+  --space-md: 1rem;
+  --space-lg: 1.5rem;
+  --space-xl: 2rem;
+  --space-2xl: 3rem;
+
+  /* MD3 Elevation Shadows */
+  --elevation-1: 0 1px 3px 1px rgba(0, 0, 0, 0.15), 0 1px 2px 0 rgba(0, 0, 0, 0.15);
+  --elevation-2: 0 2px 6px 2px rgba(0, 0, 0, 0.15), 0 1px 2px 0 rgba(0, 0, 0, 0.15);
+  --elevation-3: 0 4px 8px 3px rgba(0, 0, 0, 0.15), 0 1px 3px 0 rgba(0, 0, 0, 0.15);
+  --elevation-4: 0 6px 10px 4px rgba(0, 0, 0, 0.15), 0 2px 3px 0 rgba(0, 0, 0, 0.15);
+  --elevation-5: 0 8px 12px 6px rgba(0, 0, 0, 0.15), 0 4px 4px 0 rgba(0, 0, 0, 0.15);
+
+  --transition-duration: 250ms;
+  --transition-timing: cubic-bezier(0.2, 0, 0, 1);
+
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   color: var(--text-secondary);
   background: var(--bg-main);
@@ -51,7 +69,7 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  transition: background-color 0.3s ease, color 0.3s ease;
+  transition: background-color var(--transition-duration) var(--transition-timing), color var(--transition-duration) var(--transition-timing);
 }
 
 [data-theme='dark'] {
@@ -90,6 +108,13 @@
   --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.5), 0 2px 4px -1px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.6), 0 10px 10px -5px rgba(0, 0, 0, 0.5);
   --shadow-premium: 0 40px 80px rgba(0, 0, 0, 0.4);
+
+  /* MD3 Elevation Shadows (Dark adjusted) */
+  --elevation-1: 0 1px 3px 1px rgba(0, 0, 0, 0.3), 0 1px 2px 0 rgba(0, 0, 0, 0.3);
+  --elevation-2: 0 2px 6px 2px rgba(0, 0, 0, 0.3), 0 1px 2px 0 rgba(0, 0, 0, 0.3);
+  --elevation-3: 0 4px 8px 3px rgba(0, 0, 0, 0.35), 0 1px 3px 0 rgba(0, 0, 0, 0.35);
+  --elevation-4: 0 6px 10px 4px rgba(0, 0, 0, 0.4), 0 2px 3px 0 rgba(0, 0, 0, 0.4);
+  --elevation-5: 0 8px 12px 6px rgba(0, 0, 0, 0.45), 0 4px 4px 0 rgba(0, 0, 0, 0.45);
 
   color-scheme: dark;
 }
@@ -222,56 +247,129 @@ h1 {
   text-align: left;
 }
 
+/* Outlined Form Fields & Sibling Floating Labels */
 .field {
   display: block;
-  margin-bottom: 1rem;
+  margin-bottom: 1.5rem;
+  position: relative;
 }
 
 .field-hidden {
-  display: none;
+  display: none !important;
 }
 
-.field span {
-  display: block;
-  margin-bottom: 0.65rem;
-  font-size: 0.85rem;
-  font-weight: 600;
-  color: var(--text-secondary);
+.field:has(input[type="text"]),
+.field:has(input[type="password"]),
+.field:has(input[type="email"]),
+.field:has(input[type="tel"]),
+.field:has(input[type="number"]),
+.field:has(input[type="date"]),
+.field:has(select),
+.field:has(textarea) {
+  margin-top: 1.5rem;
 }
 
-.field input,
-.field select,
-.field textarea {
+.field:has(input[type="text"]) span, .field:has(input[type="text"]) label,
+.field:has(input[type="password"]) span, .field:has(input[type="password"]) label,
+.field:has(input[type="email"]) span, .field:has(input[type="email"]) label,
+.field:has(input[type="tel"]) span, .field:has(input[type="tel"]) label,
+.field:has(input[type="number"]) span, .field:has(input[type="number"]) label,
+.field:has(input[type="date"]) span, .field:has(input[type="date"]) label,
+.field:has(select) span, .field:has(select) label,
+.field:has(textarea) span, .field:has(textarea) label {
+  position: absolute;
+  left: 1rem;
+  top: 1rem;
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  pointer-events: none;
+  transition: all var(--transition-duration) var(--transition-timing);
+  transform-origin: left top;
+  z-index: 2;
+  background: transparent;
+  padding: 0;
+  margin-bottom: 0;
+  text-transform: none; /* Reset uppercase to keep UI elegant */
+  letter-spacing: normal;
+}
+
+.field:has(input[type="text"]) input,
+.field:has(input[type="password"]) input,
+.field:has(input[type="email"]) input,
+.field:has(input[type="tel"]) input,
+.field:has(input[type="number"]) input,
+.field:has(input[type="date"]) input,
+.field:has(select) select,
+.field:has(textarea) textarea {
   width: 100%;
-  padding: 0.75rem 1rem;
-  border: 1px solid var(--border-medium);
-  border-radius: 0.85rem;
+  height: 3.25rem;
+  padding: 1.15rem 1rem 0.35rem 1rem;
+  border: 1.5px solid var(--border-medium);
+  border-radius: var(--radius-md);
   background: var(--bg-input);
   color: var(--text-primary);
   font-size: 0.95rem;
   font-weight: 500;
-  transition: all 0.2s ease;
+  transition: all var(--transition-duration) var(--transition-timing);
   outline: none;
-  font-family: inherit;
+  box-sizing: border-box;
 }
 
-.field input,
-.field select {
-  height: 3.25rem;
+.field:has(textarea) textarea {
+  height: auto;
+  min-height: 6rem;
+  padding: 1.25rem 1rem 0.5rem 1rem;
+}
+
+/* Floating state for active/focused form inputs */
+.field:has(input[type="text"]:focus) span, .field:has(input[type="text"]:focus) label,
+.field:has(input[type="text"]:not(:placeholder-shown)) span, .field:has(input[type="text"]:not(:placeholder-shown)) label,
+.field:has(input[type="password"]:focus) span, .field:has(input[type="password"]:focus) label,
+.field:has(input[type="password"]:not(:placeholder-shown)) span, .field:has(input[type="password"]:not(:placeholder-shown)) label,
+.field:has(input[type="email"]:focus) span, .field:has(input[type="email"]:focus) label,
+.field:has(input[type="email"]:not(:placeholder-shown)) span, .field:has(input[type="email"]:not(:placeholder-shown)) label,
+.field:has(input[type="tel"]:focus) span, .field:has(input[type="tel"]:focus) label,
+.field:has(input[type="tel"]:not(:placeholder-shown)) span, .field:has(input[type="tel"]:not(:placeholder-shown)) label,
+.field:has(input[type="number"]:focus) span, .field:has(input[type="number"]:focus) label,
+.field:has(input[type="number"]:not(:placeholder-shown)) span, .field:has(input[type="number"]:not(:placeholder-shown)) label,
+.field:has(input[type="date"]:focus) span, .field:has(input[type="date"]:focus) label,
+.field:has(input[type="date"]:not(:placeholder-shown)) span, .field:has(input[type="date"]:not(:placeholder-shown)) label,
+.field:has(select:focus) span, .field:has(select:focus) label,
+.field:has(select) span, .field:has(select) label,
+.field:has(textarea:focus) span, .field:has(textarea:focus) label,
+.field:has(textarea:not(:placeholder-shown)) span, .field:has(textarea:not(:placeholder-shown)) label {
+  transform: translateY(-1.5rem) scale(0.75);
+  color: var(--accent-primary);
+  background: var(--bg-card);
+  padding: 0 6px;
+  font-weight: 600;
+  left: 0.85rem;
+}
+
+/* Hide native placeholders when not focused to prevent overlaps */
+.field input::placeholder,
+.field textarea::placeholder {
+  color: transparent;
+  transition: color var(--transition-duration) var(--transition-timing);
+}
+.field input:focus::placeholder,
+.field textarea:focus::placeholder {
+  color: var(--text-muted);
 }
 
 .field input:focus,
 .field select:focus,
 .field textarea:focus {
   border-color: var(--accent-primary);
-  box-shadow: 0 0 0 4px var(--accent-soft);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 [data-theme='dark'] .field input:focus,
 [data-theme='dark'] .field select:focus,
 [data-theme='dark'] .field textarea:focus {
-  border-color: var(--text-primary);
-  box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.1);
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .password-wrap {
@@ -890,12 +988,13 @@ h1 {
     left: 0;
     width: 100vw;
     height: 100vh;
-    background: rgba(15, 23, 42, 0.4);
-    backdrop-filter: blur(4px);
-    z-index: 999;
+    background: rgba(15, 23, 42, 0.5);
+    backdrop-filter: blur(8px) saturate(180%);
+    -webkit-backdrop-filter: blur(8px) saturate(180%);
+    z-index: 994; /* Sits right below sidebar (995) but above Top Bar (990) */
     opacity: 0;
     pointer-events: none;
-    transition: opacity 0.4s ease;
+    transition: opacity 0.3s var(--transition-timing);
   }
 
   .sidebar.open+.sidebar-overlay {
@@ -1333,3 +1432,560 @@ h1 {
     transform: translateY(0);
   }
 }
+
+/* ==========================================================================
+   Responsive Shell Components (Mobile Top App Bar, Bottom Nav, FAB, Collapsible Sidebar)
+   ========================================================================== */
+
+/* Spacing adjustments for icons inside buttons */
+.nav-item .nav-icon {
+  margin-right: 0.75rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.nav-item.active .nav-icon svg {
+  stroke: var(--text-inverse);
+}
+
+.nav-item:hover:not(.active) .nav-icon svg {
+  stroke: var(--accent-primary);
+}
+
+/* Mobile Top App Bar Styling */
+.mobile-top-bar {
+  display: none; /* Hidden on Desktop */
+  height: 56px;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border-light);
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 1rem;
+  position: sticky;
+  top: 0;
+  z-index: 990;
+  box-shadow: var(--shadow-sm);
+  transition: background-color var(--transition-duration) var(--transition-timing);
+}
+
+.mobile-top-bar .mobile-menu-btn,
+.mobile-top-bar .icon-btn-circle {
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 0.2s, transform 0.15s;
+}
+
+.mobile-top-bar .mobile-menu-btn:active,
+.mobile-top-bar .icon-btn-circle:active {
+  transform: scale(0.95);
+  background-color: var(--bg-secondary);
+}
+
+.mobile-top-bar .mobile-page-title {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  flex: 1;
+  margin-left: 0.5rem;
+  letter-spacing: -0.02em;
+}
+
+.mobile-top-bar .mobile-header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Mobile Bottom Navigation Styling */
+.mobile-bottom-nav {
+  display: none; /* Hidden on Desktop */
+  height: 64px;
+  background: var(--bg-card);
+  border-top: 1px solid var(--border-light);
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 990;
+  justify-content: space-around;
+  align-items: center;
+  box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.04);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.bottom-nav-item {
+  background: transparent;
+  border: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-decoration: none;
+  flex: 1;
+  height: 100%;
+  gap: 4px;
+  transition: all 0.2s ease;
+  position: relative;
+}
+
+.bottom-nav-item svg {
+  color: var(--text-muted);
+  stroke: var(--text-muted);
+  transition: all 0.2s ease;
+}
+
+.bottom-nav-item.active {
+  color: var(--accent-primary);
+}
+
+.bottom-nav-item.active svg {
+  color: var(--accent-primary);
+  stroke: var(--accent-primary);
+  transform: translateY(-2px);
+}
+
+/* Context-Aware Floating Action Button (FAB) */
+.mobile-fab {
+  display: none;
+  position: fixed;
+  bottom: calc(64px + 1.25rem + env(safe-area-inset-bottom));
+  right: 1.25rem;
+  width: 56px;
+  height: 56px;
+  border-radius: 16px;
+  background: var(--accent-primary);
+  color: white;
+  border: none;
+  box-shadow: var(--shadow-lg);
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 980;
+  transition: transform 0.2s var(--transition-timing), background-color 0.2s, box-shadow 0.2s;
+}
+
+.mobile-fab svg {
+  stroke: white;
+}
+
+.mobile-fab:active {
+  transform: scale(0.92);
+  box-shadow: var(--shadow-md);
+}
+
+/* Collapsible Desktop Sidebar Layout Styling */
+.sidebar, .main-content {
+  transition: width var(--transition-duration) var(--transition-timing),
+              margin-left var(--transition-duration) var(--transition-timing),
+              transform var(--transition-duration) var(--transition-timing);
+}
+
+/* Collapsed sidebar adjustments */
+.dashboard-layout.collapsed .sidebar {
+  width: 76px;
+}
+
+.dashboard-layout.collapsed .sidebar-brand-text,
+.dashboard-layout.collapsed .nav-item span:not(.nav-icon),
+.dashboard-layout.collapsed .sidebar-footer .sidebar-brand-text,
+.dashboard-layout.collapsed .sidebar-footer button span {
+  display: none !important;
+}
+
+.dashboard-layout.collapsed .nav-item {
+  justify-content: center;
+  padding: 0.85rem;
+}
+
+.dashboard-layout.collapsed .nav-item .nav-icon {
+  margin-right: 0 !important;
+}
+
+.dashboard-layout.collapsed .sidebar-footer {
+  padding: 1rem 0.5rem;
+}
+
+.dashboard-layout.collapsed .sidebar-footer button {
+  padding: 0.5rem;
+  min-width: 0;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto;
+}
+
+.dashboard-layout.collapsed .main-content {
+  margin-left: 76px;
+}
+
+/* Sidebar Collapse Trigger Styling */
+.collapse-sidebar-btn {
+  background: var(--bg-secondary);
+  border: none;
+  border-radius: 50%;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--text-muted);
+  transition: all 0.2s;
+  box-shadow: var(--shadow-sm);
+  flex-shrink: 0;
+}
+
+.collapse-sidebar-btn:hover {
+  background: var(--border-medium);
+  color: var(--text-primary);
+  transform: scale(1.08);
+}
+
+.collapse-sidebar-btn svg {
+  transition: transform var(--transition-duration) var(--transition-timing);
+}
+
+.dashboard-layout.collapsed .collapse-sidebar-btn svg {
+  transform: rotate(180deg);
+}
+
+.member-row-mobile-reg-no {
+  display: none;
+}
+
+/* ==========================================================================
+   Responsive Adaptations & Media Queries
+   ========================================================================== */
+
+@media (max-width: 768px) {
+  .mobile-top-bar {
+    display: flex;
+  }
+
+  .mobile-bottom-nav {
+    display: flex;
+  }
+
+  #mobile-context-fab-container {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: flex-end !important;
+    gap: 0.75rem !important;
+    position: fixed !important;
+    bottom: calc(64px + 1.25rem + env(safe-area-inset-bottom)) !important;
+    right: 1.25rem !important;
+    z-index: 980 !important;
+  }
+
+  .mobile-fab {
+    display: flex !important;
+    position: static !important;
+  }
+
+  /* Make sure main content fills the screen correctly below top app bar */
+  .main-content {
+    margin-left: 0 !important;
+    padding: 0 !important;
+    padding-bottom: calc(64px + env(safe-area-inset-bottom)) !important;
+    height: calc(100vh - 56px) !important;
+    height: calc(100dvh - 56px) !important;
+    overflow-y: auto !important;
+  }
+
+  /* Sidebar acts as temporary drawer overlay on mobile */
+  .sidebar {
+    position: fixed;
+    top: 0 !important;
+    bottom: 0 !important;
+    left: 0;
+    width: 280px;
+    height: 100vh !important;
+    z-index: 995;
+    transform: translateX(-100%);
+    box-shadow: var(--shadow-xl);
+    border-right: 1px solid var(--border-light);
+    display: flex !important;
+    flex-direction: column !important;
+  }
+
+  .sidebar.open {
+    transform: translateX(0);
+  }
+
+  .dashboard-page-header {
+    display: none !important;
+  }
+
+  /* Overwrite the mobile toggle layout button since it is now top bar */
+  .mobile-nav-toggle {
+    display: none !important;
+  }
+
+  /* Desktop collapse button not visible on mobile drawer header */
+  .sidebar .collapse-sidebar-btn {
+    display: none !important;
+  }
+
+  /* MD3 Bottom Sheets for Mobile Dialogs */
+  .modal-overlay {
+    display: flex !important;
+    align-items: flex-end !important; /* Aligns to bottom on mobile */
+    justify-content: center !important;
+    transition: opacity var(--transition-duration) var(--transition-timing);
+  }
+  
+  .modal-overlay.open .modal-content {
+    transform: translateY(0) !important;
+  }
+  
+  .modal-overlay:not(.open) .modal-content {
+    transform: translateY(100%) !important;
+  }
+  
+  .modal-content {
+    width: 100% !important;
+    max-width: 100% !important;
+    border-radius: 28px 28px 0 0 !important; /* MD3 Bottom Sheet rounded top corners */
+    padding: 1.25rem 1.5rem calc(1.5rem + env(safe-area-inset-bottom)) 1.5rem !important;
+    animation: none !important;
+    transition: transform var(--transition-duration) var(--transition-timing) !important;
+    transform: translateY(100%);
+    max-height: 85vh !important;
+    overflow-y: auto !important;
+    box-shadow: var(--shadow-xl) !important;
+    border: none !important;
+    border-top: 1px solid var(--border-light) !important;
+    background: var(--bg-card) !important;
+  }
+  
+  /* Add handle bar at the top of bottom sheet */
+  .modal-header::before {
+    content: '';
+    display: block;
+    width: 40px;
+    height: 4px;
+    background: var(--border-medium);
+    border-radius: 2px;
+    margin: 0 auto 1rem auto;
+  }
+  
+  .modal-header {
+    flex-direction: column !important;
+    align-items: center !important;
+    position: relative !important;
+    border-bottom: none !important;
+    padding-bottom: 0.5rem !important;
+    width: 100% !important;
+  }
+  
+  .modal-close {
+    position: absolute !important;
+    right: 0 !important;
+    top: 0.25rem !important;
+    margin: 0 !important;
+    background: var(--bg-secondary) !important;
+    border-radius: 50% !important;
+    width: 32px !important;
+    height: 32px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    border: none !important;
+    color: var(--text-muted) !important;
+  }
+
+  /* ==========================================================================
+     Table-to-Card Responsive Conversions
+     ========================================================================== */
+  .table-responsive,
+  .history-table-container,
+  .styled-table-container,
+  .ledger-table-container,
+  #members-table-container {
+    border: none !important;
+    background: transparent !important;
+  }
+  
+  table.recent-activity-table,
+  table.history-table,
+  table.styled-table {
+    display: block !important;
+    width: 100% !important;
+    border: none !important;
+    background: transparent !important;
+  }
+  
+  table.recent-activity-table thead,
+  table.history-table thead,
+  table.styled-table thead {
+    display: none !important;
+  }
+  
+  table.recent-activity-table tbody,
+  table.history-table tbody,
+  table.styled-table tbody {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 1rem !important;
+    background: transparent !important;
+    padding: 0.25rem 0 !important;
+  }
+  
+  table.recent-activity-table tr,
+  table.history-table tr,
+  table.styled-table tr {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr !important;
+    gap: 0.5rem 1rem !important;
+    background: var(--bg-card) !important;
+    border: 1px solid var(--border-light) !important;
+    border-radius: var(--radius-lg) !important;
+    padding: 1.25rem !important;
+    box-shadow: var(--shadow-sm) !important;
+    position: relative !important;
+    transition: transform 0.2s, box-shadow 0.2s !important;
+  }
+  
+  table.recent-activity-table td,
+  table.history-table td,
+  table.styled-table td {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    padding: 0.25rem 0 !important;
+    border: none !important;
+    font-size: 0.85rem !important;
+    background: transparent !important;
+    width: auto !important;
+    height: auto !important;
+    text-align: left !important;
+  }
+  
+  table.recent-activity-table td.text-right,
+  table.history-table td.text-right,
+  table.styled-table td.text-right,
+  table.styled-table td[style*="text-align: right"],
+  table.styled-table td[style*="text-align:right"] {
+    align-items: flex-end !important;
+    text-align: right !important;
+  }
+  
+  table.recent-activity-table td::before,
+  table.history-table td::before,
+  table.styled-table td::before {
+    font-size: 0.72rem !important;
+    font-weight: 700 !important;
+    color: var(--text-muted) !important;
+    text-transform: uppercase !important;
+    margin-bottom: 0.15rem !important;
+    letter-spacing: 0.04em !important;
+  }
+
+  /* Custom cell labels for Recent Activities table */
+  table.recent-activity-table td:nth-child(1)::before { content: "Date"; }
+  table.recent-activity-table td:nth-child(2)::before { content: "Description"; }
+  table.recent-activity-table td:nth-child(3)::before { content: "Bank"; }
+  table.recent-activity-table td:nth-child(4)::before { content: "Status"; }
+  table.recent-activity-table td:nth-child(5)::before { content: "Amount"; }
+
+  /* Custom cell labels for History table */
+  table.history-table td:first-child::before { display: none !important; }
+  table.history-table td:nth-child(2)::before { content: "Member"; }
+  table.history-table td:nth-child(3)::before { content: "Special ID"; }
+  table.history-table td:nth-child(4)::before { content: "Date"; }
+  table.history-table td:nth-child(5)::before { content: "Bank"; }
+  table.history-table td:nth-child(6)::before { content: "Description"; }
+  table.history-table td:nth-child(7)::before { content: "Amount"; }
+  table.history-table td:nth-child(8)::before { content: "Status"; }
+  table.history-table td:nth-child(9)::before { content: "Created"; }
+  table.history-table td:nth-child(10)::before { content: "Modified"; }
+
+  /* Custom cell labels for Members table */
+  table.styled-table tr {
+    display: grid !important;
+    grid-template-columns: auto 1fr auto !important;
+    grid-template-areas: 
+      "profile name status"
+      "profile mobile status" !important;
+    align-items: center !important;
+    gap: 0.15rem 1rem !important;
+    padding: 0.75rem 1rem !important;
+  }
+
+  table.styled-table td.col-profile {
+    grid-area: profile !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    padding: 0 !important;
+  }
+  table.styled-table td.col-profile::before { display: none !important; }
+
+  table.styled-table td.col-name {
+    grid-area: name !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 0.15rem !important;
+    padding: 0 !important;
+  }
+  table.styled-table td.col-name::before { display: none !important; }
+
+  table.styled-table td.col-mobile {
+    grid-area: mobile !important;
+    display: flex !important;
+    padding: 0 !important;
+    font-size: 0.75rem !important;
+    color: var(--text-muted) !important;
+  }
+  table.styled-table td.col-mobile::before { display: none !important; }
+
+  table.styled-table td.col-status {
+    grid-area: status !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    padding: 0 !important;
+  }
+  table.styled-table td.col-status::before { display: none !important; }
+
+  table.styled-table td.col-reg-no,
+  table.styled-table td.col-created,
+  table.styled-table td.col-modified {
+    display: none !important;
+  }
+
+  .member-row-mobile-reg-no {
+    display: block !important;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-weight: 500;
+  }
+
+  .member-row-special-id {
+    font-size: 0.72rem;
+    color: var(--accent-primary);
+    font-weight: 600;
+  }
+  
+  /* Hide desktop search box on mobile to use header search instead */
+  .members-filters-row .search-input-wrap {
+    display: none !important;
+  }
+}
