@@ -532,6 +532,14 @@ async function _fetchCollection(collectionName, cooperativeId, sinceTs = 0) {
         }
     }
 
+    if (collectionName === 'members' && _session) {
+        const { isAdmin, isStaff, isMember } = _getSyncScope(_session)
+        if (isMember) {
+            const userId = (_session.user_id || _session.userId || _session.member_id || _session.memberId || '').toString()
+            constraints.push(where('member_id', '==', userId))
+        }
+    }
+
     if (sinceTs > 0) {
         constraints.push(where('sync_at', '>', Timestamp.fromMillis(sinceTs)))
     }

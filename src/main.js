@@ -38,7 +38,7 @@ function getDefaultTab(user) {
   if (!user) return 'dashboard';
   if (user.role === 'member' || hasPermission(user.permissions, 'dashboard_view')) return 'dashboard';
   if (user.role !== 'member' && hasPermission(user.permissions, 'read_member')) return 'members';
-  if (user.role === 'member' || hasPermission(user.permissions, 'read_remittance')) return 'payments';
+  if (hasPermission(user.permissions, 'read_remittance')) return 'payments';
   if (user.role === 'member' || hasPermission(user.permissions, 'read_ledger') || hasPermission(user.permissions, 'read_coop_ledger')) return 'ledger';
   if (hasPermission(user.permissions, 'read_reconcile')) return 'reconciliation';
   if (user.role === 'member' || hasPermission(user.permissions, 'settings_manage')) return 'settings';
@@ -1195,7 +1195,7 @@ function renderDashboard() {
               Members
             </button>
           ` : ''}
-          ${(state.welcomeUser.role === 'member' || hasPermission(state.welcomeUser.permissions, 'read_remittance')) ? `
+          ${hasPermission(state.welcomeUser.permissions, 'read_remittance') ? `
             <button class="nav-item ${state.activeTab === 'payments' ? 'active' : ''}" data-action="nav-tab" data-tab="payments">
               Remittance
             </button>
