@@ -1,0 +1,532 @@
+import { escapeHtml, formatDate, getInitials } from '../../utils/formatters.js'
+import { deleteMember } from '../../services/dataService.js'
+import { hasPermission } from '../../services/permissionService.js'
+import { getRemittances, checkMemberHasRemittances } from '../../services/sqliteService.js'
+import { showToast } from '../../services/toastService.js'
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+const EMPTY_VALUES = new Set(['', 'n/a', 'null', 'undefined', 'not available', 'none', '-'])
+
+// Gmail-style colors for fallback initials (same as membersTable)
+const AVATAR_COLORS = [
+    '#f44336', '#e91e63', '#9c27b0', '#673ab7',
+    '#3f51b5', '#2196f3', '#03a9f4', '#00bcd4',
+    '#009688', '#4caf50', '#8bc34a', '#cddc39',
+    '#ffeb3b', '#ffc107', '#ff9800', '#ff5722'
+]
+
+function getAvatarColor(name) {
+    if (!name) return '#999'
+    let hash = 0
+    for (let i = 0; i < name.length; i++) {
+        hash = name.charCodeAt(i) + ((hash << 5) - hash)
+    }
+    const index = Math.abs(hash) % AVATAR_COLORS.length
+    return AVATAR_COLORS[index]
+}
+
+function isMeaningful(val) {
+    if (val === null || val === undefined) return false
+    const s = String(val).trim()
+    return s.length > 0 && !EMPTY_VALUES.has(s.toLowerCase())
+}
+
+function fieldRow(label, value, opts = {}) {
+    if (!isMeaningful(value)) return ''
+    const display = opts.raw ? value : escapeHtml(String(value).trim())
+    return `
+      <div class="md-field">
+        <div class="md-label">${escapeHtml(label)}</div>
+        <div class="md-value">${display}</div>
+      </div>
+    `
+}
+
+function section(title, iconSvg, fieldsHtml) {
+    if (!fieldsHtml || !fieldsHtml.trim()) return ''
+    return `
+      <div class="md-section">
+        <div class="md-section-header">
+          <span class="md-section-icon">${iconSvg}</span>
+          <span class="md-section-title">${escapeHtml(title)}</span>
+        </div>
+        <div class="md-section-body">
+          ${fieldsHtml}
+        </div>
+      </div>
+    `
+}
+
+// ─── Icon SVGs ────────────────────────────────────────────────────────────
+const ICONS = {
+    personal:    `<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>`,
+    membership:  `<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 9a6 6 0 11-12 0 6 6 0 0112 0zM3 20a6 6 0 016-6 6 6 0 016 6"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 11h4m-2-2v4"/></svg>`,
+    contact:     `<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"/></svg>`,
+    employment:  `<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2 2v2m4 6h.01M5 20h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>`,
+    nok:         `<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>`,
+    bank:        `<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/></svg>`,
+}
+
+// ─── Main Modal ──────────────────────────────────────────────────────────────
+
+export async function renderMemberModal(m, user) {
+    const isAdmin = hasPermission(user.permissions, 'admin') || user.username?.toLowerCase() === 'admin'
+    const canUpdate = isAdmin || hasPermission(user.permissions, 'update_member')
+    const canDelete = isAdmin || hasPermission(user.permissions, 'delete_member')
+    const canEditThis = canUpdate && (isAdmin || (m.account_manager || '').includes(user.username))
+    
+    // SAFE DELETE RULE: Check if member has remittance records
+    let hasRemittances = false
+    try {
+        hasRemittances = await checkMemberHasRemittances(user.cooperativeId, m.id)
+    } catch (err) {
+        console.error('Failed to verify remittances for safe delete', err)
+        hasRemittances = true // Default to unsafe on error
+    }
+
+    const existingModal = document.getElementById('member-details-modal')
+    if (existingModal) existingModal.remove()
+
+    const padRegNo = String(m.registration_no || '').padStart(4, '0')
+
+    // ── Avatar HTML ──────────────────────────────────────────────────────────
+    const avatarHtml = m.image_path
+        ? `<img id="md-avatar-img" src="${m.image_path}" alt="${escapeHtml(m.name)}" style="width:100%;height:100%;object-fit:cover;">`
+        : `<span style="color:#fff;font-weight:800;font-size:2.2rem;letter-spacing:0.04em;text-transform:uppercase;user-select:none;-webkit-user-select:none;">${escapeHtml(getInitials(m.name))}</span>`
+
+    // ── Sections ─────────────────────────────────────────────────────────────
+
+    const personalFields = [
+        fieldRow('Gender',         m.sex),
+        fieldRow('Date of Birth',  m.dob ? formatDate(m.dob) : null),
+        fieldRow('Marital Status', m.marital_status),
+    ].join('')
+
+    const membershipFields = [
+        fieldRow('Membership Date', m.date_joined ? formatDate(m.date_joined) : null),
+        isMeaningful(m.status) ? `
+          <div class="md-field">
+            <div class="md-label">Status</div>
+            <div class="md-value">
+              <span class="status-badge status-${escapeHtml(m.status)}">${escapeHtml(m.status)}</span>
+            </div>
+          </div>
+        ` : '',
+    ].join('')
+
+    const contactFields = [
+        fieldRow('Phone',   m.mobile),
+        fieldRow('Email',   m.email),
+        fieldRow('Address', m.address),
+    ].join('')
+
+    const employmentFields = [
+        fieldRow('Employer',   m.employer),
+        fieldRow('Department', m.department),
+        fieldRow('Position',   m.position),
+    ].join('')
+
+    const nokFields = [
+        fieldRow('Name',         m.nok_name),
+        fieldRow('Relationship', m.nok_relationship),
+        fieldRow('Phone',        m.nok_mobile),
+    ].join('')
+
+    const bankFields = [
+        fieldRow('Bank',         m.bank_name),
+        fieldRow('Account No',   m.account_number),
+        fieldRow('Account Name', m.account_name),
+    ].join('')
+
+    // ── Footer buttons ────────────────────────────────────────────────────────
+    const editBtn       = canEditThis
+        ? `<button type="button" class="md-btn md-btn-secondary" id="edit-member-btn">
+             <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+             Edit
+           </button>` : ''
+    const deleteBtn     = canDelete && !hasRemittances
+        ? `<button type="button" class="md-btn md-btn-danger" id="delete-member-btn">
+             <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+             Delete
+           </button>` : ''
+    const remittanceMsg = canDelete && hasRemittances
+        ? `<div class="md-remittance-note">Member has financial records<br>and cannot be deleted.</div>` : ''
+    const ledgerBtn     = `<button type="button" class="md-btn md-btn-primary" id="view-ledger-btn">
+         <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+         View Ledger
+       </button>`
+
+    // ── Full modal HTML ───────────────────────────────────────────────────────
+    const modalHtml = `
+      <style>
+        /* ── Overlay ── */
+        #member-details-modal {
+            position: fixed; inset: 0; z-index: 1000;
+            background: var(--overlay-bg);
+            display: flex; align-items: center; justify-content: center;
+            padding: 1rem;
+            animation: mdFadeIn 0.2s ease-out;
+            font-family: 'Inter', system-ui, sans-serif;
+        }
+        @keyframes mdFadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+        /* ── Modal card ── */
+        .md-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-light);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow-lg);
+            width: 100%;
+            max-width: 580px;
+            max-height: 90vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            animation: mdSlideUp 0.25s cubic-bezier(0.34,1.56,0.64,1);
+        }
+        @keyframes mdSlideUp { from { transform: translateY(24px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+        /* ── Header ── */
+        .md-header {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 1.1rem 1.5rem;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-light);
+            flex-shrink: 0;
+        }
+        .md-header-title { font-size: 0.9rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.07em; }
+        .md-close-btn {
+            width: 32px; height: 32px; border-radius: 50%;
+            border: none; background: var(--bg-input); color: var(--text-muted);
+            display: flex; align-items: center; justify-content: center;
+            cursor: pointer; font-size: 1.1rem; line-height: 1;
+            transition: all 0.15s ease;
+        }
+        .md-close-btn:hover { background: var(--border-medium); color: var(--text-primary); }
+
+        /* ── Body ── */
+        .md-body {
+            flex: 1; overflow-y: auto; padding: 1.5rem;
+            scrollbar-width: thin; scrollbar-color: var(--border-medium) transparent;
+            display: flex; flex-direction: column; gap: 0;
+        }
+        .md-body::-webkit-scrollbar { width: 5px; }
+        .md-body::-webkit-scrollbar-thumb { background: var(--border-medium); border-radius: 10px; }
+
+        /* ── Profile hero ── */
+        .md-hero {
+            display: flex; flex-direction: column; align-items: center;
+            padding: 0.5rem 0 1.5rem;
+            text-align: center;
+        }
+        .md-avatar-wrap {
+            width: 96px; height: 96px; border-radius: 50%;
+            background: var(--bg-secondary);
+            border: 3px solid var(--border-medium);
+            box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+            overflow: hidden;
+            display: flex; align-items: center; justify-content: center;
+            margin-bottom: 1rem;
+            cursor: pointer;
+            user-select: none;
+            -webkit-user-select: none;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .md-avatar-wrap img { transition: transform 0.2s ease; width:100%;height:100%;object-fit:cover; }
+        .md-avatar-wrap:hover { transform: scale(1.12); box-shadow: 0 6px 20px rgba(0,0,0,0.18); }
+        .md-avatar-wrap:hover img { transform: scale(1.15); }
+        .md-member-name {
+            font-size: 1.35rem; font-weight: 800; color: var(--text-primary);
+            margin: 0 0 0.5rem; line-height: 1.2;
+        }
+        .md-badges { display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: center; }
+        .md-badge {
+            display: inline-block;
+            background: var(--accent-soft); color: var(--accent-primary);
+            padding: 0.25rem 0.75rem; border-radius: 999px;
+            font-size: 0.72rem; font-weight: 700;
+            font-variant-numeric: tabular-nums;
+            border: 1px solid rgba(59,130,246,0.2);
+        }
+
+        /* ── Section ── */
+        .md-section { margin-bottom: 0; }
+        .md-section + .md-section { border-top: 1px solid var(--border-light); margin-top: 0; }
+        .md-section-header {
+            display: flex; align-items: center; gap: 0.5rem;
+            padding: 0.85rem 0 0.6rem;
+            color: var(--text-muted);
+        }
+        .md-section-icon { display: flex; align-items: center; flex-shrink: 0; }
+        .md-section-title { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.09em; }
+        .md-section-body {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.85rem 1.25rem;
+            padding-bottom: 1rem;
+        }
+
+        /* ── Field ── */
+        .md-field { display: flex; flex-direction: column; gap: 0.18rem; }
+        .md-label {
+            font-size: 0.68rem; font-weight: 700;
+            text-transform: uppercase; letter-spacing: 0.07em;
+            color: var(--text-muted);
+        }
+        .md-value {
+            font-size: 0.875rem; font-weight: 500;
+            color: var(--text-primary); line-height: 1.4;
+            word-break: break-word;
+        }
+
+        /* ── Full-width field (address etc.) ── */
+        .md-field.full { grid-column: 1 / -1; }
+
+        /* ── Manager chips ── */
+        .md-manager-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+        .md-chip {
+            display: inline-block;
+            background: var(--bg-secondary); color: var(--text-secondary);
+            padding: 0.2rem 0.6rem; border-radius: var(--radius-sm);
+            font-size: 0.78rem; font-weight: 500;
+            border: 1px solid var(--border-medium);
+        }
+
+        /* ── Footer ── */
+        .md-footer {
+            flex-shrink: 0;
+            padding: 1rem 1.5rem;
+            background: var(--bg-secondary);
+            border-top: 1px solid var(--border-light);
+            display: flex; justify-content: flex-end; gap: 0.6rem; flex-wrap: wrap; align-items: center;
+        }
+        .md-btn {
+            display: inline-flex; align-items: center; gap: 0.4rem;
+            padding: 0.55rem 1.1rem; border-radius: 999px;
+            font-size: 0.82rem; font-weight: 700;
+            border: none; cursor: pointer;
+            transition: all 0.18s ease;
+            font-family: inherit;
+        }
+        .md-btn-primary { background: var(--accent-primary); color: #fff; }
+        .md-btn-primary:hover { background: var(--accent-hover); transform: translateY(-1px); }
+        .md-btn-secondary { background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border-medium); }
+        .md-btn-secondary:hover { background: var(--bg-secondary); }
+        .md-btn-danger { background: var(--danger-bg); color: var(--danger); border: 1px solid rgba(220,38,38,0.25); }
+        .md-btn-danger:hover { background: var(--danger); color: #fff; }
+        .md-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+        .md-remittance-note { font-size: 0.72rem; color: var(--text-muted); text-align: center; line-height: 1.4; padding: 0.4rem 0.75rem; }
+
+        /* ── Image preview overlay ── */
+        #md-img-preview {
+            position: fixed; inset: 0; z-index: 9999;
+            background: rgba(0,0,0,0.84);
+            display: flex; align-items: center; justify-content: center;
+            animation: mdFadeIn 0.18s ease-out;
+            backdrop-filter: blur(6px);
+            -webkit-backdrop-filter: blur(6px);
+        }
+        /* ── Photo preview ── */
+        .md-preview-image-wrap {
+            display: flex; flex-direction: column; align-items: center; gap: 1.25rem;
+            animation: mdScaleIn 0.22s cubic-bezier(0.34,1.3,0.64,1);
+        }
+        .md-preview-image-wrap img {
+            width: min(88vw, 144px * 4); max-width: min(88vw, 576px); max-height: 80vh;
+            object-fit: contain; border-radius: 14px;
+            box-shadow: 0 24px 80px rgba(0,0,0,0.65);
+        }
+        .md-preview-meta { display: flex; align-items: center; gap: 0.65rem; }
+        .md-preview-initials-sm {
+            width: 32px; height: 32px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 0.8rem; font-weight: 800; color: #fff; text-transform: uppercase;
+            letter-spacing: 0.04em; flex-shrink: 0;
+            border: 2px solid rgba(255,255,255,0.25);
+        }
+        /* ── Initials-only preview ── */
+        .md-preview-initials-wrap {
+            display: flex; flex-direction: column; align-items: center; gap: 1rem;
+            animation: mdScaleIn 0.22s cubic-bezier(0.34,1.3,0.64,1);
+        }
+        .md-preview-initials-circle {
+            width: 144px; height: 144px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 3.2rem; font-weight: 800; color: #ffffff;
+            letter-spacing: 0.04em; text-transform: uppercase; user-select: none;
+            box-shadow: 0 16px 60px rgba(0,0,0,0.45);
+            border: 3px solid rgba(255,255,255,0.18);
+        }
+        /* ── Shared name label ── */
+        .md-preview-name {
+            color: rgba(255,255,255,0.92); font-size: 1.05rem; font-weight: 600;
+            letter-spacing: 0.02em; text-shadow: 0 1px 6px rgba(0,0,0,0.6);
+        }
+        @keyframes mdScaleIn { from { transform: scale(0.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+        /* ── Mobile ── */
+        @media (max-width: 480px) {
+            .md-card { max-height: 95vh; border-radius: var(--radius-md); }
+            .md-section-body { grid-template-columns: 1fr; }
+            .md-footer { justify-content: stretch; }
+            .md-footer .md-btn { flex: 1; justify-content: center; }
+        }
+      </style>
+
+      <div id="member-details-modal">
+        <div class="md-card">
+
+          <div class="md-header">
+            <div class="md-header-title">Member Profile</div>
+            <button class="md-close-btn" id="md-close-btn" aria-label="Close">&#x2715;</button>
+          </div>
+
+          <div class="md-body">
+
+            <!-- Hero -->
+            <div class="md-hero">
+              <div class="md-avatar-wrap" id="md-avatar-wrap" ${!m.image_path ? `style="background-color: ${getAvatarColor(m.name)}"` : ''}>
+                ${avatarHtml}
+              </div>
+              <h2 class="md-member-name">${escapeHtml(m.name)}</h2>
+              <div class="md-badges">
+                <span class="md-badge">Reg No: ${padRegNo}</span>
+                ${isMeaningful(m.special_id) ? `<span class="md-badge">ID: ${escapeHtml(m.special_id)}</span>` : ''}
+              </div>
+            </div>
+
+            ${section('Personal Information', ICONS.personal, personalFields)}
+            ${section('Membership Information', ICONS.membership, membershipFields)}
+            ${section('Contact Information', ICONS.contact,
+                [
+                    fieldRow('Phone', m.mobile),
+                    fieldRow('Email', m.email),
+                    isMeaningful(m.address) ? `
+                      <div class="md-field full">
+                        <div class="md-label">Address</div>
+                        <div class="md-value">${escapeHtml(m.address.trim())}</div>
+                      </div>
+                    ` : '',
+                ].join('')
+            )}
+            ${section('Employment Information', ICONS.employment, employmentFields)}
+            ${section('Next of Kin', ICONS.nok, nokFields)}
+            ${section('Bank Details', ICONS.bank, bankFields)}
+
+          </div>
+
+          <div class="md-footer">
+            ${editBtn}
+            ${deleteBtn}
+            ${remittanceMsg}
+            ${ledgerBtn}
+          </div>
+
+        </div>
+      </div>
+    `
+
+    document.body.insertAdjacentHTML('beforeend', modalHtml)
+    
+    const modal = document.getElementById('member-details-modal')
+
+    // ── Close button ──────────────────────────────────────────────────────────
+    modal.querySelector('#md-close-btn').addEventListener('click', () => modal.remove())
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove() })
+
+    // ── Press-and-hold image preview ─────────────────────────────────────────
+    const avatarWrap = modal.querySelector('#md-avatar-wrap')
+    if (avatarWrap) {
+        let previewEl = null
+        let pressTimer = null
+
+        const showPreview = () => {
+            if (previewEl) return
+            previewEl = document.createElement('div')
+            previewEl.id = 'md-img-preview'
+            const initials = getInitials(m.name)
+            const color = getAvatarColor(m.name)
+            const photoSection = m.image_path
+                ? `<div class="md-preview-image-wrap">
+                        <img src="${m.image_path}" alt="${escapeHtml(m.name)}" draggable="false">
+                        <div class="md-preview-meta">
+                            <div class="md-preview-initials-sm" style="background-color: ${color}">${escapeHtml(initials)}</div>
+                            <div class="md-preview-name">${escapeHtml(m.name)}</div>
+                        </div>
+                    </div>`
+                : `<div class="md-preview-initials-wrap">
+                        <div class="md-preview-initials-circle" style="background-color: ${color}">${escapeHtml(initials)}</div>
+                        <div class="md-preview-name">${escapeHtml(m.name)}</div>
+                    </div>`
+            const signatureSection = m.signature_path
+                ? `<div class="md-preview-signature-wrap" style="margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--border-light); text-align: center;">
+                        <div style="font-size: 0.7rem; color: var(--text-muted); margin-bottom: 0.25rem; text-transform: uppercase; letter-spacing: 0.05em;">Signature</div>
+                        <img src="${m.signature_path}" alt="Signature" style="max-height: 3.5rem; max-width: 100%; object-fit: contain;">
+                    </div>`
+                : ''
+            previewEl.innerHTML = `<div style="display: flex; flex-direction: column; align-items: center;">${photoSection}${signatureSection}</div>`
+            document.body.appendChild(previewEl)
+        }
+
+        const hidePreview = () => {
+            if (pressTimer) { clearTimeout(pressTimer); pressTimer = null }
+            if (previewEl) { previewEl.remove(); previewEl = null }
+        }
+
+        const startPress = (e) => {
+            if (e.type === 'touchstart') e.preventDefault()
+            // Stop propagation so it doesn't trigger other clicks
+            e.stopPropagation()
+            pressTimer = setTimeout(() => { showPreview() }, 350)
+            document.addEventListener('mouseup', hidePreview, { once: true })
+            document.addEventListener('touchend', hidePreview, { once: true })
+            document.addEventListener('touchcancel', hidePreview, { once: true })
+        }
+
+        avatarWrap.addEventListener('mousedown', startPress)
+        avatarWrap.addEventListener('touchstart', startPress, { passive: false })
+
+        // Clean up listeners when modal is removed
+        const cleanup = () => {
+            hidePreview()
+        }
+        modal.querySelector('#md-close-btn').addEventListener('click', cleanup, { once: true })
+        modal.addEventListener('click', (e) => { if (e.target === modal) cleanup() }, { once: true })
+    }
+
+    // ── Edit ─────────────────────────────────────────────────────────────────
+    modal.querySelector('#edit-member-btn')?.addEventListener('click', () => {
+        modal.remove()
+        window.location.hash = `members/edit/${m.id}`
+    })
+
+    // ── Delete ────────────────────────────────────────────────────────────────
+    modal.querySelector('#delete-member-btn')?.addEventListener('click', async () => {
+        if (confirm(`Are you sure you want to completely delete ${m.name}? This action cannot be undone.`)) {
+            const btn = modal.querySelector('#delete-member-btn')
+            btn.textContent = 'Deleting...'
+            btn.disabled = true
+
+            try {
+                await deleteMember(m.id, user.username, user.cooperativeId)
+                modal.remove()
+                const { loadMembersData } = await import('./membersState.js')
+                const { renderMembersPage } = await import('./membersPage.js')
+                await loadMembersData(user)
+                const container = document.getElementById('dashboard-main-content')
+                if (container) await renderMembersPage(container, user)
+            } catch (err) {
+                btn.innerHTML = `<svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg> Delete`
+                btn.disabled = false
+                showToast('Delete failed: ' + err.message, 'error')
+            }
+        }
+    })
+
+    // ── View Ledger ───────────────────────────────────────────────────────────
+    modal.querySelector('#view-ledger-btn')?.addEventListener('click', () => {
+        modal.remove()
+        window.dispatchEvent(new CustomEvent('change-tab', { detail: { tab: 'ledger', memberId: m.id } }))
+    })
+}

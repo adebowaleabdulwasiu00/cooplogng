@@ -1,0 +1,250 @@
+import { exportDatabase, importDatabase, getSyncQueueSummary, getSyncQueueDetails, restartAllSyncItems, resetSyncQueueAndMarkUnsynced, clearSyncQueueLogs, checkDbExists, scanAndEnqueueUnsynced } from '../../services/sqliteService.js';
+import { showToast } from '../../services/toastService.js';
+
+export function renderDbManagementSection(area) {
+  area.innerHTML = `
+      <h3>Database Management</h3>
+      <p class="section-desc">Export backups, import data, and monitor background synchronization.</p>
+
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1rem; margin-bottom: 2rem;">
+        <div class="card" style="padding: 1.5rem; border: 1px solid var(--border-light); border-radius: var(--radius-md); background: var(--bg-card); width: 100%;">
+          <h4 style="margin-top: 0; color: var(--text-primary);">Backup & Restore</h4>
+          <div id="db-health-status" style="margin-bottom: 0.75rem; font-size: 0.85rem; font-weight: 600;"></div>
+          <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1.25rem;">Download a full copy of your local database or import records from a backup file.</p>
+          <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+            <button id="export-db-btn" class="primary-button" style="padding: 0.6rem 1rem; font-size: 0.85rem; flex: 1;">Export Database</button>
+            <button id="import-db-btn" class="secondary-button" style="padding: 0.6rem 1rem; font-size: 0.85rem; border: 1px solid var(--border-medium); background: transparent; color: var(--text-primary); flex: 1;">Import Database</button>
+          </div>
+          <input type="file" id="db-import-input" accept=".db,.sqlite" style="display: none;">
+        </div>
+
+        <div class="card" style="padding: 1.5rem; border: 1px solid var(--border-light); border-radius: var(--radius-md); background: var(--bg-card); width: 100%;">
+          <h4 style="margin-top: 0; color: var(--text-primary);">Sync Queue Status</h4>
+          <div id="sync-summary-container">
+            <p style="color: var(--text-muted); font-style: italic; font-size: 0.85rem;">Loading status...</p>
+          </div>
+          <div style="display: flex; gap: 0.75rem; margin-top: 1rem; flex-wrap: wrap; flex-direction: column; width: 100%;">
+            <div style="display: flex; gap: 0.75rem; width: 100%;">
+              <button id="retry-sync-btn" class="ghost-button" style="font-size: 0.8rem; color: var(--accent-primary); border-color: var(--accent-soft); flex: 1;">🔄 Restart All</button>
+              <button id="clear-sync-logs-btn" class="ghost-button" style="font-size: 0.8rem; color: var(--text-muted); flex: 1;">🗑 Clear Logs</button>
+            </div>
+            <button id="rebuild-queue-btn" class="ghost-button" style="font-size: 0.8rem; color: #e67e22; border-color: rgba(230, 126, 34, 0.3); width: 100%; margin-top: 0.5rem;">⚙️ Rebuild Sync Queue</button>
+          </div>
+        </div>
+      </div>
+
+      <h4>Recent Sync Activity</h4>
+      <div id="sync-history-container" class="table-responsive">
+        <p style="color: var(--text-muted); font-style: italic; font-size: 0.85rem;">Loading history...</p>
+      </div>
+
+      <div id="import-progress-modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center; padding: 1rem;">
+        <div class="card" style="width: 100%; max-width: 400px; padding: 2rem; background: var(--bg-card); border-radius: var(--radius-lg); border: 1px solid var(--border-light);">
+          <h4 style="margin-top: 0; color: var(--text-primary);">Importing Data...</h4>
+          <p id="import-status-text" style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">Processing records...</p>
+          <div style="height: 8px; background: var(--bg-secondary); border-radius: 4px; overflow: hidden; margin-bottom: 0.5rem;">
+            <div id="import-progress-bar" style="width: 0%; height: 100%; background: var(--accent-primary); transition: width 0.3s;"></div>
+          </div>
+        </div>
+      </div>
+    `;
+}
+
+export function setupDbManagementListeners(user, cooperativeId, container) {
+  const exportBtn = document.getElementById('export-db-btn');
+  const importBtn = document.getElementById('import-db-btn');
+  const importInput = document.getElementById('db-import-input');
+  const summaryContainer = document.getElementById('sync-summary-container');
+  const historyContainer = document.getElementById('sync-history-container');
+  const retryBtn = document.getElementById('retry-sync-btn');
+  const clearBtn = document.getElementById('clear-sync-logs-btn');
+  const rebuildBtn = document.getElementById('rebuild-queue-btn');
+
+  const refreshStatus = async () => {
+    try {
+      const dbExists = await checkDbExists();
+      const healthDiv = document.getElementById('db-health-status');
+      if (healthDiv) {
+        healthDiv.innerHTML = dbExists
+          ? '<span style="color: var(--success);">✅ Local Database Found</span>'
+          : '<span style="color: var(--danger);">❌ No Local Data Found</span>';
+      }
+
+      const summary = await getSyncQueueSummary();
+      summaryContainer.innerHTML = `
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; font-size: 0.9rem;">
+            <div style="color: var(--text-muted);">Pending: <span style="font-weight: 600; color: var(--text-primary);">${summary.pending}</span></div>
+            <div style="color: var(--text-muted);">Processing: <span style="font-weight: 600; color: var(--accent-primary);">${summary.processing || 0}</span></div>
+            <div style="color: var(--text-muted);">Failed: <span style="font-weight: 600; color: var(--danger);">${summary.failed}</span></div>
+            <div style="color: var(--text-muted);">Total Logs: <span style="font-weight: 600; color: var(--text-muted);">${summary.total}</span></div>
+          </div>
+        `;
+
+      const history = await getSyncQueueDetails(10);
+      if (history.length === 0) {
+        historyContainer.innerHTML = '<p style="color: var(--text-muted); font-style: italic; font-size: 0.85rem;">No recent activity.</p>';
+      } else {
+        historyContainer.innerHTML = `
+            <table class="crud-table" style="font-size: 0.75rem;">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Entity</th>
+                  <th>Operation</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${history.map(item => `
+                  <tr>
+                    <td style="color: var(--text-muted);">${new Date(item.created_at).toLocaleTimeString()}</td>
+                    <td><span style="text-transform: capitalize;">${item.entity}</span></td>
+                    <td><span style="text-transform: uppercase; font-size: 0.7rem; font-weight: 600;">${item.operation_type}</span></td>
+                    <td>
+                      <span style="padding: 0.1rem 0.4rem; border-radius: 4px; font-weight: 600; font-size: 0.7rem;
+                        background: ${item.status === 'completed' ? 'var(--success-bg)' : (item.status === 'failed' ? 'var(--danger-bg)' : 'var(--bg-secondary)')};
+                        color: ${item.status === 'completed' ? 'var(--success)' : (item.status === 'failed' ? 'var(--danger)' : 'var(--text-muted)')};">
+                        ${item.status}
+                      </span>
+                    </td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          `;
+      }
+    } catch (err) {
+      console.error('Failed to refresh sync status:', err);
+    }
+  };
+
+  exportBtn?.addEventListener('click', async () => {
+    try {
+      exportBtn.disabled = true; exportBtn.innerText = 'Exporting...';
+      const data = await exportDatabase();
+      const blob = new Blob([data], { type: 'application/x-sqlite3' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16);
+      a.href = url;
+      a.download = `cooperative_backup_${ts}.db`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      showToast('Export failed: ' + err.message, 'error');
+    } finally {
+      exportBtn.disabled = false; exportBtn.innerText = 'Export Database';
+    }
+  });
+
+  importBtn?.addEventListener('click', () => importInput.click());
+
+  importInput?.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    if (!confirm('Importing will merge records from the backup file and queue them for cloud upload. This may take a moment. Continue?')) {
+      importInput.value = '';
+      return;
+    }
+
+    const modal = document.getElementById('import-progress-modal');
+    const bar = document.getElementById('import-progress-bar');
+    const statusText = document.getElementById('import-status-text');
+
+    try {
+      modal.style.display = 'flex';
+      statusText.innerText = 'Reading file...';
+      bar.style.width = '10%';
+
+      const buffer = await file.arrayBuffer();
+      bar.style.width = '30%';
+      statusText.innerText = 'Merging records...';
+
+      const stats = await importDatabase(buffer, cooperativeId);
+      bar.style.width = '70%';
+
+      const importedCount = Object.values(stats).reduce((a, b) => a + b, 0);
+      statusText.innerText = `Queuing ${importedCount} records for sync...`;
+
+      const enqueued = await scanAndEnqueueUnsynced(cooperativeId);
+      bar.style.width = '100%';
+
+      showToast(`Import successful!\n\nRecords merged:\n${Object.entries(stats).filter(([_, v]) => v > 0).map(([k, v]) => `- ${k}: ${v}`).join('\n')}\n\nTotal records enqueued for sync: ${enqueued}`, 'success');
+    } catch (err) {
+      showToast('Import failed: ' + err.message, 'error');
+    } finally {
+      modal.style.display = 'none';
+      importInput.value = '';
+      refreshStatus();
+    }
+  });
+
+  retryBtn?.addEventListener('click', async () => {
+    try {
+      retryBtn.disabled = true;
+      const originalText = retryBtn.innerHTML;
+      retryBtn.innerHTML = '🔄 Restarting...';
+      await restartAllSyncItems();
+      
+      // Trigger sync asynchronously in the background so the UI is responsive immediately
+      import('../../services/syncService.js').then(({ pushQueue }) => {
+        pushQueue(cooperativeId);
+      }).catch(err => {
+        console.warn('[DbManagement] Failed to trigger pushQueue after restart:', err);
+      });
+      
+      showToast('All sync operations restarted successfully', 'success');
+      refreshStatus();
+      retryBtn.innerHTML = originalText;
+    } catch (err) {
+      showToast('Restart failed: ' + err.message, 'error');
+    } finally {
+      retryBtn.disabled = false;
+    }
+  });
+
+  rebuildBtn?.addEventListener('click', async () => {
+    if (!confirm('Rebuilding will clear the active queue, mark all queued items as unsynced in their tables, and re-enqueue them fresh. Continue?')) return;
+    try {
+      rebuildBtn.disabled = true;
+      const originalText = rebuildBtn.innerHTML;
+      rebuildBtn.innerHTML = '⚙️ Rebuilding...';
+      const enqueuedCount = await resetSyncQueueAndMarkUnsynced(cooperativeId);
+      
+      // Trigger sync asynchronously in the background immediately
+      import('../../services/syncService.js').then(({ pushQueue }) => {
+        pushQueue(cooperativeId);
+      }).catch(err => {
+        console.warn('[DbManagement] Failed to trigger pushQueue after rebuild:', err);
+      });
+      
+      showToast(`Sync queue rebuilt successfully! Enqueued ${enqueuedCount} items.`, 'success');
+      refreshStatus();
+      rebuildBtn.innerHTML = originalText;
+    } catch (err) {
+      showToast('Rebuild failed: ' + err.message, 'error');
+    } finally {
+      rebuildBtn.disabled = false;
+    }
+  });
+
+  clearBtn?.addEventListener('click', async () => {
+    if (!confirm('Clear all completed and failed sync logs? This only removes the logs, not the synced data.')) return;
+    await clearSyncQueueLogs();
+    showToast('Sync logs cleared successfully', 'success');
+    refreshStatus();
+  });
+
+  refreshStatus();
+  const poller = setInterval(refreshStatus, 5000);
+
+  // Cleanup poller when section changes
+  const observer = new MutationObserver((mutations) => {
+    if (!document.getElementById('export-db-btn')) {
+      clearInterval(poller);
+      observer.disconnect();
+    }
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
+}

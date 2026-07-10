@@ -1,0 +1,17 @@
+{
+  "name": "Cooperative Log App",
+  "short_name": "CoopLog",
+  "description": "Professional Offline-First Cooperative Management System",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#3b82f6",
+  "icons": [
+    {
+      "src": "/logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

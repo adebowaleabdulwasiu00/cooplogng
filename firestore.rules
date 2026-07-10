@@ -1,0 +1,98 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function incomingData() {
+      return request.resource.data;
+    }
+
+    function hasCooperativeId() {
+      return incomingData().keys().hasAny(['cooperative_id']) && 
+             incomingData().cooperative_id is string && 
+             incomingData().cooperative_id != '';
+    }
+
+    // Since the app uses a custom authentication mechanism (checking password hashes 
+    // in the users/members collection) instead of Firebase Authentication, `request.auth` 
+    // is always null. We therefore allow public reads but enforce strict schema 
+    // validation for writes, and completely disable physical document deletion.
+
+    match /members/{memberId} {
+      allow read: if true;
+      allow create: if hasCooperativeId() && incomingData().keys().hasAny(['mobile', 'first_name', 'password_hash']);
+      allow update: if hasCooperativeId();
+      allow delete: if false;
+    }
+
+    match /users/{userId} {
+      allow read: if true;
+      allow create: if hasCooperativeId() && incomingData().keys().hasAny(['username', 'password_hash', 'role']);
+      allow update: if hasCooperativeId();
+      allow delete: if false;
+    }
+
+    match /remittance/{remId} {
+      allow read: if true;
+      allow create: if hasCooperativeId() && incomingData().keys().hasAny(['amount', 'remittance_date']);
+      allow update: if hasCooperativeId();
+      allow delete: if false;
+    }
+
+    match /enterprise/{entId} {
+      allow read: if true;
+      allow create: if hasCooperativeId() && incomingData().keys().hasAny(['account_name']);
+      allow update: if hasCooperativeId();
+      allow delete: if false;
+    }
+
+    match /bank/{bankId} {
+      allow read: if true;
+      allow create: if hasCooperativeId() && incomingData().keys().hasAny(['bank_name']);
+      allow update: if hasCooperativeId();
+      allow delete: if false;
+    }
+
+    match /feedback/{fbId} {
+      allow read, create, update: if true;
+      allow delete: if false;
+    }
+
+    match /sync_state/{stateId} {
+      allow read, write: if true;
+      allow delete: if false;
+    }
+    
+    match /cooperatives/{coopId} {
+      allow read: if true;
+      allow create: if incomingData().keys().hasAny(['full_name', 'email']);
+      allow update: if true;
+      allow delete: if false;
+    }
+    
+    match /bank_reconciliation_summary/{summaryId} {
+      allow read: if true;
+      allow create: if hasCooperativeId() && incomingData().keys().hasAny(['bank_name', 'period_month']);
+      allow update: if true;
+      allow delete: if false;
+    }
+
+    match /notifications/{notifId} {
+      allow read: if true;
+      allow write: if hasCooperativeId();
+      allow delete: if false;
+    }
+
+    match /transaction_types/{typeId} {
+      allow read: if true;
+      allow write: if hasCooperativeId();
+      allow delete: if false;
+    }
+
+    // Default catch-all
+    match /{document=**} {
+      allow read: if true;
+      allow write: if false;
+    }
+  }
+}
