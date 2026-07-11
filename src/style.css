@@ -1723,6 +1723,13 @@ h1 {
     transform: translateX(0);
   }
 
+  .sidebar-footer {
+    padding: 0.75rem 1rem !important;
+  }
+  .sidebar-footer > div:last-child {
+    margin-top: 0.5rem !important;
+  }
+
   .dashboard-page-header {
     display: none !important;
   }
