@@ -172,11 +172,42 @@ async function _deltaSync() {
     const cooperativeId = _session.cooperative_id || _session.cooperativeId
     if (!cooperativeId) return
 
-    const { getSyncMeta, updateSyncMeta, queryRows, getPendingQueue, saveMany } = await import('./sqliteService.js')
+    const { getSyncMeta, updateSyncMeta, queryRows, getPendingQueue, saveMany, getUnsyncedCollections, markCollectionSynced, markCollectionUnsynced } = await import('./sqliteService.js')
 
     const meta = await getSyncMeta(cooperativeId)
 
-    if (!meta?.is_full_sync_complete) return _initialSyncInternal()
+    if (!meta?.is_full_sync_complete) {
+        const unsynced = await getUnsyncedCollections(cooperativeId)
+        if (unsynced.length > 0) {
+            console.log(`[BgSync] Resuming incomplete sync. Collections remaining: ${unsynced.join(', ')}`)
+            for (const col of unsynced) {
+                try {
+                    await markCollectionUnsynced(cooperativeId, col)
+                    const docs = await _fetchCollection(col, cooperativeId, 0)
+                    if (docs.length > 0) {
+                        await saveMany(col, docs)
+                    }
+                    await markCollectionSynced(cooperativeId, col)
+                    console.log(`[BgSync] Synced incomplete collection: ${col} (${docs.length} docs)`)
+                } catch (err) {
+                    console.error(`[BgSync] Failed to sync incomplete collection ${col}:`, err)
+                }
+            }
+            const remaining = await getUnsyncedCollections(cooperativeId)
+            if (remaining.length === 0) {
+                await updateSyncMeta(cooperativeId, {
+                    is_full_sync_complete: 1,
+                    last_sync_ts: Date.now(),
+                    schema_version: CURRENT_SCHEMA_VERSION
+                })
+                syncBus.emit(SyncEvents.SYNC_COMPLETED, createSyncPayload(SyncEvents.SYNC_COMPLETED, {
+                    count: 0, cooperativeId, isInitial: true
+                }))
+                console.log('[BgSync] Incomplete sync fully resumed.')
+            }
+        }
+        return
+    }
 
     const lastSyncTs = meta.last_sync_ts || 0
     const syncStartTs = Date.now()
@@ -318,7 +349,7 @@ async function _initialSyncInternal(forceFull = false) {
 
     syncBus.emit(SyncEvents.SYNC_STARTED, createSyncPayload(SyncEvents.SYNC_STARTED, { cooperativeId }))
 
-    const { runSql, saveMany, getAllForCoop, queryRows, updateSyncMeta, getSyncMeta } = await import('./sqliteService.js')
+    const { runSql, saveMany, getAllForCoop, queryRows, updateSyncMeta, getSyncMeta, markCollectionSynced, markCollectionUnsynced } = await import('./sqliteService.js')
 
     try {
         console.log(`[BgSync] Starting initial sync. forceFull=${forceFull}`);
@@ -344,29 +375,37 @@ async function _initialSyncInternal(forceFull = false) {
             }
         }
 
+        await markCollectionUnsynced(cooperativeId, 'enterprise')
         console.log('[BgSync] Fetching enterprise...');
         const tEntStart = Date.now();
         const enterprises = await _fetchCollection('enterprise', cooperativeId, 0)
         console.log(`[BgSync] Fetched ${enterprises.length} enterprises in ${Date.now() - tEntStart}ms`);
         await saveMany('enterprise', enterprises)
+        await markCollectionSynced(cooperativeId, 'enterprise')
 
+        await markCollectionUnsynced(cooperativeId, 'bank')
         console.log('[BgSync] Fetching bank...');
         const tBankStart = Date.now();
         const banks = await _fetchCollection('bank', cooperativeId, 0)
         console.log(`[BgSync] Fetched ${banks.length} banks in ${Date.now() - tBankStart}ms`);
         await saveMany('bank', banks)
+        await markCollectionSynced(cooperativeId, 'bank')
 
+        await markCollectionUnsynced(cooperativeId, 'cooperatives')
         console.log('[BgSync] Fetching cooperatives...');
         const tCoopsStart = Date.now();
         const coops = await _fetchCollection('cooperatives', cooperativeId, 0)
         console.log(`[BgSync] Fetched ${coops.length} cooperatives in ${Date.now() - tCoopsStart}ms`);
         await saveMany('cooperatives', coops)
+        await markCollectionSynced(cooperativeId, 'cooperatives')
 
+        await markCollectionUnsynced(cooperativeId, 'transaction_types')
         console.log('[BgSync] Fetching transaction_types...');
         const tTTStart = Date.now();
         const transactionTypes = await _fetchCollection('transaction_types', cooperativeId, 0)
         console.log(`[BgSync] Fetched ${transactionTypes.length} transaction_types in ${Date.now() - tTTStart}ms`);
         await saveMany('transaction_types', transactionTypes)
+        await markCollectionSynced(cooperativeId, 'transaction_types')
 
         if (transactionTypes.length === 0) {
             console.log('[BgSync] transaction_types is empty. Initializing defaults...');
@@ -375,39 +414,49 @@ async function _initialSyncInternal(forceFull = false) {
             await initializeDefaultTransactionTypes(cooperativeId, userId)
         }
 
+        await markCollectionUnsynced(cooperativeId, 'members')
         console.log('[BgSync] Fetching members...');
         const tMemStart = Date.now();
         const members = await _fetchCollection('members', cooperativeId, 0)
         console.log(`[BgSync] Fetched ${members.length} members in ${Date.now() - tMemStart}ms`);
         await saveMany('members', members)
+        await markCollectionSynced(cooperativeId, 'members')
 
         const { isAdmin, isStaff } = _getSyncScope(_session)
         let users = []
         if (isAdmin || isStaff) {
+            await markCollectionUnsynced(cooperativeId, 'users')
             console.log('[BgSync] Fetching users (Admin/Staff only)...');
             const tUserStart = Date.now();
             users = await _fetchCollection('users', cooperativeId, 0)
             console.log(`[BgSync] Fetched ${users.length} users in ${Date.now() - tUserStart}ms`);
             await saveMany('users', users)
+            await markCollectionSynced(cooperativeId, 'users')
+        } else {
+            await markCollectionSynced(cooperativeId, 'users')
         }
 
+        await markCollectionUnsynced(cooperativeId, 'remittance')
         console.log('[BgSync] Fetching remittance...');
         const tRemStart = Date.now();
         const remittances = await _fetchCollection('remittance', cooperativeId, 0)
         console.log(`[BgSync] Fetched ${remittances.length} remittances in ${Date.now() - tRemStart}ms`);
         await saveMany('remittance', remittances)
+        await markCollectionSynced(cooperativeId, 'remittance')
+
+        await markCollectionUnsynced(cooperativeId, 'notifications')
+        console.log('[BgSync] Fetching notifications...');
+        const tNotStart = Date.now();
+        const notifications = await _fetchCollection('notifications', cooperativeId, 0)
+        console.log(`[BgSync] Fetched ${notifications.length} notifications in ${Date.now() - tNotStart}ms`);
+        await saveMany('notifications', notifications)
+        await markCollectionSynced(cooperativeId, 'notifications')
 
         await updateSyncMeta(cooperativeId, {
             is_full_sync_complete: 1,
             last_sync_ts: Date.now(),
             schema_version: CURRENT_SCHEMA_VERSION
         })
-
-        console.log('[BgSync] Fetching notifications...');
-        const tNotStart = Date.now();
-        const notifications = await _fetchCollection('notifications', cooperativeId, 0)
-        console.log(`[BgSync] Fetched ${notifications.length} notifications in ${Date.now() - tNotStart}ms`);
-        await saveMany('notifications', notifications)
 
         const { setAppSetting } = await import('./sqliteService.js')
         const currentUser = _session.username || _session.user_id || _session.member_id

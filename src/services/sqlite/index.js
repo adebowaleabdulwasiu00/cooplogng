@@ -30,7 +30,8 @@ export {
     deleteLocalSession, isAvailable, setAppSetting, getAppSetting
 } from './sessions.js'
 export {
-    isSynced, updateSyncState, updateSyncMeta, getSyncMeta
+    isSynced, updateSyncState, updateSyncMeta, getSyncMeta,
+    markCollectionSynced, markCollectionUnsynced, getUnsyncedCollections, SYNC_COLLECTIONS
 } from './syncState.js'
 export {
     enqueueWrite, updateQueueStatus, hasPendingWrites, checkDbExists,
