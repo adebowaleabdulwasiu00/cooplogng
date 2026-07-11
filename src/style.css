@@ -1710,7 +1710,6 @@ h1 {
     bottom: 0 !important;
     left: 0;
     width: 280px;
-    height: 100vh !important;
     z-index: 995;
     transform: translateX(-100%);
     box-shadow: var(--shadow-xl);
