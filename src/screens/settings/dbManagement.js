@@ -1,5 +1,6 @@
-import { exportDatabase, importDatabase, getSyncQueueSummary, getSyncQueueDetails, restartAllSyncItems, resetSyncQueueAndMarkUnsynced, clearSyncQueueLogs, checkDbExists, scanAndEnqueueUnsynced } from '../../services/sqliteService.js';
+import { exportDatabase, importDatabase, getSyncQueueSummary, getSyncQueueDetails, restartAllSyncItems, resetSyncQueueAndMarkUnsynced, clearSyncQueueLogs, checkDbExists, scanAndEnqueueUnsynced, getSyncMeta, markCollectionSynced, markCollectionUnsynced } from '../../services/sqliteService.js';
 import { showToast } from '../../services/toastService.js';
+import { SYNC_COLLECTIONS } from '../../services/sqlite/syncState.js';
 
 export function renderDbManagementSection(area) {
   area.innerHTML = `
@@ -16,6 +17,14 @@ export function renderDbManagementSection(area) {
             <button id="import-db-btn" class="secondary-button" style="padding: 0.6rem 1rem; font-size: 0.85rem; border: 1px solid var(--border-medium); background: transparent; color: var(--text-primary); flex: 1;">Import Database</button>
           </div>
           <input type="file" id="db-import-input" accept=".db,.sqlite" style="display: none;">
+        </div>
+
+        <div class="card" style="padding: 1.5rem; border: 1px solid var(--border-light); border-radius: var(--radius-md); background: var(--bg-card); width: 100%;">
+          <h4 style="margin-top: 0; color: var(--text-primary);">Initial Cloud Pull Status</h4>
+          <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">Shows whether each data set has been fully downloaded from the cloud.</p>
+          <div id="initial-sync-status-container">
+            <p style="color: var(--text-muted); font-style: italic; font-size: 0.85rem;">Loading...</p>
+          </div>
         </div>
 
         <div class="card" style="padding: 1.5rem; border: 1px solid var(--border-light); border-radius: var(--radius-md); background: var(--bg-card); width: 100%;">
@@ -68,6 +77,43 @@ export function setupDbManagementListeners(user, cooperativeId, container) {
         healthDiv.innerHTML = dbExists
           ? '<span style="color: var(--success);">✅ Local Database Found</span>'
           : '<span style="color: var(--danger);">❌ No Local Data Found</span>';
+      }
+
+      const syncMeta = await getSyncMeta(cooperativeId);
+      const syncStatusContainer = document.getElementById('initial-sync-status-container');
+      if (syncStatusContainer) {
+        const collections = (syncMeta && syncMeta.collections) || {}
+        const syncedCount = SYNC_COLLECTIONS.filter(name => collections[name] === 1).length
+        const totalCount = SYNC_COLLECTIONS.length
+        const allComplete = syncedCount === totalCount
+        const pct = totalCount > 0 ? Math.round((syncedCount / totalCount) * 100) : 0
+
+        syncStatusContainer.innerHTML = `
+          <div style="margin-bottom: 1rem;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
+              <span style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">
+                ${allComplete ? '✅ All Data Pulled' : '⏳ Downloading...'}
+              </span>
+              <span style="font-size: 0.8rem; color: var(--text-muted);">${syncedCount}/${totalCount}</span>
+            </div>
+            <div style="height: 6px; background: var(--bg-secondary); border-radius: 3px; overflow: hidden;">
+              <div style="width: ${pct}%; height: 100%; background: ${allComplete ? 'var(--success)' : 'var(--accent-primary)'}; border-radius: 3px; transition: width 0.5s;"></div>
+            </div>
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.35rem; font-size: 0.8rem;">
+            ${SYNC_COLLECTIONS.map(name => {
+              const done = collections[name] === 1
+              const label = name.charAt(0).toUpperCase() + name.slice(1)
+              return `
+                <div style="display: flex; align-items: center; gap: 0.4rem; color: var(--text-muted);">
+                  <span style="width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+                    background: ${done ? 'var(--success)' : 'var(--warning)'};"></span>
+                  <span style="${done ? 'color: var(--text-primary);' : ''}">${label}</span>
+                </div>
+              `
+            }).join('')}
+          </div>
+        `
       }
 
       const summary = await getSyncQueueSummary();
