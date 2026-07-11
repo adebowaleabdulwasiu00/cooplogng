@@ -1423,15 +1423,7 @@ function updateMobileFab() {
   
   const isAdmin = hasPermission(state.welcomeUser.permissions, 'admin') || String(state.welcomeUser.username || '').toLowerCase() === 'admin';
   
-  if (state.activeTab === 'dashboard') {
-    fabContainer.innerHTML = `
-      <button class="mobile-fab" data-action="withdrawal-request" title="Request Withdrawal">
-        <svg width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"></path>
-        </svg>
-      </button>
-    `;
-  } else if (state.activeTab === 'members') {
+  if (state.activeTab === 'members') {
     const canCreate = isAdmin || hasPermission(state.welcomeUser.permissions, 'create_member');
     let html = '';
     

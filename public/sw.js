@@ -1,4 +1,6 @@
-const CACHE_NAME = 'cooplog-v4'
+// Extract version from service worker URL (set in index.html via SW_BUILD)
+const SW_VERSION = new URL(self.location).searchParams.get('v') || '1';
+const CACHE_NAME = 'cooplog-v' + SW_VERSION
 const ASSETS_TO_CACHE = [
   './',
   './index.html',

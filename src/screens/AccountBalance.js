@@ -3,6 +3,7 @@ import { hasPermission } from '../services/permissionService.js'
 import { formatCurrency, escapeHtml } from '../utils/formatters.js'
 import { getPendingQueue, queryRows } from '../services/sqliteService.js'
 import { showToast } from '../services/toastService.js'
+import { showWithdrawalWizard } from '../components/WithdrawalWizard.js'
 
 // ─── Classification Helpers ─────────────────────────────────────────────────
 function isDashboardIncome(cls) {
@@ -458,6 +459,11 @@ export async function renderAccountBalance(container, user) {
                     grid-template-columns: repeat(4, 1fr);
                 }
             }
+            @media (max-width: 767px) {
+                .fab-container {
+                    bottom: calc(64px + 1rem) !important;
+                }
+            }
             
             .fab-container {
                 position: fixed;
@@ -522,13 +528,16 @@ export async function renderAccountBalance(container, user) {
                 items.push({ action: 'log', icon: '💰', label: 'Log Remittance' });
                 items.push({ action: 'reports', icon: '📊', label: 'Reports' });
                 items.push({ action: 'settings', icon: '⚙️', label: 'Settings' });
+                items.push({ action: 'withdrawal-request', icon: '💸', label: 'Withdrawal Request' });
               } else if (isStaff) {
                 items.push({ action: 'members', icon: '👥', label: 'Add Member' });
                 items.push({ action: 'log', icon: '💰', label: 'Log Payment' });
                 items.push({ action: 'reports', icon: '📊', label: 'Reports' });
+                items.push({ action: 'withdrawal-request', icon: '💸', label: 'Withdrawal Request' });
               } else {
                 items.push({ action: 'ledger', icon: '📈', label: 'My Ledger' });
                 items.push({ action: 'history', icon: '📜', label: 'History' });
+                items.push({ action: 'withdrawal-request', icon: '💸', label: 'Withdrawal Request' });
               }
               return items.map(item => `
                 <button class="fab-item" data-quick-action="${item.action}" style="padding: 0.6rem 1rem; border-radius: 0.75rem; background: var(--bg-card); border: 1px solid var(--border-light); font-weight: 600; cursor: pointer; color: var(--text-primary); box-shadow: 0 2px 8px rgba(0,0,0,0.15); white-space: nowrap; display: flex; align-items: center; gap: 0.5rem;">
@@ -868,6 +877,9 @@ export async function renderAccountBalance(container, user) {
                     window.location.hash = 'ledger/summary'
                 } else if (action === 'history') {
                     window.location.hash = 'history'
+                } else if (action === 'withdrawal-request') {
+                    showWithdrawalWizard();
+                    return;
                 }
                 window.dispatchEvent(new Event('hashchange'))
             })

@@ -661,12 +661,6 @@ h1 {
   box-shadow: var(--shadow-md);
 }
 
-.sidebar-footer {
-  padding: 1.5rem;
-  border-top: 1px solid var(--border-light);
-  background: var(--bg-sidebar);
-}
-
 .main-content {
   flex: 1;
   margin-left: 280px;

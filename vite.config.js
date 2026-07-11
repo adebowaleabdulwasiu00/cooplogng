@@ -27,5 +27,11 @@ export default defineConfig({
       }
     }
   },
+  plugins: [{
+    name: 'sw-build-version',
+    transformIndexHtml(html) {
+      return html.replace('/*__SW_BUILD__*/ 1', '/*__SW_BUILD__*/ ' + Date.now());
+    }
+  }],
 })
 
