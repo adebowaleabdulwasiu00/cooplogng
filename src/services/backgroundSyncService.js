@@ -621,6 +621,35 @@ export async function triggerFullSync(session) {
     await _initialSyncInternal(true)
 }
 
+export async function triggerFullResync(session) {
+    _session = session
+    const cooperativeId = session.cooperative_id || session.cooperativeId
+    const result = { pushed: 0, error: null }
+
+    // Step 1: Push any pending local changes to Firestore first
+    try {
+        const { pushQueue, getPendingQueue } = await import('./syncService.js')
+        const pendingCount = (await getPendingQueue(cooperativeId)).length
+        if (pendingCount > 0) {
+            console.log(`[BgSync] Full resync: pushing ${pendingCount} pending local changes first...`)
+            await pushQueue(cooperativeId)
+            const remaining = await getPendingQueue(cooperativeId)
+            result.pushed = pendingCount - remaining.length
+            if (remaining.length > 0) {
+                console.warn(`[BgSync] Full resync: ${remaining.length} items could not be pushed, proceeding with re-sync anyway`)
+            }
+        }
+    } catch (err) {
+        console.warn('[BgSync] Full resync: push failed, proceeding with re-sync anyway:', err.message)
+        result.error = err.message
+    }
+
+    // Step 2: Clear local cache and re-download everything from Firestore
+    await _initialSyncInternal(true)
+
+    return result
+}
+
 export async function triggerDeltaSync(session) {
     _session = session
     await _deltaSync()

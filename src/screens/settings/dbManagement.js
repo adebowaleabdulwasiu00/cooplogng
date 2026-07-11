@@ -1,6 +1,7 @@
 import { exportDatabase, importDatabase, getSyncQueueSummary, getSyncQueueDetails, restartAllSyncItems, resetSyncQueueAndMarkUnsynced, clearSyncQueueLogs, checkDbExists, scanAndEnqueueUnsynced, getSyncMeta, markCollectionSynced, markCollectionUnsynced } from '../../services/sqliteService.js';
 import { showToast } from '../../services/toastService.js';
 import { SYNC_COLLECTIONS } from '../../services/sqlite/syncState.js';
+import { triggerFullResync } from '../../services/backgroundSyncService.js';
 
 export function renderDbManagementSection(area) {
   area.innerHTML = `
@@ -25,6 +26,9 @@ export function renderDbManagementSection(area) {
           <div id="initial-sync-status-container">
             <p style="color: var(--text-muted); font-style: italic; font-size: 0.85rem;">Loading...</p>
           </div>
+          <button id="force-resync-btn" class="ghost-button" style="margin-top: 1rem; font-size: 0.8rem; color: #e67e22; border-color: rgba(230, 126, 34, 0.3); width: 100%; padding: 0.6rem;">
+            🔄 Force Full Re-Sync
+          </button>
         </div>
 
         <div class="card" style="padding: 1.5rem; border: 1px solid var(--border-light); border-radius: var(--radius-md); background: var(--bg-card); width: 100%;">
@@ -280,6 +284,26 @@ export function setupDbManagementListeners(user, cooperativeId, container) {
     await clearSyncQueueLogs();
     showToast('Sync logs cleared successfully', 'success');
     refreshStatus();
+  });
+
+  const forceResyncBtn = document.getElementById('force-resync-btn');
+  forceResyncBtn?.addEventListener('click', async () => {
+    if (!confirm('This will push any pending local changes to the cloud, then clear your local database and re-download everything from scratch. Continue?')) return;
+    try {
+      forceResyncBtn.disabled = true;
+      forceResyncBtn.innerHTML = '⏳ Pushing local changes...';
+      const result = await triggerFullResync(user);
+      const msg = result.pushed > 0
+        ? `Pushed ${result.pushed} pending change(s) before re-sync.`
+        : 'No pending changes to push.';
+      showToast(`Full re-sync complete. ${msg}`, 'success');
+      refreshStatus();
+    } catch (err) {
+      showToast('Full re-sync failed: ' + err.message, 'error');
+    } finally {
+      forceResyncBtn.disabled = false;
+      forceResyncBtn.innerHTML = '🔄 Force Full Re-Sync';
+    }
   });
 
   refreshStatus();
