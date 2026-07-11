@@ -174,7 +174,20 @@ async function _deltaSync() {
 
     const { getSyncMeta, updateSyncMeta, queryRows, getPendingQueue, saveMany, getUnsyncedCollections, markCollectionSynced, markCollectionUnsynced } = await import('./sqliteService.js')
 
-    const meta = await getSyncMeta(cooperativeId)
+    let meta = await getSyncMeta(cooperativeId)
+
+    // If a different-scope user last synced, reset so we re-download everything for this scope
+    const currentScope = _getSessionScopeId()
+    if (meta && meta.last_sync_scope && currentScope && meta.last_sync_scope !== currentScope) {
+        console.log(`[BgSync] Sync scope changed from "${meta.last_sync_scope}" to "${currentScope}". Triggering fresh full sync.`)
+        await updateSyncMeta(cooperativeId, {
+            is_full_sync_complete: 0,
+            collections: null,
+            last_sync_ts: 0,
+            last_sync_scope: currentScope
+        })
+        meta = null
+    }
 
     if (!meta?.is_full_sync_complete) {
         const unsynced = await getUnsyncedCollections(cooperativeId)
@@ -198,7 +211,8 @@ async function _deltaSync() {
                 await updateSyncMeta(cooperativeId, {
                     is_full_sync_complete: 1,
                     last_sync_ts: Date.now(),
-                    schema_version: CURRENT_SCHEMA_VERSION
+                    schema_version: CURRENT_SCHEMA_VERSION,
+                    last_sync_scope: _getSessionScopeId()
                 })
                 syncBus.emit(SyncEvents.SYNC_COMPLETED, createSyncPayload(SyncEvents.SYNC_COMPLETED, {
                     count: 0, cooperativeId, isInitial: true
@@ -455,7 +469,8 @@ async function _initialSyncInternal(forceFull = false) {
         await updateSyncMeta(cooperativeId, {
             is_full_sync_complete: 1,
             last_sync_ts: Date.now(),
-            schema_version: CURRENT_SCHEMA_VERSION
+            schema_version: CURRENT_SCHEMA_VERSION,
+            last_sync_scope: _getSessionScopeId()
         })
 
         const { setAppSetting } = await import('./sqliteService.js')
@@ -490,6 +505,17 @@ async function _initialSyncInternal(forceFull = false) {
 }
 
 // ─── Firestore Helpers ────────────────────────────────────────────────────────
+
+function _getSessionScopeId() {
+    if (!_session) return ''
+    const { isAdmin, isStaff, isMember } = _getSyncScope(_session)
+    if (isAdmin || isStaff) return 'admin-staff'
+    if (isMember) {
+        const uid = (_session.user_id || _session.userId || _session.member_id || _session.memberId || _session.id || '').toString()
+        return 'member:' + uid
+    }
+    return ''
+}
 
 function _getSyncScope(session) {
     const role = (session.role || '').toLowerCase()
