@@ -4,15 +4,8 @@ echo ------------------------------------------
 echo   FIREBASE DEPLOYMENT SCRIPT
 echo ------------------------------------------
 
-:: 1. Pull latest code from git
-echo [1/5] Pulling latest code from git...
-call git pull
-if %ERRORLEVEL% neq 0 (
-    echo WARNING: git pull failed. Continuing with local files...
-)
-
-:: 2. Environment Check
-echo [2/5] Checking Node.js...
+:: 1. Environment Check
+echo [1/4] Checking Node.js...
 node -v
 if %ERRORLEVEL% neq 0 (
     echo ERROR: Node.js is not installed. 
@@ -21,8 +14,8 @@ if %ERRORLEVEL% neq 0 (
     exit /b
 )
 
-:: 3. Install Dependencies
-echo [3/5] Installing dependencies (npm install)...
+:: 2. Install Dependencies
+echo [2/4] Installing dependencies (npm install)...
 call npm install
 if %ERRORLEVEL% neq 0 (
     echo ERROR: npm install failed.
@@ -30,8 +23,8 @@ if %ERRORLEVEL% neq 0 (
     exit /b
 )
 
-:: 4. Build Web App
-echo [4/5] Building project (npm run build)...
+:: 3. Build Web App
+echo [3/4] Building project (npm run build)...
 echo   ^> Vite injects a unique build timestamp into the service worker URL,
 echo   ^> so every deploy automatically busts the old SW cache.
 call npm run build
@@ -41,8 +34,8 @@ if %ERRORLEVEL% neq 0 (
     exit /b
 )
 
-:: 5. Deploy
-echo [5/5] Deploying to Firebase...
+:: 4. Deploy
+echo [4/4] Deploying to Firebase...
 echo Checking for Firebase CLI...
 
 :: Try global firebase first, then npx
