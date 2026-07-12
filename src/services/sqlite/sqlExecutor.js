@@ -614,7 +614,7 @@ export function evaluateWhere(item, whereStr, bind) {
     // Strip date() function wrappers — dates are already YYYY-MM-DD strings, so date() is redundant
     sql = sql.replace(/date\s*\(([^)]+)\)/gi, '$1');
 
-    const tokenRegex = /\s*(\(|\)|AND|OR|=|[<>]=?|!=|<>|LIKE|NOT\s+LIKE|IS\s+NULL|IS\s+NOT\s+NULL|IN|NOT\s+IN|'[^']*'|"[^"]*"|__BIND_\d+__|[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*|\d+(?:\.\d+)?)\s*/gi;
+    const tokenRegex = /\s*(\(|\)|AND|OR|[<>]=?|!=|<>|=|LIKE|NOT\s+LIKE|IS\s+NULL|IS\s+NOT\s+NULL|IN|NOT\s+IN|'[^']*'|"[^"]*"|__BIND_\d+__|[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*|\d+(?:\.\d+)?)\s*/gi;
     
     let tokens = [];
     let match;
