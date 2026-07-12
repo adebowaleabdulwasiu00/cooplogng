@@ -289,16 +289,61 @@ export function setupDbManagementListeners(user, cooperativeId, container) {
   const forceResyncBtn = document.getElementById('force-resync-btn');
   forceResyncBtn?.addEventListener('click', async () => {
     if (!confirm('This will push any pending local changes to the cloud, then clear your local database and re-download everything from scratch. Continue?')) return;
+    
+    let activePollInterval = null;
     try {
       forceResyncBtn.disabled = true;
-      forceResyncBtn.innerHTML = '⏳ Pushing local changes...';
+      forceResyncBtn.innerHTML = '⏳ Re-syncing database...';
+      
+      // 1. Immediately reset the UI's collections list to yellow/unsynced status
+      const syncStatusContainer = document.getElementById('initial-sync-status-container');
+      if (syncStatusContainer) {
+        syncStatusContainer.innerHTML = `
+          <div style="margin-bottom: 1rem;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
+              <span style="font-weight: 600; font-size: 0.9rem; color: var(--text-primary);">⏳ Resetting Sync Status...</span>
+              <span style="font-size: 0.8rem; color: var(--text-muted);">0/${SYNC_COLLECTIONS.length}</span>
+            </div>
+            <div style="height: 6px; background: var(--bg-secondary); border-radius: 3px; overflow: hidden;">
+              <div style="width: 0%; height: 100%; background: var(--warning); border-radius: 3px; transition: width 0.5s;"></div>
+            </div>
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.35rem; font-size: 0.8rem;">
+            ${SYNC_COLLECTIONS.map(name => {
+              const label = name.charAt(0).toUpperCase() + name.slice(1);
+              return `
+                <div style="display: flex; align-items: center; gap: 0.4rem; color: var(--text-muted);">
+                  <span style="width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--warning);"></span>
+                  <span>${label}</span>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        `;
+      }
+      
+      // 2. Start high-frequency polling to visually update the statuses as they sync
+      activePollInterval = setInterval(refreshStatus, 300);
+
+      // 3. Trigger the full resync
       const result = await triggerFullResync(user);
+      
+      // Clean up the high-frequency poller and do a final refresh
+      if (activePollInterval) {
+        clearInterval(activePollInterval);
+        activePollInterval = null;
+      }
+      await refreshStatus();
+
       const msg = result.pushed > 0
         ? `Pushed ${result.pushed} pending change(s) before re-sync.`
         : 'No pending changes to push.';
       showToast(`Full re-sync complete. ${msg}`, 'success');
-      refreshStatus();
     } catch (err) {
+      if (activePollInterval) {
+        clearInterval(activePollInterval);
+      }
+      await refreshStatus();
       showToast('Full re-sync failed: ' + err.message, 'error');
     } finally {
       forceResyncBtn.disabled = false;

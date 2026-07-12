@@ -13,6 +13,12 @@ export async function executeSimpleSelect(parsed) {
     if (coopCondition) {
         try {
             items = await getAllByIndex(table, 'cooperative_id', coopCondition.value)
+            if (!items || items.length === 0) {
+                const all = await getAllItems(table)
+                if (all.length > 0) {
+                    items = all
+                }
+            }
         } catch (e) {
             items = await getAllItems(table)
         }

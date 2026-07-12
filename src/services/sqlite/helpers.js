@@ -73,33 +73,53 @@ export function likeToRegex(pattern) {
 }
 
 export function evalCondition(item, col, op, val) {
-    const itemVal = item[col]
-    if (val === null || val === undefined) {
+    let itemVal = item[col]
+    
+    const DATE_FIELDS = [
+        'created_at', 'modified_at', 'deleted_at', 'sync_at', 'expiry_date',
+        'issued_date', 'due_date', 'date_joined', 'remittance_date',
+        'last_attempt_at', 'coop_first_month', 'dob', 'last_login'
+    ];
+    let compareVal = val;
+    if (DATE_FIELDS.includes(col)) {
+        if (itemVal !== null && itemVal !== undefined && itemVal !== '') {
+            itemVal = getLocalDateString(itemVal);
+        }
+        if (val !== null && val !== undefined && val !== '') {
+            if (Array.isArray(val)) {
+                compareVal = val.map(v => getLocalDateString(v));
+            } else {
+                compareVal = getLocalDateString(val);
+            }
+        }
+    }
+
+    if (compareVal === null || compareVal === undefined) {
         if (op === 'IS NULL' || op === 'IS') return itemVal === null || itemVal === undefined
         if (op === 'IS NOT NULL' || op === 'IS NOT') return itemVal !== null && itemVal !== undefined
     }
     switch (op) {
-        case '=': return String(itemVal) == String(val)
-        case '!=': case '<>': return String(itemVal) != String(val)
+        case '=': return String(itemVal) == String(compareVal)
+        case '!=': case '<>': return String(itemVal) != String(compareVal)
         case '>': {
-            const n1 = Number(itemVal), n2 = Number(val);
-            return isNaN(n1) || isNaN(n2) ? String(itemVal) > String(val) : n1 > n2;
+            const n1 = Number(itemVal), n2 = Number(compareVal);
+            return isNaN(n1) || isNaN(n2) ? String(itemVal) > String(compareVal) : n1 > n2;
         }
         case '>=': {
-            const n1 = Number(itemVal), n2 = Number(val);
-            return isNaN(n1) || isNaN(n2) ? String(itemVal) >= String(val) : n1 >= n2;
+            const n1 = Number(itemVal), n2 = Number(compareVal);
+            return isNaN(n1) || isNaN(n2) ? String(itemVal) >= String(compareVal) : n1 >= n2;
         }
         case '<': {
-            const n1 = Number(itemVal), n2 = Number(val);
-            return isNaN(n1) || isNaN(n2) ? String(itemVal) < String(val) : n1 < n2;
+            const n1 = Number(itemVal), n2 = Number(compareVal);
+            return isNaN(n1) || isNaN(n2) ? String(itemVal) < String(compareVal) : n1 < n2;
         }
         case '<=': {
-            const n1 = Number(itemVal), n2 = Number(val);
-            return isNaN(n1) || isNaN(n2) ? String(itemVal) <= String(val) : n1 <= n2;
+            const n1 = Number(itemVal), n2 = Number(compareVal);
+            return isNaN(n1) || isNaN(n2) ? String(itemVal) <= String(compareVal) : n1 <= n2;
         }
-        case 'LIKE': return itemVal != null && likeToRegex(String(val)).test(String(itemVal))
-        case 'NOT LIKE': return itemVal == null || !likeToRegex(String(val)).test(String(itemVal))
-        case 'IN': return Array.isArray(val) && val.some(v => String(itemVal) == String(v))
+        case 'LIKE': return itemVal != null && likeToRegex(String(compareVal)).test(String(itemVal))
+        case 'NOT LIKE': return itemVal == null || !likeToRegex(String(compareVal)).test(String(itemVal))
+        case 'IN': return Array.isArray(compareVal) && compareVal.some(v => String(itemVal) == String(v))
         default: return true
     }
 }

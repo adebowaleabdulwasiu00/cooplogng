@@ -186,8 +186,15 @@ export async function scanAndEnqueueUnsynced(cooperativeId) {
             rows = item && (!item.is_synced) ? [item] : []
         } else {
             let items
-            try { items = await getAllByIndex(table, 'cooperative_id', String(cooperativeId)) }
-            catch (e) {
+            try {
+                items = await getAllByIndex(table, 'cooperative_id', String(cooperativeId))
+                if (!items || items.length === 0) {
+                    const all = await getAllItems(table)
+                    if (all.length > 0) {
+                        items = all.filter(r => r.cooperative_id === String(cooperativeId))
+                    }
+                }
+            } catch (e) {
                 const all = await getAllItems(table)
                 items = all.filter(r => r.cooperative_id === String(cooperativeId))
             }

@@ -72,6 +72,7 @@ export async function getPaymentAdviseData(cooperativeId) {
         FROM payment_advise pa
         JOIN members m ON m.id = pa.member_id
         WHERE pa.cooperative_id = ?
+          AND pa.is_deleted = 0 AND m.is_deleted = 0
         GROUP BY m.id, pa.enterprise_id
     `;
     const rows = await queryRows(sql, [cooperativeId]);
@@ -128,7 +129,7 @@ export async function getMemberPerformanceAgingData(cooperativeId) {
                 JOIN remittance r ON rd.remittance_id = r.id
                 WHERE rd.enterprise_id = ?
                   AND r.member_id = ?
-                  AND r.status = 'Approved' AND r.is_deleted = 0
+                  AND r.status = 'Approved' AND r.is_deleted = 0 AND rd.is_deleted = 0
             `;
             const results = await queryRows(sql, [loan.id, member.id]);
 

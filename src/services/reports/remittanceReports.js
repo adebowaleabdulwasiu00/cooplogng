@@ -87,6 +87,7 @@ export async function getRemittanceScheduleData(cooperativeId, user, month, year
         JOIN remittance r ON r.id = rd.remittance_id
         JOIN members m ON m.id = r.member_id
         WHERE rd.cooperative_id = ? AND r.status = 'Approved'
+          AND r.is_deleted = 0 AND rd.is_deleted = 0 AND m.is_deleted = 0
           AND date(r.remittance_date) BETWEEN date(?) AND date(?)
           AND rd.amount ${signOp} 0
     `;
@@ -157,6 +158,8 @@ export async function getEODReportData(cooperativeId, dateFrom, dateTo) {
         LEFT JOIN enterprise e ON rd.enterprise_id = e.id
         WHERE r.cooperative_id = ? 
         AND r.status = 'Approved'
+        AND r.is_deleted = 0
+        AND rd.is_deleted = 0
         AND date(r.remittance_date) >= date(?)
         AND date(r.remittance_date) <= date(?)
         ORDER BY r.created_at ASC
@@ -170,7 +173,7 @@ export async function getEODReportData(cooperativeId, dateFrom, dateTo) {
     const useSpecialId = localStorage.getItem('useSpecialIdInReports') === 'true';
 
     const data = rows.map((row, idx) => {
-        const amount = row.amount;
+        const amount = Number(row.amount) || 0;
         const bank = row.bank_name || 'N/A';
 
         if (amount > 0) {
@@ -197,20 +200,19 @@ export async function getEODReportData(cooperativeId, dateFrom, dateTo) {
     });
 
     data.push([]);
-    data.push(['', '', '', '', '', '', '', '', '', '']);
-    data.push(['', '', '', '', '', '', '', '', '', '']);
-    data.push(['', '', '', '', '', 'BANK SUMMARY', '', '', '', '']);
-    data.push(['', '', '', '', '', 'Bank', 'Deposits', 'Withdrawals', 'Total', '']);
+    data.push(['', '', '', '', '', '', '', '', '']);
+    data.push(['BANK SUMMARY', '', '', '', '', '', '', '', '']);
+    data.push(['Bank', 'Deposits', 'Withdrawals', 'Total', '', '', '', '', '']);
 
     Object.keys(bankSummary).sort().forEach(bank => {
         const { deposits, withdrawals } = bankSummary[bank];
-        data.push(['', '', '', '', '', bank, deposits, withdrawals, deposits - withdrawals, '']);
+        data.push([bank, deposits, withdrawals, deposits - withdrawals, '', '', '', '', '']);
     });
 
-    data.push(['', '', '', '', '', '', '', '', '', '']);
-    data.push(['', '', '', '', '', 'TOTAL DEPOSITS', '', '', totalDeposits, '']);
-    data.push(['', '', '', '', '', 'TOTAL WITHDRAWALS', '', '', totalWithdrawals, '']);
-    data.push(['', '', '', '', '', 'NET TOTAL', '', '', totalDeposits - totalWithdrawals, '']);
+    data.push(['', '', '', '', '', '', '', '', '']);
+    data.push(['TOTAL DEPOSITS', totalDeposits, '', '', '', '', '', '', '']);
+    data.push(['TOTAL WITHDRAWALS', totalWithdrawals, '', '', '', '', '', '', '']);
+    data.push(['NET TOTAL', totalDeposits - totalWithdrawals, '', '', '', '', '', '', '']);
 
     const headers = ['S/N', 'Date', useSpecialId ? 'Member ID' : 'Reg No', 'Member', 'Account', 'Type', 'Bank', 'Amount', 'Description'];
     const title = dateFrom === dateTo

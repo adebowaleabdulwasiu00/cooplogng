@@ -78,7 +78,7 @@ export async function renderAccountBalance(container, user) {
 
 
 
-    container.innerHTML = `
+    const headerHtml = `
     <div class="page-header dashboard-page-header" style="display: flex; flex-direction: column; gap: 1rem;">
       <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
         <div>
@@ -135,7 +135,7 @@ export async function renderAccountBalance(container, user) {
 
         const queryUser = JSON.parse(JSON.stringify(user));
 
-        const { accountBalance } = await buildAccountBalance(user.cooperativeId, queryUser)
+        let { accountBalance } = await buildAccountBalance(user.cooperativeId, queryUser)
         visibleBalance = accountBalance
 
         const enterpriseRows = await fetchEnterprises(user.cooperativeId, true)
@@ -145,6 +145,16 @@ export async function renderAccountBalance(container, user) {
             allEnts[e.id] = e.account_name
             entObjMap[e.id] = e
         })
+
+        // Guard: if enterprises exist but balance is all zero, retry once with a brief delay
+        if (enterpriseRows.length > 0 && (accountBalance.length === 0 || accountBalance.every(b => (b.sum_of_amount || 0) === 0))) {
+            await new Promise(r => setTimeout(r, 150))
+            const retried = await buildAccountBalance(user.cooperativeId, queryUser)
+            if (retried.accountBalance.some(b => (b.sum_of_amount || 0) !== 0)) {
+                accountBalance = retried.accountBalance
+                visibleBalance = accountBalance
+            }
+        }
 
         const existingIds = new Set(visibleBalance.map(b => b.id))
         Object.keys(allEnts).forEach(id => {
@@ -833,6 +843,7 @@ export async function renderAccountBalance(container, user) {
             contentHtml += `</div></div>`
         }
 
+        container.innerHTML = headerHtml
         document.getElementById('balance-content').innerHTML = contentHtml
 
         // Apply zero-balance visibility
@@ -990,8 +1001,7 @@ export async function renderAccountBalance(container, user) {
 
 
     } catch (err) {
-        document.getElementById('balance-content').innerHTML = `
-      <div class="alert">Could not load dashboard: ${escapeHtml(err.message)}</div>
-    `
+        container.innerHTML = headerHtml
+        document.getElementById('balance-content').innerHTML = `<div class="alert">Could not load dashboard: ${escapeHtml(err.message)}</div>`
     }
 }

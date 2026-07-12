@@ -118,9 +118,43 @@ export async function renderSettings(container, user) {
         return area.innerHTML
     }
 
-  const renderPage = () => {
+  const renderContent = () => {
     const showMenu = !activeSection
+    const menuEl = document.querySelector('.settings-menu')
+    const headerEl = document.querySelector('.page-header')
+    const contentArea = document.getElementById('settings-content-area')
 
+    if (!contentArea) { renderPage(); return }
+
+    if (menuEl) menuEl.style.display = showMenu ? 'flex' : 'none'
+    if (headerEl) headerEl.style.display = showMenu ? '' : 'none'
+
+    contentArea.innerHTML = `
+      ${activeSection ? `
+        <button id="settings-back-btn" style="display: flex; align-items: center; gap: 0.5rem; border: none; background: transparent; color: var(--accent-primary); font-weight: 700; padding: 0; margin-bottom: 2rem; cursor: pointer; font-size: 1rem;">
+          <svg width="24" height="24" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"/></svg>
+          Back
+        </button>
+        ${renderSection(activeSection)}
+      ` : ''}
+    `
+
+    container.querySelector('#settings-back-btn')?.addEventListener('click', () => {
+      activeSection = null
+      renderContent()
+    })
+
+    container.querySelectorAll('.settings-menu-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        activeSection = btn.dataset.section
+        renderContent()
+      })
+    })
+
+    attachListeners()
+  }
+
+  const renderPage = () => {
     container.innerHTML = `
       <style>
         .settings-layout {
@@ -129,7 +163,7 @@ export async function renderSettings(container, user) {
           min-height: 500px;
         }
         .settings-menu {
-          display: ${showMenu ? 'flex' : 'none'};
+          display: flex;
           flex-direction: column;
           background: var(--bg-card);
           border-radius: var(--radius-xl);
@@ -190,7 +224,6 @@ export async function renderSettings(container, user) {
           opacity: 0.5;
         }
         .settings-content {
-          display: ${!showMenu ? 'block' : 'none'};
           background: var(--bg-card);
           border-radius: var(--radius-xl);
           box-shadow: var(--shadow-sm);
@@ -356,7 +389,7 @@ export async function renderSettings(container, user) {
         }
       </style>
 
-      <div class="page-header" style="max-width: 800px; margin: 0 auto; ${!showMenu ? 'display:none;' : 'padding: 2rem 1rem;'}">
+      <div class="page-header" style="max-width: 800px; margin: 0 auto; padding: 2rem 1rem;">
         <h2 style="font-size: 2rem; font-weight: 800;">Settings</h2>
         <p class="subtitle">Personalize your cooperative experience.</p>
       </div>
@@ -377,13 +410,6 @@ export async function renderSettings(container, user) {
           </div>
 
           <div class="settings-content" id="settings-content-area">
-            ${activeSection ? `
-              <button id="settings-back-btn" style="display: flex; align-items: center; gap: 0.5rem; border: none; background: transparent; color: var(--accent-primary); font-weight: 700; padding: 0; margin-bottom: 2rem; cursor: pointer; font-size: 1rem;">
-                <svg width="24" height="24" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"/></svg>
-                Back
-              </button>
-              ${renderSection(activeSection)}
-            ` : ''}
           </div>
         </div>
       </div>
@@ -392,18 +418,9 @@ export async function renderSettings(container, user) {
     container.querySelectorAll('.settings-menu-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         activeSection = btn.dataset.section
-        renderPage()
+        renderContent()
       })
     })
-
-    if (activeSection) {
-      container.querySelector('#settings-back-btn')?.addEventListener('click', () => {
-        activeSection = null
-        renderPage()
-      })
-    }
-
-    attachListeners()
   }
 
   const attachListeners = () => {
@@ -423,7 +440,7 @@ export async function renderSettings(container, user) {
             case 'db': setupDbManagementListeners(user, cooperativeId, container); break
             case 'restore': setupHardRestoreListeners(user, cooperativeId, (section) => {
                 activeSection = section;
-                renderPage();
+                renderContent();
             }); break
             case 'about': setupAboutListeners(); break
             case 'theme': setupThemeListeners(); break

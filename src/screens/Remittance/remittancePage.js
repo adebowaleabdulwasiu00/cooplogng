@@ -384,14 +384,7 @@ import { render as _render } from './remittanceRender.js';
     formData.member_id = newMemberId;
     previewMode = false;
     
-    // Reset form details and amount when member changes (clear stale history data)
-    formData.details = [];
-    formData.amount = 0;
-    formData.bank_name = '';
-    formData.description = '';
-    formData.transaction_type = '';
-    formData.isLoanRequest = false;
-    formData.status = null;
+    // Keep existing form data — only update member_id
     
     // Load new balances
     if (newMemberId && newMemberId !== '0000000000') {

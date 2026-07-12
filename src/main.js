@@ -280,21 +280,28 @@ async function bootstrapApp() {
   // Start the background sync loop
   initializeSyncService()
 
-  // CRITICAL: If the DB is volatile (in-memory) or wiped, we SHOULD start a sync,
-  // but we shouldn't block the UI unless absolutely necessary.
+  // CRITICAL: If the DB is volatile (in-memory) or wiped, we SHOULD sync before rendering.
+  // Previously this was fire-and-forget, causing the dashboard to render with empty data
+  // and never re-render after sync completed.
   const isSyncedAlready = await isSynced(state.welcomeUser?.cooperativeId)
 
   if (state.welcomeUser && navigator.onLine && !isSyncedAlready) {
     console.warn('[Sync] Local database is empty on refresh. Triggering background sync...')
-    // Start sync in background - UI never waits for it
-    syncCooperativeData(
-      state.welcomeUser.cooperativeId,
-      state.welcomeUser.role,
-      state.welcomeUser.memberId,
-      state.welcomeUser.permissions,
-      state.welcomeUser.username,
-      state.welcomeUser.registrationNo
-    ).catch(e => console.error('[Sync] Initial background sync failed:', e));
+    const msgEl = document.querySelector('#app h2')
+    if (msgEl) msgEl.textContent = 'Downloading Data...'
+    try {
+      await syncCooperativeData(
+        state.welcomeUser.cooperativeId,
+        state.welcomeUser.role,
+        state.welcomeUser.memberId,
+        state.welcomeUser.permissions,
+        state.welcomeUser.username,
+        state.welcomeUser.registrationNo
+      )
+      console.log(`[DEBUG] [${Date.now()}] bootstrapApp: Initial sync completed before render.`);
+    } catch (e) {
+      console.error('[Sync] Initial background sync failed:', e);
+    }
   }
 
   console.log(`[DEBUG] [${Date.now()}] bootstrapApp: Setting up PWA listener...`);
@@ -405,6 +412,9 @@ app.addEventListener('click', async (event) => {
   }
 
   if (action === 'logout') {
+    // Capture user info before clearing state
+    const coopId = state.welcomeUser?.cooperativeId
+    const userId = state.welcomeUser?.userId || state.welcomeUser?.memberId
     try {
       const { getFirebaseAuth, signOut } = await import('./firebase.js');
       const { auth } = getFirebaseAuth();
@@ -441,6 +451,14 @@ app.addEventListener('click', async (event) => {
       }
     }
     saveSession(null)
+    // Also clear the IndexedDB persistent session so refresh doesn't auto-login
+    if (coopId && userId) {
+      import('./services/offlineAuthService.js').then(({ clearOfflineSession }) => {
+        clearOfflineSession(coopId, userId).catch(e =>
+          console.warn('[Logout] Failed to clear offline session:', e)
+        )
+      })
+    }
     render()
     return
   }
@@ -723,6 +741,11 @@ syncBus.on(SyncEvents.MEMBER_UPDATED, ({ data }) => {
 
 syncBus.on(SyncEvents.REMITTANCE_UPDATED, ({ data }) => {
   if (!state.welcomeUser) return
+  // If on dashboard, refresh the balances and charts
+  if (state.activeTab === 'dashboard') {
+    renderDashboardContent()
+    return
+  }
   // If on payments tab, update the history row and stats
   if (state.activeTab === 'payments') {
     const row = document.querySelector(`tr[data-remit-id="${data.id}"]`)
@@ -735,6 +758,30 @@ syncBus.on(SyncEvents.REMITTANCE_UPDATED, ({ data }) => {
         }
       }
     }
+  }
+})
+
+syncBus.on(SyncEvents.REMITTANCE_ADDED, () => {
+  if (state.welcomeUser && state.activeTab === 'dashboard') {
+    renderDashboardContent()
+  }
+})
+
+syncBus.on(SyncEvents.REMITTANCE_DELETED, () => {
+  if (state.welcomeUser && state.activeTab === 'dashboard') {
+    renderDashboardContent()
+  }
+})
+
+syncBus.on(SyncEvents.SYNC_COMPLETED, () => {
+  if (state.welcomeUser && state.activeTab === 'dashboard') {
+    renderDashboardContent()
+  }
+})
+
+syncBus.on(SyncEvents.BULK_REMITTANCES_LOADED, () => {
+  if (state.welcomeUser && state.activeTab === 'dashboard') {
+    renderDashboardContent()
   }
 })
 
@@ -1282,7 +1329,8 @@ function renderDashboard() {
             </div>
           </div>
           <div style="display: flex; gap: 0.5rem; margin-top: 0.75rem; width: 100%;">
-            <button class="secondary-button" style="flex: 1; padding: 0.5rem; font-size: 0.8rem; border-radius: var(--radius-md);" data-action="logout" title="Log Out">
+            <button class="secondary-button" style="flex: 1; padding: 0.5rem; font-size: 0.8rem; border-radius: var(--radius-md); display: flex; align-items: center; justify-content: center; gap: 0.4rem;" data-action="logout" title="Log Out">
+              <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="flex-shrink: 0;"><path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
               <span>Log Out</span>
             </button>
           </div>
@@ -1793,10 +1841,61 @@ async function renderDashboardContent() {
           });
         }
       }, 50);
+    } else if (state.activeTab === 'ledger') {
+      // Ledger: show member search in mobile top bar
+      const isLedgerAdmin = state.welcomeUser.role !== 'member';
+      const currentLedgerMemberName = window.__ledgerFilters
+        ? (window.__ledgerFilters.memberId === 'All' ? '' : (window.__ledgerFilters.memberName || ''))
+        : '';
+      mobileTitleEl.innerHTML = `
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; width: 100%; padding-right: 0.5rem;">
+          <span style="font-size: 1.05rem; font-weight: 700; color: var(--text-primary); white-space: nowrap;">Ledger</span>
+          ${isLedgerAdmin ? `
+          <div style="position: relative; flex: 1; max-width: 150px;">
+            <input type="text" id="ledger-member-search-mobile"
+              placeholder="All Members..."
+              value="${currentLedgerMemberName}"
+              autocomplete="off"
+              style="width: 100%; padding: 0.35rem 0.5rem 0.35rem 1.65rem; border-radius: var(--radius-md); border: 1px solid var(--border-medium); font-size: 0.75rem; background: var(--bg-input); color: var(--text-primary); outline: none; box-sizing: border-box;">
+            <svg width="10" height="10" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="position: absolute; left: 0.5rem; top: 50%; transform: translateY(-50%); color: var(--text-muted); pointer-events: none;">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+            </svg>
+            <div id="ledger-member-dropdown-mobile" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: var(--bg-card); border: 1px solid var(--border-medium); border-radius: var(--radius-sm); box-shadow: var(--shadow-lg); z-index: 9999; max-height: 220px; overflow-y: auto; margin-top: 2px;"></div>
+          </div>
+          ` : ''}
+        </div>
+      `;
+      if (isLedgerAdmin) {
+        setTimeout(() => {
+          const mobileSearchInput = document.getElementById('ledger-member-search-mobile');
+          const mobileDropdown = document.getElementById('ledger-member-dropdown-mobile');
+          if (!mobileSearchInput || !mobileDropdown) return;
+
+          // Dispatch search events to MemberLedger which listens for them
+          mobileSearchInput.addEventListener('input', (e) => {
+            window.dispatchEvent(new CustomEvent('mobile-ledger-member-search', {
+              detail: { query: e.target.value }
+            }));
+            mobileDropdown.style.display = 'block';
+          });
+          mobileSearchInput.addEventListener('focus', () => {
+            window.dispatchEvent(new CustomEvent('mobile-ledger-member-search', {
+              detail: { query: mobileSearchInput.value }
+            }));
+            mobileDropdown.style.display = 'block';
+          });
+
+          // Close dropdown when clicking outside
+          document.addEventListener('click', (e) => {
+            if (!e.target.closest('#ledger-member-search-mobile') && !e.target.closest('#ledger-member-dropdown-mobile')) {
+              if (mobileDropdown) mobileDropdown.style.display = 'none';
+            }
+          });
+        }, 80);
+      }
     } else {
       const activeTabTitles = {
         payments: 'Remittance',
-        ledger: 'Ledger',
         reports: 'Reports',
         reconciliation: 'Reconciliation',
         settings: 'Settings'

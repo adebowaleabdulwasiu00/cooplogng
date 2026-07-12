@@ -8,7 +8,14 @@ export async function getAllForCoop(cooperativeId, tableName) {
     } else {
         try {
             results = await getAllByIndex(tableName, 'cooperative_id', String(cooperativeId))
-            results = results.filter(r => !r.is_deleted)
+            if (!results || results.length === 0) {
+                const all = await getAllItems(tableName)
+                if (all.length > 0) {
+                    results = all.filter(r => r.cooperative_id === String(cooperativeId) && !r.is_deleted)
+                }
+            } else {
+                results = results.filter(r => !r.is_deleted)
+            }
         } catch (e) {
             const all = await getAllItems(tableName)
             results = all.filter(r => r.cooperative_id === String(cooperativeId) && !r.is_deleted)
@@ -48,6 +55,12 @@ export async function checkMemberHasRemittances(cooperativeId, memberId) {
     let rems
     try {
         rems = await getAllByIndex('remittance', 'member_id', String(memberId))
+        if (!rems || rems.length === 0) {
+            const all = await getAllItems('remittance')
+            if (all.length > 0) {
+                rems = all.filter(r => r.member_id === String(memberId))
+            }
+        }
     } catch (e) {
         const all = await getAllItems('remittance')
         rems = all.filter(r => r.member_id === String(memberId))
@@ -59,6 +72,12 @@ export async function getMaxRid(cooperativeId) {
     let rems
     try {
         rems = await getAllByIndex('remittance', 'cooperative_id', String(cooperativeId))
+        if (!rems || rems.length === 0) {
+            const all = await getAllItems('remittance')
+            if (all.length > 0) {
+                rems = all.filter(r => r.cooperative_id === String(cooperativeId))
+            }
+        }
     } catch (e) {
         const all = await getAllItems('remittance')
         rems = all.filter(r => r.cooperative_id === String(cooperativeId))
@@ -83,6 +102,12 @@ export async function getUsersByUsername(cooperativeId, username) {
     let allUsers
     try {
         allUsers = await getAllByIndex('users', 'cooperative_id', String(cooperativeId))
+        if (!allUsers || allUsers.length === 0) {
+            const all = await getAllItems('users')
+            if (all.length > 0) {
+                allUsers = all.filter(u => u.cooperative_id === String(cooperativeId))
+            }
+        }
     } catch (e) {
         allUsers = await getAllItems('users')
         allUsers = allUsers.filter(u => u.cooperative_id === String(cooperativeId))
@@ -95,6 +120,12 @@ export async function getMemberByMobile(cooperativeId, mobile) {
     let allMembers
     try {
         allMembers = await getAllByIndex('members', 'cooperative_id', String(cooperativeId))
+        if (!allMembers || allMembers.length === 0) {
+            const all = await getAllItems('members')
+            if (all.length > 0) {
+                allMembers = all.filter(m => m.cooperative_id === String(cooperativeId))
+            }
+        }
     } catch (e) {
         allMembers = await getAllItems('members')
         allMembers = allMembers.filter(m => m.cooperative_id === String(cooperativeId))
@@ -107,6 +138,12 @@ export async function getMemberByRegistrationNo(cooperativeId, registrationNo) {
     let allMembers
     try {
         allMembers = await getAllByIndex('members', 'cooperative_id', String(cooperativeId))
+        if (!allMembers || allMembers.length === 0) {
+            const all = await getAllItems('members')
+            if (all.length > 0) {
+                allMembers = all.filter(m => m.cooperative_id === String(cooperativeId))
+            }
+        }
     } catch (e) {
         allMembers = await getAllItems('members')
         allMembers = allMembers.filter(m => m.cooperative_id === String(cooperativeId))
@@ -124,6 +161,12 @@ export async function getUserByEmail(cooperativeId, email) {
     let allUsers
     try {
         allUsers = await getAllByIndex('users', 'cooperative_id', String(cooperativeId))
+        if (!allUsers || allUsers.length === 0) {
+            const all = await getAllItems('users')
+            if (all.length > 0) {
+                allUsers = all.filter(u => u.cooperative_id === String(cooperativeId))
+            }
+        }
     } catch (e) {
         allUsers = await getAllItems('users')
         allUsers = allUsers.filter(u => u.cooperative_id === String(cooperativeId))
@@ -136,6 +179,12 @@ export async function getMemberByEmail(cooperativeId, email) {
     let allMembers
     try {
         allMembers = await getAllByIndex('members', 'cooperative_id', String(cooperativeId))
+        if (!allMembers || allMembers.length === 0) {
+            const all = await getAllItems('members')
+            if (all.length > 0) {
+                allMembers = all.filter(m => m.cooperative_id === String(cooperativeId))
+            }
+        }
     } catch (e) {
         allMembers = await getAllItems('members')
         allMembers = allMembers.filter(m => m.cooperative_id === String(cooperativeId))
@@ -195,6 +244,12 @@ export async function getMemberLoans(cooperativeId, memberId = null) {
     let loans
     try {
         loans = await getAllByIndex('loans', 'cooperative_id', String(cooperativeId))
+        if (!loans || loans.length === 0) {
+            const all = await getAllItems('loans')
+            if (all.length > 0) {
+                loans = all.filter(l => l.cooperative_id === String(cooperativeId))
+            }
+        }
     } catch (e) {
         const all = await getAllItems('loans')
         loans = all.filter(l => l.cooperative_id === String(cooperativeId))

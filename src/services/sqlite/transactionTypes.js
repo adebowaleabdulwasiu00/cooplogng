@@ -8,6 +8,12 @@ export async function initializeDefaultTransactionTypes(cooperativeId, userId = 
     let existingTypes
     try {
         existingTypes = await getAllByIndex('transaction_types', 'cooperative_id', String(cooperativeId))
+        if (!existingTypes || existingTypes.length === 0) {
+            const all = await getAllItems('transaction_types')
+            if (all.length > 0) {
+                existingTypes = all.filter(t => t.cooperative_id === String(cooperativeId))
+            }
+        }
     } catch (e) {
         const all = await getAllItems('transaction_types')
         existingTypes = all.filter(t => t.cooperative_id === String(cooperativeId))
@@ -45,6 +51,12 @@ export async function getTransactionTypes(cooperativeId) {
     let types
     try {
         types = await getAllByIndex('transaction_types', 'cooperative_id', String(cooperativeId))
+        if (!types || types.length === 0) {
+            const all = await getAllItems('transaction_types')
+            if (all.length > 0) {
+                types = all.filter(t => t.cooperative_id === String(cooperativeId))
+            }
+        }
     } catch (e) {
         const all = await getAllItems('transaction_types')
         types = all.filter(t => t.cooperative_id === String(cooperativeId))
@@ -65,6 +77,12 @@ export async function isTransactionTypeUsed(cooperativeId, transactionTypeId) {
     let rems
     try {
         rems = await getAllByIndex('remittance', 'cooperative_id', String(cooperativeId))
+        if (!rems || rems.length === 0) {
+            const all = await getAllItems('remittance')
+            if (all.length > 0) {
+                rems = all.filter(r => r.cooperative_id === String(cooperativeId))
+            }
+        }
     } catch (e) {
         const all = await getAllItems('remittance')
         rems = all.filter(r => r.cooperative_id === String(cooperativeId))
@@ -76,6 +94,12 @@ export async function migrateExistingRemittancesToAddCategory(cooperativeId) {
     let rems
     try {
         rems = await getAllByIndex('remittance', 'cooperative_id', String(cooperativeId))
+        if (!rems || rems.length === 0) {
+            const all = await getAllItems('remittance')
+            if (all.length > 0) {
+                rems = all.filter(r => r.cooperative_id === String(cooperativeId))
+            }
+        }
     } catch (e) {
         const all = await getAllItems('remittance')
         rems = all.filter(r => r.cooperative_id === String(cooperativeId))

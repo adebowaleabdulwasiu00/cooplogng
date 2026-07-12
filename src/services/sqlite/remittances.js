@@ -86,6 +86,12 @@ export async function getRemittances(cooperativeId, user = null) {
     let remittances
     try {
         remittances = await getAllByIndex('remittance', 'cooperative_id', String(cooperativeId))
+        if (!remittances || remittances.length === 0) {
+            const all = await getAllItems('remittance')
+            if (all.length > 0) {
+                remittances = all.filter(r => r.cooperative_id === String(cooperativeId))
+            }
+        }
     } catch (e) {
         const all = await getAllItems('remittance')
         remittances = all.filter(r => r.cooperative_id === String(cooperativeId))
@@ -252,6 +258,12 @@ export async function getRemittancesPage(cooperativeId, user = null, offset = 0,
     let remittances
     try {
         remittances = await getAllByIndex('remittance', 'cooperative_id', String(cooperativeId))
+        if (!remittances || remittances.length === 0) {
+            const all = await getAllItems('remittance')
+            if (all.length > 0) {
+                remittances = all.filter(r => r.cooperative_id === String(cooperativeId))
+            }
+        }
     } catch (e) {
         const all = await getAllItems('remittance')
         remittances = all.filter(r => r.cooperative_id === String(cooperativeId))

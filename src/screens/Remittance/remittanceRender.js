@@ -174,7 +174,12 @@ export function render(container, deps) {
         .form-grid {
           display: grid;
           grid-template-columns: 1fr 1fr;
-          gap: 0.6rem;
+          gap: 0.3rem;
+        }
+        .form-grid-3 {
+          display: grid;
+          grid-template-columns: 1fr 1fr 1fr;
+          gap: 0.3rem;
         }
 
         /* Inherits global .field styling from style.css for Material Outlined Fields */
@@ -509,8 +514,8 @@ export function render(container, deps) {
             </div>
             <div class="form-content">
               <form id="payment-form" onsubmit="return false;">
-                <!-- Row 1: Date and Bank -->
-                <div class="form-grid">
+                <!-- Row 1: Date, Bank, Amount -->
+                <div class="form-grid-3">
                   <div class="field">
                     <label>Transaction Date</label>
                     <input type="date" name="remittance_date" value="${formatDateForInput(formData.remittance_date)}" required ${previewMode ? 'disabled' : ''}>
@@ -528,18 +533,16 @@ export function render(container, deps) {
                       })()}
                     </select>
                   </div>
-                </div>
-
-                <!-- Row 2: Amount and Note -->
-                <div class="form-grid" style="margin-top: 0.5rem;">
                   <div class="field">
                     <label>Total Amount (₦)</label>
                     <input type="number" step="0.01" name="amount" id="total-amount-input" value="${formData.amount}" required style="font-size: 1.25rem; font-weight: 700;" class="clear-on-zero" ${previewMode ? 'disabled' : ''}>
                   </div>
-                  <div class="field">
-                    <label>Note / Description</label>
-                    <textarea name="description" rows="2" style="width: 100%;" ${previewMode ? 'disabled' : ''}>${escapeHtml(formData.description)}</textarea>
-                  </div>
+                </div>
+
+                <!-- Row 2: Note -->
+                <div class="field" style="margin-top: 0.3rem;">
+                  <label>Note / Description</label>
+                  <textarea name="description" rows="1" style="width: 100%; min-height: 3.25rem; height: 3.25rem; padding: 1.15rem 1rem 0.35rem 1rem; resize: none; overflow: hidden;" oninput="this.style.height='';this.style.height=this.scrollHeight+2+'px'" ${previewMode ? 'disabled' : ''}>${escapeHtml(formData.description)}</textarea>
                 </div>
 
                 <!-- Row 3: Member Name (full width) -->
@@ -891,4 +894,11 @@ export function render(container, deps) {
     attachEventListeners(container, deps);
     attachHistoryEventListeners();
     restoreFocus();
+
+    // Auto-adjust description textarea height if there is content on load
+    const descTextarea = container.querySelector('textarea[name="description"]');
+    if (descTextarea) {
+        descTextarea.style.height = '';
+        descTextarea.style.height = descTextarea.scrollHeight + 2 + 'px';
+    }
 }

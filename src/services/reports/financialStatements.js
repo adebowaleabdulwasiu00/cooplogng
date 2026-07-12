@@ -23,7 +23,7 @@ export async function getTrialBalanceData(cooperativeId, fiscalYear) {
             rd.amount
         FROM remittance_detail rd
         JOIN remittance r ON r.id = rd.remittance_id
-        WHERE rd.cooperative_id = ? AND r.status = 'Approved' AND r.is_deleted = 0
+        WHERE rd.cooperative_id = ? AND r.status = 'Approved' AND r.is_deleted = 0 AND rd.is_deleted = 0
           AND date(r.remittance_date) <= date(?)
     `;
     const rows = await queryRows(sql, [cooperativeId, endStr]);
@@ -139,7 +139,7 @@ export async function getIncomeExpenditureData(cooperativeId, fiscalYear) {
         FROM remittance r
         JOIN remittance_detail rd ON r.id = rd.remittance_id
         LEFT JOIN enterprise e ON rd.enterprise_id = e.id
-        WHERE r.cooperative_id = ? AND r.status = 'Approved' AND r.is_deleted = 0
+        WHERE r.cooperative_id = ? AND r.status = 'Approved' AND r.is_deleted = 0 AND rd.is_deleted = 0
             AND date(r.remittance_date) >= date(?) 
             AND date(r.remittance_date) <= date(?)
     `;
@@ -216,7 +216,7 @@ export async function getBalanceSheetData(cooperativeId, fiscalYear) {
             e.revenue as is_revenue,
             SUM(rd.amount) as net_amount
         FROM enterprise e
-        LEFT JOIN remittance_detail rd ON e.id = rd.enterprise_id
+        LEFT JOIN remittance_detail rd ON e.id = rd.enterprise_id AND rd.is_deleted = 0
         LEFT JOIN remittance r ON r.id = rd.remittance_id AND r.status = 'Approved' AND r.is_deleted = 0
             AND date(r.remittance_date) <= date(?)
         WHERE e.cooperative_id = ?
@@ -241,7 +241,7 @@ export async function getBalanceSheetData(cooperativeId, fiscalYear) {
         FROM remittance_detail rd
         JOIN remittance r ON r.id = rd.remittance_id
         LEFT JOIN enterprise e ON rd.enterprise_id = e.id
-        WHERE rd.cooperative_id = ? AND r.status = 'Approved' AND r.is_deleted = 0
+        WHERE rd.cooperative_id = ? AND r.status = 'Approved' AND r.is_deleted = 0 AND rd.is_deleted = 0
           AND date(r.remittance_date) <= date(?)
     `;
     const reResult = await queryRows(reSql, [cooperativeId, endStr]);
@@ -359,7 +359,7 @@ export async function getCashFlowData(cooperativeId, fiscalYear) {
         FROM remittance r
         JOIN remittance_detail rd ON r.id = rd.remittance_id
         LEFT JOIN enterprise e ON rd.enterprise_id = e.id
-        WHERE r.cooperative_id = ? AND r.status = 'Approved' AND r.is_deleted = 0
+        WHERE r.cooperative_id = ? AND r.status = 'Approved' AND r.is_deleted = 0 AND rd.is_deleted = 0
             AND date(r.remittance_date) >= date(?) AND date(r.remittance_date) <= date(?)
     `;
     const remRows = await queryRows(remSql, [cooperativeId, startStr, endStr]);

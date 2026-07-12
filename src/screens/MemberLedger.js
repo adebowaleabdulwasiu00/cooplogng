@@ -82,14 +82,33 @@ export async function renderMemberLedger(container, user) {
       .ls .sl { font-size: 0.6rem; color: var(--text-muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
       .ls .sv { font-size: 0.85rem; font-weight: 700; color: var(--text-primary); }
 
-      .lwrap { padding: 2rem 3rem; }
+      /* Outer layout — contains its own scroll so sticky header truly freezes */
+      .ledger-outer {
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        min-height: 0;  /* critical: allows flex child to shrink below content size */
+        overflow: hidden;
+      }
 
-      .ltabs { display: inline-flex; gap: 0.5rem; margin-bottom: 1rem; background: var(--bg-input, #f1f5f9); padding: 0.35rem; border-radius: var(--radius-md); flex-wrap: wrap; }
-      .ltab { padding: 0.5rem 1.2rem; border: none; background: transparent; color: var(--text-muted); font-weight: 600; font-size: 0.85rem; cursor: pointer; border-radius: var(--radius-sm); white-space: nowrap; transition: all 0.2s ease; }
-      .ltab:hover { color: var(--text-primary); background: var(--bg-hover, rgba(0,0,0,0.05)); }
-      .ltab.active { background: var(--bg-card, #ffffff); color: var(--accent-primary); box-shadow: var(--shadow-sm, 0 1px 3px rgba(0,0,0,0.1)); }
+      /* Sticky frozen header — no position:sticky needed, just sits at top of flex col */
+      .ledger-sticky-header {
+        flex-shrink: 0;
+        background: var(--bg-main);
+        padding: 1.5rem 3rem 0.75rem;
+        border-bottom: 1px solid var(--border-light);
+        z-index: 50;
+      }
 
-      .scards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.5rem; margin-bottom: 1rem; }
+      /* Scrollable content — inner scroll container */
+      .ledger-scroll-body {
+        flex: 1;
+        overflow-y: auto;
+        overflow-x: hidden;
+        padding: 1rem 3rem 2rem;
+      }
+
+      .scards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.5rem; margin-bottom: 1rem; }
       .scard { background: var(--bg-card); padding: 0.75rem 1rem; border-radius: var(--radius-md); border: 1px solid var(--border-light); box-shadow: var(--shadow-sm); }
       .scard .lbl { font-size: 0.6rem; color: var(--text-muted); text-transform: uppercase; font-weight: 700; margin-bottom: 0.25rem; letter-spacing: 0.04em; }
       .scard .val { font-size: 1.1rem; font-weight: 800; color: var(--text-primary); }
@@ -102,6 +121,11 @@ export async function renderMemberLedger(container, user) {
       .lfil { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
       .lfil .fg { display: flex; align-items: center; gap: 0.25rem; }
       .lfil .fg label { font-size: 0.6rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; white-space: nowrap; min-width: 2rem; }
+
+      /* Dates always-inline container */
+      .lfil-dates { display: flex; flex-direction: row; gap: 0.4rem; align-items: flex-end; flex-wrap: nowrap; }
+      .lfil-dates .fg { flex-direction: column; align-items: stretch; gap: 0.15rem; }
+      .lfil-dates .fg label { min-width: unset; }
 
       .dwrap { position: relative; display: inline-block; min-width: 120px; }
       .dwrap input[type="date"] { width: 100%; box-sizing: border-box; cursor: pointer; opacity: 0; position: absolute; top: 0; left: 0; height: 100%; padding: 0; }
@@ -140,61 +164,108 @@ export async function renderMemberLedger(container, user) {
       .tc table tr { cursor: pointer; transition: background 0.1s; }
       .tc table tbody tr:hover { background: var(--bg-hover); }
 
+      /* Tab styles */
+      .ltabs { display: flex; gap: 0.35rem; margin-bottom: 0; background: var(--bg-input, #f1f5f9); padding: 0.3rem; border-radius: var(--radius-md); }
+      .ltab { flex: 1; padding: 0.45rem 0.75rem; border: none; background: transparent; color: var(--text-muted); font-weight: 600; font-size: 0.85rem; cursor: pointer; border-radius: var(--radius-sm); white-space: nowrap; transition: all 0.2s ease; text-align: center; }
+      .ltab:hover { color: var(--text-primary); background: var(--bg-hover, rgba(0,0,0,0.05)); }
+      .ltab.active { background: var(--bg-card, #ffffff); color: var(--accent-primary); box-shadow: var(--shadow-sm, 0 1px 3px rgba(0,0,0,0.1)); }
+
       @media (max-width: 768px) {
-        .lwrap { padding: 1rem; }
         .ldv { display: none; }
         .lmv { display: block; }
-        .lhdr { flex-direction: column; align-items: flex-start; }
-        .lhdr .hdr-right { margin-left: 0; width: 100%; }
-        .lfil { flex-direction: column; align-items: stretch; }
-        .lfil .fg { flex-direction: row; align-items: center; justify-content: space-between; }
+        .ledger-sticky-header {
+          padding: 0.6rem 0.75rem 0.5rem;
+        }
+        .ledger-scroll-body {
+          padding: 0.75rem 0.75rem 1.5rem;
+        }
+        /* Dates on same row */
+        .lfil-dates { width: 100%; gap: 0.35rem; }
+        .lfil-dates .fg { flex: 1; }
+        .lfil-dates .fg label { font-size: 0.55rem; }
         .dwrap { min-width: auto; width: 100%; }
-        .mwrap { min-width: auto; max-width: none; width: 100%; }
+        /* Stats: always 2 columns on mobile — never 3+1 */
+        .scards { grid-template-columns: 1fr 1fr !important; }
+        /* Hide member selector in header (it's in top bar on mobile) */
+        .lhdr-member-desktop { display: none !important; }
+        /* Hide page title in sticky header on mobile (shown in top bar) */
+        .lhdr > div:first-child { display: none; }
+        .lhdr { flex-direction: column; align-items: flex-start; margin-bottom: 0.5rem; }
+        .lhdr .hdr-right { margin-left: 0; width: 100%; }
+        .lfil { margin-bottom: 0; }
+        /* Tab names shortened */
+        .ltab .tab-label-full { display: none; }
+        .ltab .tab-label-short { display: inline; }
+        .ltab { font-size: 0.78rem; padding: 0.4rem 0.4rem; }
+      }
+      @media (min-width: 769px) {
+        .ltab .tab-label-full { display: inline; }
+        .ltab .tab-label-short { display: none; }
       }
     </style>
 
-    <div class="lwrap">
+    <div class="ledger-outer">
 
-    <div class="lhdr" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; margin-bottom: 1.5rem; gap: 1rem; border-bottom: 1px solid var(--border-light); padding-bottom: 1rem;">
-      <div style="flex: 1; min-width: 250px;">
-        <h2 style="margin: 0; font-size: 1.3rem; font-weight: 800;">${isGlobalView() ? 'Cooperative Ledger' : 'Member Ledger'}</h2>
-        <p class="sub" id="ledger-subtitle" style="margin: 0.25rem 0 0 0; font-size: 0.85rem; color: var(--text-muted);"></p>
+    <!-- Frozen sticky header -->
+    <div class="ledger-sticky-header">
+      <div class="lhdr" style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 0.6rem; margin-bottom: 0.6rem;">
+        <div style="flex: 1; min-width: 200px;">
+          <h2 style="margin: 0; font-size: 1.3rem; font-weight: 800;">${isGlobalView() ? 'Cooperative Ledger' : 'Member Ledger'}</h2>
+          <p class="sub" id="ledger-subtitle" style="margin: 0.25rem 0 0 0; font-size: 0.85rem; color: var(--text-muted);"></p>
+        </div>
+
+        <div class="lfil" style="margin-bottom: 0; justify-content: flex-end; flex-wrap: wrap;">
+          <!-- Dates row (always inline) -->
+          <div class="lfil-dates">
+            <div class="fg">
+              <label>From</label>
+              <div class="dwrap">
+                <input type="date" id="ledger-date-from" value="${filters.dateFrom}">
+                <input type="text" class="ddisp" readonly value="${filters.dateFrom ? formatDate(filters.dateFrom) : ''}" data-for="ledger-date-from">
+              </div>
+            </div>
+            <div class="fg">
+              <label>To</label>
+              <div class="dwrap">
+                <input type="date" id="ledger-date-to" value="${filters.dateTo}">
+                <input type="text" class="ddisp" readonly value="${filters.dateTo ? formatDate(filters.dateTo) : ''}" data-for="ledger-date-to">
+              </div>
+            </div>
+          </div>
+          <!-- Member selector: desktop only, hidden on mobile (search is in top bar) -->
+          <div class="fg lhdr-member-desktop" style="min-width: 180px; max-width: 240px;">
+            <label>Member</label>
+            <div class="mwrap" style="width: 100%;">
+              <input type="text" id="ledger-member-search" placeholder="All Members (Global)" value="${getMemberDisplay(filters.memberId, filters.memberName) === 'All Members (Global)' ? '' : getMemberDisplay(filters.memberId, filters.memberName)}" autocomplete="off">
+              <div class="mdrop" id="ledger-member-dropdown"></div>
+            </div>
+          </div>
+        </div>
       </div>
 
-      <div class="lfil" style="margin-bottom: 0; justify-content: flex-end;">
-        <div class="fg">
-          <label>From</label>
-          <div class="dwrap">
-            <input type="date" id="ledger-date-from" value="${filters.dateFrom}">
-            <input type="text" class="ddisp" readonly value="${filters.dateFrom ? formatDate(filters.dateFrom) : ''}" data-for="ledger-date-from">
-          </div>
-        </div>
-        <div class="fg">
-          <label>To</label>
-          <div class="dwrap">
-            <input type="date" id="ledger-date-to" value="${filters.dateTo}">
-            <input type="text" class="ddisp" readonly value="${filters.dateTo ? formatDate(filters.dateTo) : ''}" data-for="ledger-date-to">
-          </div>
-        </div>
-        <div class="fg" style="min-width: 180px; max-width: 240px;">
-          <label>Member</label>
-          <div class="mwrap" style="width: 100%;">
-            <input type="text" id="ledger-member-search" placeholder="All Members (Global)" value="${getMemberDisplay(filters.memberId, filters.memberName) === 'All Members (Global)' ? '' : getMemberDisplay(filters.memberId, filters.memberName)}" autocomplete="off">
-            <div class="mdrop" id="ledger-member-dropdown"></div>
-          </div>
-        </div>
+      <!-- Tab switcher -->
+      <div class="ltabs">
+        <button class="ltab" data-tab="tab-transactions">
+          <span class="tab-label-full">Transaction Ledger</span>
+          <span class="tab-label-short">Ledger</span>
+        </button>
+        <button class="ltab active" data-tab="tab-summary">
+          <span class="tab-label-full">Monthly/Yearly Summary</span>
+          <span class="tab-label-short">Summary</span>
+        </button>
+        <button class="ltab" data-tab="tab-loans">
+          <span class="tab-label-full">Loan Details</span>
+          <span class="tab-label-short">Loan</span>
+        </button>
       </div>
+    </div><!-- /.ledger-sticky-header -->
+
+    <!-- Scrollable body -->
+    <div class="ledger-scroll-body">
+      <div id="ledger-content"></div>
     </div>
 
-    <div class="ltabs">
-      <button class="ltab" data-tab="tab-transactions">Transaction Ledger</button>
-      <button class="ltab active" data-tab="tab-summary">Monthly/Yearly Summary</button>
-      <button class="ltab" data-tab="tab-loans">Loan Details</button>
-    </div>
-
-    <div id="ledger-content"></div>
-
-    </div><!-- /.lwrap -->
+    </div><!-- /.ledger-outer -->
 
     <div class="lmodal-overlay" id="loan-detail-overlay">
       <div class="lmodal">
@@ -280,7 +351,7 @@ export async function renderMemberLedger(container, user) {
   const memberSearchInput = document.getElementById('ledger-member-search')
   const memberDropdown = document.getElementById('ledger-member-dropdown')
 
-  function renderMemberDropdown(members, query) {
+  function buildMemberDropdownHtml(members, query) {
     const q = (query || '').toLowerCase().trim()
     let filtered = members
     if (q) {
@@ -306,8 +377,11 @@ export async function renderMemberLedger(container, user) {
         return `<div class="di ${selected}" data-member-id="${m.id}" data-member-name="${escapeHtml(name)}">${escapeHtml(name)} ${regNo ? `<span style="color: var(--text-muted); font-size: 0.65rem;">(${escapeHtml(regNo)})</span>` : ''}</div>`
       }).join('')
     }
+    return html
+  }
 
-    memberDropdown.innerHTML = html
+  function renderMemberDropdown(members, query) {
+    memberDropdown.innerHTML = buildMemberDropdownHtml(members, query)
     memberDropdown.classList.add('open')
   }
 
@@ -315,40 +389,84 @@ export async function renderMemberLedger(container, user) {
     memberDropdown.classList.remove('open')
   }
 
-  memberSearchInput.addEventListener('focus', async () => {
-    const members = await getMembersForSearch()
-    renderMemberDropdown(members, memberSearchInput.value)
-  })
+  function selectMember(memberId, memberName) {
+    if (memberId === 'All') {
+      filters.memberId = 'All'
+      filters.memberName = 'All Members (Global)'
+      if (memberSearchInput) { memberSearchInput.value = ''; memberSearchInput.placeholder = 'All Members (Global)' }
+      // Sync mobile input
+      const mobileInput = document.getElementById('ledger-member-search-mobile')
+      if (mobileInput) { mobileInput.value = '' }
+    } else {
+      filters.memberId = memberId
+      filters.memberName = memberName
+      if (memberSearchInput) { memberSearchInput.value = memberName; memberSearchInput.placeholder = 'Search member...' }
+      const mobileInput = document.getElementById('ledger-member-search-mobile')
+      if (mobileInput) { mobileInput.value = memberName }
+    }
+    closeMemberDropdown()
+    // Also close mobile dropdown
+    const mobileDropdown = document.getElementById('ledger-member-dropdown-mobile')
+    if (mobileDropdown) mobileDropdown.style.display = 'none'
+    renderActiveTab()
+  }
 
-  memberSearchInput.addEventListener('input', async () => {
-    if (memberSearchTimeout) clearTimeout(memberSearchTimeout)
-    memberSearchTimeout = setTimeout(async () => {
+  if (memberSearchInput) {
+    memberSearchInput.addEventListener('focus', async () => {
       const members = await getMembersForSearch()
       renderMemberDropdown(members, memberSearchInput.value)
-    }, 150)
-  })
+    })
+
+    memberSearchInput.addEventListener('input', async () => {
+      if (memberSearchTimeout) clearTimeout(memberSearchTimeout)
+      memberSearchTimeout = setTimeout(async () => {
+        const members = await getMembersForSearch()
+        renderMemberDropdown(members, memberSearchInput.value)
+      }, 150)
+    })
+  }
 
   memberDropdown.addEventListener('click', (e) => {
     const item = e.target.closest('.di')
     if (!item) return
-    const memberId = item.dataset.memberId
-    const memberName = item.dataset.memberName || ''
-
-    if (memberId === 'All') {
-      filters.memberId = 'All'
-      filters.memberName = 'All Members (Global)'
-      memberSearchInput.value = ''
-      memberSearchInput.placeholder = 'All Members (Global)'
-    } else {
-      filters.memberId = memberId
-      filters.memberName = memberName
-      memberSearchInput.value = memberName
-      memberSearchInput.placeholder = 'Search member...'
-    }
-
-    closeMemberDropdown()
-    renderActiveTab()
+    selectMember(item.dataset.memberId, item.dataset.memberName || '')
   })
+
+  // --- Mobile top bar member search ---
+  // Listen for the event fired by main.js when mobile input changes
+  const _mobileLedgerSearchHandler = async (e) => {
+    const query = e.detail?.query || ''
+    const mobileDropdown = document.getElementById('ledger-member-dropdown-mobile')
+    if (!mobileDropdown) return
+
+    const members = await getMembersForSearch()
+    const html = buildMemberDropdownHtml(members, query)
+    // Style items to look good in the floating dropdown
+    mobileDropdown.innerHTML = `<style>
+      #ledger-member-dropdown-mobile .di { padding: 0.35rem 0.6rem; cursor: pointer; font-size: 0.75rem; color: var(--text-primary); border-bottom: 1px solid var(--border-light); }
+      #ledger-member-dropdown-mobile .di:hover, #ledger-member-dropdown-mobile .di.hl { background: var(--bg-secondary); }
+      #ledger-member-dropdown-mobile .di.all { font-weight: 700; color: var(--accent-primary); }
+    </style>${html}`
+    mobileDropdown.style.display = 'block'
+
+    mobileDropdown.querySelectorAll('.di').forEach(item => {
+      item.addEventListener('click', (ev) => {
+        ev.stopPropagation()
+        const mId = item.dataset.memberId
+        const mName = item.dataset.memberName || ''
+        selectMember(mId, mName)
+        mobileDropdown.style.display = 'none'
+      })
+    })
+  }
+
+  // Remove any stale listener from previous render before adding
+  if (window._currentMobileLedgerSearchHandler) {
+    window.removeEventListener('mobile-ledger-member-search', window._currentMobileLedgerSearchHandler)
+  }
+  window._currentMobileLedgerSearchHandler = _mobileLedgerSearchHandler
+  window.addEventListener('mobile-ledger-member-search', window._currentMobileLedgerSearchHandler)
+
 
   const _ledgerCacheKey = () => `${filters.dateFrom}|${filters.dateTo}|${filters.memberId}`
 
@@ -438,14 +556,17 @@ export async function renderMemberLedger(container, user) {
     let totalDebit = 0
     let totalCredit = 0
 
-    const rows = filtered.map(r => {
+    let desktopRows = ''
+    let mobileRows = ''
+
+    filtered.forEach(r => {
       const amt = r.amount || 0
       if (amt < 0) totalDebit += Math.abs(amt)
       else totalCredit += amt
 
       runningBalance += amt
 
-      return `
+      desktopRows += `
         <tr>
           <td>${formatDate(r.remittance_date)}</td>
           <td>${String(r.r_id || '').padStart(5, '0')}</td>
@@ -457,7 +578,15 @@ export async function renderMemberLedger(container, user) {
           <td class="text-right ${runningBalance < 0 ? 'text-red' : ''}">${formatCurrency(runningBalance)}</td>
         </tr>
       `
-    }).join('')
+
+      mobileRows += `
+        <div class="lmc"><div class="lch">${formatDate(r.remittance_date)}</div>
+        <div class="lcg" style="grid-template-columns:1fr 1fr 1fr">
+          <div class="ls"><span class="sl text-red">Debit</span><span class="sv text-red">${amt < 0 ? formatCurrency(Math.abs(amt)) : '-'}</span></div>
+          <div class="ls"><span class="sl text-green">Credit</span><span class="sv text-green">${amt > 0 ? formatCurrency(amt) : '-'}</span></div>
+          <div class="ls"><span class="sl">Balance</span><span class="sv ${runningBalance < 0 ? 'text-red' : ''}">${formatCurrency(runningBalance)}</span></div>
+        </div></div>`
+    })
 
     updateSubtitle(runningBalance)
 
@@ -468,28 +597,37 @@ export async function renderMemberLedger(container, user) {
         <div class="scard"><div class="lbl">Total Credit</div><div class="val text-green">${formatCurrency(totalCredit)}</div></div>
         <div class="scard"><div class="lbl">Closing Balance</div><div class="val ${runningBalance < 0 ? 'text-red' : ''}">${formatCurrency(runningBalance)}</div></div>
       </div>
-      <div class="tc">
-        <table class="styled-table">
-          <thead>
-            <tr>
-              <th>Date</th>
-              <th>Ref ID</th>
-              <th>Type</th>
-              <th>Description</th>
-              <th>Bank</th>
-              <th class="text-right">Debit</th>
-              <th class="text-right">Credit</th>
-              <th class="text-right">Balance</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td colspan="7" style="background: var(--bg-hover); font-weight: bold; font-size: 0.75rem;">OPENING BALANCE</td>
-              <td class="text-right ${openingBalance < 0 ? 'text-red' : ''}" style="background: var(--bg-hover); font-weight: bold;">${formatCurrency(openingBalance)}</td>
-            </tr>
-            ${rows || '<tr><td colspan="8" style="text-align: center; padding: 1rem; color: var(--text-muted); font-size: 0.85rem;">No transactions found for this period.</td></tr>'}
-          </tbody>
-        </table>
+      <div class="ldv">
+        <div class="tc">
+          <table class="styled-table">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Ref ID</th>
+                <th>Type</th>
+                <th>Description</th>
+                <th>Bank</th>
+                <th class="text-right">Debit</th>
+                <th class="text-right">Credit</th>
+                <th class="text-right">Balance</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td colspan="7" style="background: var(--bg-hover); font-weight: bold; font-size: 0.75rem;">OPENING BALANCE</td>
+                <td class="text-right ${openingBalance < 0 ? 'text-red' : ''}" style="background: var(--bg-hover); font-weight: bold;">${formatCurrency(openingBalance)}</td>
+              </tr>
+              ${desktopRows || '<tr><td colspan="8" style="text-align: center; padding: 1rem; color: var(--text-muted); font-size: 0.85rem;">No transactions found for this period.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="lmv">
+        <div class="lmc" style="background: var(--bg-hover);"><div class="lch">OPENING BALANCE</div>
+        <div class="lcg">
+          <div class="ls"><span class="sl">Balance</span><span class="sv ${openingBalance < 0 ? 'text-red' : ''}">${formatCurrency(openingBalance)}</span></div>
+        </div></div>
+        ${mobileRows || '<div class="card" style="width: 100%; padding: 1rem; color: var(--text-muted); text-align: center; border: 1px solid var(--border-light); background: var(--bg-card); font-size: 0.85rem;">No transactions found for this period.</div>'}
       </div>
     `
   }
@@ -876,7 +1014,10 @@ export async function renderMemberLedger(container, user) {
       return
     }
 
-    const rows = loans.map(l => {
+    let desktopRows = ''
+    let mobileRows = ''
+
+    loans.forEach(l => {
       const status = l.status || 'Active'
       let statusClass = 'status-badge '
       if (status === 'Active') statusClass += 'status-green'
@@ -884,12 +1025,12 @@ export async function renderMemberLedger(container, user) {
       else if (status === 'Pending' || status === 'Declined') statusClass += 'status-amber'
       else statusClass += 'status-gray'
 
-      return `
+      desktopRows += `
         <tr data-loan-id="${l.id}">
           <td>${formatDate(l.issued_date)}</td>
-          <td style="font-weight:700;">
-            ${escapeHtml(l.enterprise_name || '')}
-            ${isGlobalView() ? `<div style="font-size:0.65rem;color:var(--text-muted);font-weight:normal;margin-top:0.1rem;">${escapeHtml(l.member_registration_no || '')} - ${escapeHtml(l.member_name || 'Unknown')}</div>` : ''}
+          <td>
+            <div style="font-weight:700;">${escapeHtml(l.enterprise_name || '')}</div>
+            <div style="font-size:0.65rem;color:var(--text-muted);font-weight:normal;">${escapeHtml(l.member_registration_no || '')} - ${escapeHtml(l.member_name || 'Unknown')}</div>
           </td>
           <td class="text-right">${formatCurrency(l.principal_amount)}</td>
           <td class="text-right" style="color:var(--text-muted);">${formatCurrency(l.admin_fees || 0)}</td>
@@ -899,44 +1040,46 @@ export async function renderMemberLedger(container, user) {
           <td>${formatDate(l.due_date)}</td>
           <td style="text-align:center;"><span class="${statusClass}">${escapeHtml(status.toUpperCase())}</span></td>
         </tr>`
-    }).join('')
+
+      mobileRows += `
+        <div class="lmc" data-loan-id="${l.id}" style="cursor: pointer;"><div class="lch">${escapeHtml(l.enterprise_name || '')} — ${escapeHtml(l.member_name || 'Unknown')}</div>
+        <div class="lcg" style="grid-template-columns:1fr 1fr 1fr">
+          <div class="ls"><span class="sl">Date</span><span class="sv">${formatDate(l.issued_date)}</span></div>
+          <div class="ls"><span class="sl">Principal</span><span class="sv">${formatCurrency(l.principal_amount)}</span></div>
+          <div class="ls"><span class="sl">Status</span><span class="sv"><span class="${statusClass}">${escapeHtml(status.toUpperCase())}</span></span></div>
+        </div></div>`
+    })
 
     contentContainer.innerHTML = `
       <style>.status-badge{padding:0.2rem 0.4rem;border-radius:3px;font-size:0.65rem;font-weight:700;}.status-green{background:#dcfce7;color:#166534;}.status-red{background:#fee2e2;color:#991b1b;}.status-amber{background:#fef3c7;color:#92400e;}.status-gray{background:#f3f4f6;color:#374151;}</style>
       ${filterHtml}
-      <div class="tc">
-        <table class="styled-table">
-          <thead>
-            <tr>
-              <th>Loan Date</th>
-              <th>Type / Enterprise</th>
-              <th class="text-right">Principal</th>
-              <th class="text-right">Admin Fees</th>
-              <th class="text-right">Outstanding</th>
-              <th>Start Date</th>
-              <th style="text-align:center;">Duration</th>
-              <th>End Date</th>
-              <th style="text-align:center;">Status</th>
-            </tr>
-          </thead>
-          <tbody>${rows}</tbody>
-        </table>
+      <div class="ldv">
+        <div class="tc">
+          <table class="styled-table">
+            <thead>
+              <tr>
+                <th>Loan Date</th>
+                <th>Type / Enterprise</th>
+                <th class="text-right">Principal</th>
+                <th class="text-right">Admin Fees</th>
+                <th class="text-right">Outstanding</th>
+                <th>Start Date</th>
+                <th style="text-align:center;">Duration</th>
+                <th>End Date</th>
+                <th style="text-align:center;">Status</th>
+              </tr>
+            </thead>
+            <tbody>${desktopRows}</tbody>
+          </table>
+        </div>
+      </div>
+      <div class="lmv">
+        ${mobileRows}
       </div>`
 
     contentContainer.querySelector('#loan-status-filter').addEventListener('change', (e) => {
       window._loanStatusFilter = e.target.value
       renderLoansTab()
-    })
-
-    contentContainer.querySelectorAll('tr[data-loan-id]').forEach(row => {
-      row.addEventListener('click', () => {
-        const loanId = row.dataset.loanId
-        openLoanDetailModal(loanId)
-      })
-    })
-
-    contentContainer.querySelectorAll('tr[data-loan-id]').forEach(row => {
-      row.style.cursor = 'pointer'
     })
   }
 

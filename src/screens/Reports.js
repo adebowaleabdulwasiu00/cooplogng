@@ -887,19 +887,24 @@ export async function renderReports(container, user) {
                         const header = headers[idx];
                         const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
                         const commonAmountHeaders = ['Amount', 'Total', 'Principal', 'Bal B/F', 'DR', 'CR', 'BL', 'Balance'];
-                        const isAmount = typeof val === 'number' || commonAmountHeaders.includes(header) || monthNames.includes(header);
+                        const isAmount = typeof val === 'number' || ((val !== null && val !== undefined && val !== '') && (commonAmountHeaders.includes(header) || monthNames.includes(header)));
                         
-                        // Force no-wrap on all cells globally with !important
-                        const baseStyle = 'white-space: nowrap !important; word-break: keep-all !important; overflow-wrap: normal !important;';
+                        const shouldWrap = header === 'Description' || header === 'Notes' || header === 'Note';
+                        
+                        // Force no-wrap on all non-wrap-friendly cells globally with !important
+                        const baseStyle = shouldWrap
+                            ? 'white-space: normal !important; word-break: break-word !important; min-width: 150px; max-width: 250px;'
+                            : 'white-space: nowrap !important; word-break: keep-all !important; overflow-wrap: normal !important;';
 
                         if (isAmount) {
                             const numVal = (val === null || val === undefined || val === '') ? 0 : Number(val);
-                            const formatted = formatNumber(numVal).replace(/ /g, '&nbsp;');
-                            const style = `style="${baseStyle} ${numVal < 0 ? 'color: #dc2626; font-weight: 700;' : ''} text-align: right;"`;
+                            const formatted = isNaN(numVal) ? escapeHtml(String(val)).replace(/ /g, '&nbsp;') : formatNumber(numVal).replace(/ /g, '&nbsp;');
+                            const style = `style="${baseStyle} ${!isNaN(numVal) && numVal < 0 ? 'color: #dc2626; font-weight: 700;' : ''} text-align: right;"`;
                             return `<td ${style}>${formatted}</td>`;
                         }
 
-                        const text = escapeHtml(String(val ?? '')).replace(/ /g, '&nbsp;');
+                        const rawText = String(val ?? '');
+                        const text = shouldWrap ? escapeHtml(rawText) : escapeHtml(rawText).replace(/ /g, '&nbsp;');
                         return `<td style="${baseStyle}">${text}</td>`;
                     }).join('')}
                 </tr>

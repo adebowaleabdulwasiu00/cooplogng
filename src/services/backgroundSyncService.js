@@ -353,13 +353,13 @@ function _emitGranularUpdates(collection, docs) {
 // ─── Initial Full Sync ────────────────────────────────────────────────────────
 
 async function _initialSyncInternal(forceFull = false) {
-    if (_isSyncing) {
+    if (_isSyncing && !forceFull) {
         console.log('[BgSync] Initial sync already in progress, skipping duplicate.')
-        return
+        return false
     }
     _isSyncing = true
     const cooperativeId = _session.cooperative_id || _session.cooperativeId
-    if (!cooperativeId) { _isSyncing = false; return }
+    if (!cooperativeId) { _isSyncing = false; return false }
 
     syncBus.emit(SyncEvents.SYNC_STARTED, createSyncPayload(SyncEvents.SYNC_STARTED, { cooperativeId }))
 
@@ -367,6 +367,18 @@ async function _initialSyncInternal(forceFull = false) {
 
     try {
         console.log(`[BgSync] Starting initial sync. forceFull=${forceFull}`);
+        
+        // If forceFull is requested, mark all collections as unsynced (0) first so the UI turns yellow/red.
+        if (forceFull) {
+            console.log('[BgSync] forceFull is true. Resetting all collections to unsynced state.');
+            const collectionsList = ['enterprise', 'bank', 'cooperatives', 'transaction_types', 'members', 'users', 'remittance', 'notifications'];
+            for (const col of collectionsList) {
+                await markCollectionUnsynced(cooperativeId, col);
+            }
+            // Trigger a status update event so UI can render the yellow dots immediately
+            syncBus.emit(SyncEvents.SYNC_STATUS_CHANGED, { status: 'syncing' });
+        }
+
         // If DB was previously synced but is now empty (cleared storage), skip the delete phase
         if (forceFull) {
             const existingMeta = await getSyncMeta(cooperativeId)
@@ -493,12 +505,14 @@ async function _initialSyncInternal(forceFull = false) {
             isInitial: true
         }))
         console.log('[BgSync] Initial Sync Completed Successfully!');
+        return true
     } catch (err) {
         console.error('[BgSync] Initial sync failed:', err)
         syncBus.emit(SyncEvents.SYNC_FAILED, createSyncPayload(SyncEvents.SYNC_FAILED, {
             error: err.message,
             cooperativeId
         }))
+        return false
     } finally {
         _isSyncing = false
     }

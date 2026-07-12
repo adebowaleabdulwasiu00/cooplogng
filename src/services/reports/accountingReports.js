@@ -34,7 +34,9 @@ export async function getEnterpriseAccountData(cooperativeId, user, enterpriseId
         FROM remittance_detail rd
         JOIN remittance r ON r.id = rd.remittance_id
         JOIN members m ON m.id = r.member_id
-        WHERE rd.cooperative_id = ? AND rd.enterprise_id = ? AND r.status = 'Approved' AND date(r.remittance_date) < date(?)
+        WHERE rd.cooperative_id = ? AND rd.enterprise_id = ? AND r.status = 'Approved'
+          AND r.is_deleted = 0 AND rd.is_deleted = 0 AND m.is_deleted = 0
+          AND date(r.remittance_date) < date(?)
     `;
     const bbfBind = [cooperativeId, enterpriseId, startDateStr];
     if (!isAdmin) {
@@ -66,6 +68,7 @@ export async function getEnterpriseAccountData(cooperativeId, user, enterpriseId
             JOIN remittance r ON r.id = rd.remittance_id
             JOIN members m ON m.id = r.member_id
             WHERE rd.cooperative_id = ? AND rd.enterprise_id = ? AND r.status = 'Approved'
+              AND r.is_deleted = 0 AND rd.is_deleted = 0 AND m.is_deleted = 0
               AND date(r.remittance_date) >= date(?) AND date(r.remittance_date) < date(?)
         `;
         const mBind = [cooperativeId, enterpriseId, mStartStr, mEndStr];
