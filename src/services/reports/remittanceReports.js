@@ -82,7 +82,7 @@ export async function getRemittanceScheduleData(cooperativeId, user, month, year
     const headers = ["S/N", useSpecialId ? "Member ID" : "Reg No", ...orderedEnts.map(e => e.account_name), "Total"];
 
     let sql = `
-        SELECT m.id, m.registration_no, m.special_id, rd.enterprise_id, SUM(rd.amount) as total
+        SELECT r.member_id as id, m.registration_no, m.special_id, rd.enterprise_id, SUM(rd.amount) as total
         FROM remittance_detail rd
         JOIN remittance r ON r.id = rd.remittance_id
         JOIN members m ON m.id = r.member_id
@@ -97,7 +97,7 @@ export async function getRemittanceScheduleData(cooperativeId, user, month, year
         sql += " AND LOWER(',' || REPLACE(IFNULL(m.account_manager, ''), ' ', '') || ',') LIKE LOWER('%,' || REPLACE(?, ' ', '') || ',%')";
         bind.push(user.username);
     }
-    sql += " GROUP BY m.id, rd.enterprise_id";
+    sql += " GROUP BY r.member_id, rd.enterprise_id";
 
     const rows = await queryRows(sql, bind);
     const byMember = {};

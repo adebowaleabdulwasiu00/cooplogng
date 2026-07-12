@@ -68,12 +68,12 @@ export async function getPaymentAdviseData(cooperativeId) {
     const headers = ["S/N", useSpecialId ? "Member ID" : "Reg No", ...orderedEnts.map(e => e.account_name), "Total"];
 
     const sql = `
-        SELECT m.id, m.registration_no, m.special_id, pa.enterprise_id, SUM(pa.amount) as total
+        SELECT pa.member_id as id, m.registration_no, m.special_id, pa.enterprise_id, SUM(pa.amount) as total
         FROM payment_advise pa
         JOIN members m ON m.id = pa.member_id
         WHERE pa.cooperative_id = ?
           AND pa.is_deleted = 0 AND m.is_deleted = 0
-        GROUP BY m.id, pa.enterprise_id
+        GROUP BY pa.member_id, pa.enterprise_id
     `;
     const rows = await queryRows(sql, [cooperativeId]);
     const byMember = {};

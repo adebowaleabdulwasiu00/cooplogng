@@ -113,8 +113,8 @@ export async function executeComplexSelect(parsed) {
                 if (join.type === 'LEFT') {
                     return { ...item }
                 }
-                return item
-            })
+                return null
+            }).filter(Boolean)
         } else if (join.table === 'enterprise') {
             const enterprises = await getAllItems('enterprise')
             const entMap = {}
@@ -129,8 +129,8 @@ export async function executeComplexSelect(parsed) {
                 if (join.type === 'LEFT') {
                     return { ...item }
                 }
-                return item
-            })
+                return null
+            }).filter(Boolean)
         } else if (join.table === 'remittance_detail') {
             const details = await getAllItems('remittance_detail')
             // Parse ON clause to determine the correct key column
@@ -185,8 +185,8 @@ export async function executeComplexSelect(parsed) {
                 if (join.type === 'LEFT') {
                     return { ...item }
                 }
-                return item
-            })
+                return null
+            }).filter(Boolean)
         }
     }
 
@@ -401,16 +401,21 @@ function evaluateCaseExpression(expr, item) {
         case '!=': case '<>': passed = String(itemVal) != String(val); break
     }
 
-    if (passed) {
-        const thenCol = thenStr.replace(/^[a-z]+\./i, '')
-        const thenVal = isNaN(thenStr) ? (item[thenCol] ?? 0) : parseFloat(thenStr)
-        const negate = thenStr.startsWith('-') ? -1 : 1
-        return negate * (isNaN(thenStr) ? Number(item[thenCol] ?? 0) : Math.abs(parseFloat(thenStr)))
-    } else {
-        const elseCol = elseStr.replace(/^[a-z]+\./i, '')
-        const elseVal = isNaN(elseStr) ? (item[elseCol] ?? 0) : parseFloat(elseStr)
-        return Number(elseVal)
+    return resolveCaseResult(passed ? thenStr : elseStr, item)
+}
+
+function resolveCaseResult(expr, item) {
+    let negate = 1
+    let field = expr.trim()
+    if (field.startsWith('-')) {
+        negate = -1
+        field = field.substring(1).trim()
     }
+    field = field.replace(/^[a-z]+\./i, '')
+    if (/^-?\d+(\.\d+)?$/.test(field)) {
+        return negate * parseFloat(field)
+    }
+    return negate * Number(item[field] ?? 0)
 }
 
 /**

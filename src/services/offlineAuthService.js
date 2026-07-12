@@ -435,6 +435,22 @@ export async function clearOfflineSession(cooperativeId, userId) {
 }
 
 /**
+ * Remove ALL local persistent sessions from IndexedDB.
+ * Called on full logout to prevent any session from being restored on refresh.
+ */
+export async function clearAllOfflineSessions() {
+    try {
+        const all = await getAllLocalSessions()
+        for (const s of all) {
+            const sk = `${s.cooperative_id}_${s.user_id}`
+            await deleteLocalSession(sk).catch(() => {})
+        }
+    } catch (e) {
+        console.warn('[OfflineAuth] Failed to clear all sessions:', e)
+    }
+}
+
+/**
  * Convert a local_session row into the app's welcomeUser format.
  */
 export function sessionToWelcomeUser(session) {

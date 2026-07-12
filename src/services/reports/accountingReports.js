@@ -30,7 +30,7 @@ export async function getEnterpriseAccountData(cooperativeId, user, enterpriseId
 
     const startDateStr = `${startDate.getFullYear()}-${String(startDate.getMonth() + 1).padStart(2, '0')}-01`;
     let bbfSql = `
-        SELECT m.id, m.registration_no, m.special_id, SUM(rd.amount) as amt
+        SELECT r.member_id as id, m.registration_no, m.special_id, SUM(rd.amount) as amt
         FROM remittance_detail rd
         JOIN remittance r ON r.id = rd.remittance_id
         JOIN members m ON m.id = r.member_id
@@ -43,7 +43,7 @@ export async function getEnterpriseAccountData(cooperativeId, user, enterpriseId
         bbfSql += " AND LOWER(',' || REPLACE(IFNULL(m.account_manager, ''), ' ', '') || ',') LIKE LOWER('%,' || REPLACE(?, ' ', '') || ',%')";
         bbfBind.push(user.username);
     }
-    bbfSql += " GROUP BY m.id";
+    bbfSql += " GROUP BY r.member_id";
     const bbfRows = await queryRows(bbfSql, bbfBind);
     const bbfMap = {};
     const regMap = {};
@@ -61,7 +61,7 @@ export async function getEnterpriseAccountData(cooperativeId, user, enterpriseId
         const mEndStr = `${nextMonthDate.getFullYear()}-${String(nextMonthDate.getMonth() + 1).padStart(2, '0')}-01`;
 
         let mSql = `
-            SELECT m.id, m.registration_no, m.special_id,
+            SELECT r.member_id as id, m.registration_no, m.special_id,
                    SUM(CASE WHEN rd.amount > 0 THEN rd.amount ELSE 0 END) as cr,
                    SUM(CASE WHEN rd.amount < 0 THEN -rd.amount ELSE 0 END) as dr
             FROM remittance_detail rd
@@ -76,7 +76,7 @@ export async function getEnterpriseAccountData(cooperativeId, user, enterpriseId
             mSql += " AND LOWER(',' || REPLACE(IFNULL(m.account_manager, ''), ' ', '') || ',') LIKE LOWER('%,' || REPLACE(?, ' ', '') || ',%')";
             mBind.push(user.username);
         }
-        mSql += " GROUP BY m.id";
+        mSql += " GROUP BY r.member_id";
         const mRows = await queryRows(mSql, mBind);
         const mMap = {};
         mRows.forEach(r => {

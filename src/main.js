@@ -8,7 +8,9 @@ import {
   query,
   where,
   getDocs,
-  limit
+  limit,
+  getFirebaseAuth,
+  signOut
 } from './firebase.js'
 
 import { renderAccountBalance } from './screens/AccountBalance.js'
@@ -25,7 +27,7 @@ import { initializeSyncService, syncCooperativeData, performHardRestore } from '
 import { getAllForCoop, loadDoc, isSynced, queryOne } from './services/sqliteService.js'
 import { validateLogin } from './services/authService.js'
 
-import { attemptOfflineLogin, saveSessionLocally as saveSession, loadSavedSession, clearSavedSession } from './services/offlineAuthService.js'
+import { attemptOfflineLogin, saveSessionLocally as saveSession, loadSavedSession, clearSavedSession, clearOfflineSession, clearAllOfflineSessions } from './services/offlineAuthService.js'
 import { mountNotificationBell } from './components/NotificationBell.js'
 import { getNotificationListHtml, setupNotificationModalListeners } from './components/NotificationModal.js'
 import { showToast } from './services/toastService.js'
@@ -416,7 +418,6 @@ app.addEventListener('click', async (event) => {
     const coopId = state.welcomeUser?.cooperativeId
     const userId = state.welcomeUser?.userId || state.welcomeUser?.memberId
     try {
-      const { getFirebaseAuth, signOut } = await import('./firebase.js');
       const { auth } = getFirebaseAuth();
       if (auth) {
         await signOut(auth);
@@ -451,14 +452,8 @@ app.addEventListener('click', async (event) => {
       }
     }
     saveSession(null)
-    // Also clear the IndexedDB persistent session so refresh doesn't auto-login
-    if (coopId && userId) {
-      import('./services/offlineAuthService.js').then(({ clearOfflineSession }) => {
-        clearOfflineSession(coopId, userId).catch(e =>
-          console.warn('[Logout] Failed to clear offline session:', e)
-        )
-      })
-    }
+    // Clear ALL persistent offline sessions from IndexedDB so refresh cannot auto-login
+    await clearAllOfflineSessions()
     render()
     return
   }
