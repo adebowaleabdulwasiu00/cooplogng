@@ -13,11 +13,29 @@ cd /d "%~dp0"
 echo [Step 1/2] Checking dependencies...
 echo ------------------------------------------
 where npm >nul 2>nul
-if %ERRORLEVEL% neq 0 (
+if errorlevel 1 (
     echo [ERROR] npm is not installed or not in PATH.
+    echo Please install Node.js from https://nodejs.org/ and try again.
     pause
     exit /b 1
 )
+
+if not exist "node_modules\.bin\vite.cmd" (
+    echo [INFO] Vite is missing. Installing project dependencies...
+    call npm install
+    if errorlevel 1 (
+        echo [ERROR] Dependency installation failed.
+        pause
+        exit /b 1
+    )
+)
+
+if not exist "node_modules\.bin\vite.cmd" (
+    echo [ERROR] Vite was not installed. Check package.json and npm output above.
+    pause
+    exit /b 1
+)
+
 echo [OK] Dependencies found.
 echo.
 

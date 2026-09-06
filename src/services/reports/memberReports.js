@@ -183,3 +183,95 @@ export async function getMemberPerformanceAgingData(cooperativeId) {
     const headers = ['S/N', useSpecialId ? 'Member ID' : 'Reg No', 'Member Name', 'Status', 'Loan Account', 'Current (<30)', '30-60 Days', '60-90 Days', 'Over 90 Days', 'Total Outstanding'];
     return { data, headers, title: 'Member Performance & Aging Report' };
 }
+
+export async function getGeneralNetworthData(cooperativeId, user, dateTo) {
+    const isAdmin = user.role === 'admin' || (user.permissions || '').includes('admin');
+    const useSpecialId = localStorage.getItem('useSpecialIdInReports') === 'true';
+
+    const allEnterprises = await fetchEnterprises(cooperativeId, true);
+    const enterprises = allEnterprises.filter(e => {
+        const isRevenue = e.revenue == 1 || e.revenue === '1' || e.revenue === 'true' || e.revenue === true;
+        return !isRevenue && !e.is_deleted;
+    });
+
+    let sql = `
+        SELECT r.member_id as id, m.registration_no, m.special_id,
+               m.last_name, m.first_name, m.middle_name,
+               rd.enterprise_id, SUM(rd.amount) as total
+        FROM remittance_detail rd
+        JOIN remittance r ON r.id = rd.remittance_id
+        JOIN members m ON m.id = r.member_id
+        WHERE rd.cooperative_id = ? AND r.status = 'Approved'
+          AND r.is_deleted = 0 AND rd.is_deleted = 0 AND m.is_deleted = 0
+          AND date(r.remittance_date) <= date(?)
+    `;
+    const bind = [String(cooperativeId), dateTo];
+
+    if (!isAdmin) {
+        sql += " AND LOWER(',' || REPLACE(IFNULL(m.account_manager, ''), ' ', '') || ',') LIKE LOWER('%,' || REPLACE(?, ' ', '') || ',%')";
+        bind.push(user.username);
+    }
+    sql += " GROUP BY r.member_id, rd.enterprise_id";
+
+    const rows = await queryRows(sql, bind);
+
+    const byMember = {};
+    const regMap = {};
+    const specialIdMap = {};
+    const nameMap = {};
+    rows.forEach(r => {
+        if (!byMember[r.id]) byMember[r.id] = {};
+        byMember[r.id][r.enterprise_id] = r.total;
+        regMap[r.id] = r.registration_no;
+        specialIdMap[r.id] = r.special_id;
+        if (!nameMap[r.id]) {
+            nameMap[r.id] = [r.last_name, r.first_name, r.middle_name].filter(Boolean).join(' ');
+        }
+    });
+
+    const headers = [
+        'S/N',
+        'Account Number',
+        'Full Name',
+        ...enterprises.map(e => e.account_name),
+        'Total'
+    ];
+
+    const data = [];
+    const entTotals = new Array(enterprises.length).fill(0);
+    const sortedIds = Object.keys(byMember).sort((a, b) => (regMap[a] || 0) - (regMap[b] || 0));
+
+    sortedIds.forEach((mid, idx) => {
+        const accountId = useSpecialId
+            ? (specialIdMap[mid] || String(regMap[mid] || '').padStart(4, '0'))
+            : String(regMap[mid] || '').padStart(4, '0');
+        const row = [idx + 1, accountId, nameMap[mid] || ''];
+        let rowTotal = 0;
+
+        enterprises.forEach((ent, eIdx) => {
+            const val = byMember[mid][ent.id] || 0;
+            row.push(val);
+            entTotals[eIdx] += val;
+
+            const isDue   = ent.compulsory_due == 1 || ent.compulsory_due === '1' || ent.compulsory_due === true;
+            const isPenalty = ent.is_penalty == 1 || ent.is_penalty === '1' || ent.is_penalty === true;
+            if (!isDue && !isPenalty) rowTotal += val;
+        });
+
+        row.push(rowTotal);
+        data.push(row);
+    });
+
+    if (data.length > 0) {
+        let footerTotal = 0;
+        enterprises.forEach((ent, eIdx) => {
+            const isDue     = ent.compulsory_due == 1 || ent.compulsory_due === '1' || ent.compulsory_due === true;
+            const isPenalty = ent.is_penalty == 1 || ent.is_penalty === '1' || ent.is_penalty === true;
+            if (!isDue && !isPenalty) footerTotal += entTotals[eIdx];
+        });
+        data.push(['TOTAL', '', '', ...entTotals, footerTotal]);
+    }
+
+    const title = `General Net Worth Balances As At ${formatDate(dateTo)}`;
+    return { data, headers, title };
+}

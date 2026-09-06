@@ -12,6 +12,7 @@ import {
     getCashFlowData,
     getPersonalLedgerData,
     getMemberPerformanceAgingData,
+    getGeneralNetworthData,
     exportToExcel,
     exportToPDF
 } from '../services/reportsService.js';
@@ -292,6 +293,7 @@ export async function renderReports(container, user) {
                             <option value="cash_flow">Cash Flow Statement</option>
                             <option value="personal_ledger">Personal Ledger</option>
                             <option value="member_performance_aging">Member Performance & Aging</option>
+                            <option value="general_networth">General Net Worth Balances</option>
                         </select>
                     </div>
                     
@@ -315,6 +317,11 @@ export async function renderReports(container, user) {
                         <label>Member</label>
                         <select id="personal-member">
                         </select>
+                    </div>
+
+                    <div class="control-group filter-networth-date" style="display: none;">
+                        <label>As At Date</label>
+                        <input type="date" id="networth-date">
                     </div>
 
                     <div class="control-group filter-schedule-type" style="display: none;">
@@ -670,6 +677,7 @@ export async function renderReports(container, user) {
         container.querySelector('.filter-eod-date-to').style.display = (val === 'eod_report') ? 'flex' : 'none';
         container.querySelector('.filter-gl-enterprise').style.display = (val === 'general_ledger') ? 'flex' : 'none';
         container.querySelector('.filter-personal-member').style.display = (val === 'personal_ledger') ? 'flex' : 'none';
+        container.querySelector('.filter-networth-date').style.display = (val === 'general_networth') ? 'flex' : 'none';
 
         // Prefill dates
         if (val === 'remittance_list' || val === 'general_ledger') {
@@ -693,6 +701,13 @@ export async function renderReports(container, user) {
                 const today = formatInputDate(new Date());
                 eodDateFromInput.value = today;
                 eodDateToInput.value = today;
+            }
+        }
+
+        if (val === 'general_networth') {
+            const nwDateInput = container.querySelector('#networth-date');
+            if (!nwDateInput.value) {
+                nwDateInput.value = formatInputDate(new Date());
             }
         }
 
@@ -806,6 +821,11 @@ export async function renderReports(container, user) {
                 title = result.title;
             } else if (type === 'member_performance_aging') {
                 result = await getMemberPerformanceAgingData(cooperativeId);
+                title = result.title;
+            } else if (type === 'general_networth') {
+                const networthDate = container.querySelector('#networth-date').value;
+                if (!networthDate) return showToast('Please select an As At date', 'warning');
+                result = await getGeneralNetworthData(cooperativeId, user, networthDate);
                 title = result.title;
             }
 
