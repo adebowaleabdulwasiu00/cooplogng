@@ -73,6 +73,7 @@ export async function getPaymentAdviseData(cooperativeId) {
         JOIN members m ON m.id = pa.member_id
         WHERE pa.cooperative_id = ?
           AND pa.is_deleted = 0 AND m.is_deleted = 0
+          AND CAST(pa.amount AS REAL) != 0
         GROUP BY pa.member_id, pa.enterprise_id
     `;
     const rows = await queryRows(sql, [cooperativeId]);
@@ -130,37 +131,47 @@ export async function getMemberPerformanceAgingData(cooperativeId) {
                 WHERE rd.enterprise_id = ?
                   AND r.member_id = ?
                   AND r.status = 'Approved' AND r.is_deleted = 0 AND rd.is_deleted = 0
+                ORDER BY r.remittance_date ASC, r.id ASC
             `;
             const results = await queryRows(sql, [loan.id, member.id]);
 
-            let outstanding = 0;
-            results.forEach(row => {
-                outstanding += parseFloat(row.amount || 0);
-            });
-
-            if (outstanding < -0.01) {
-                const absOutstanding = Math.abs(outstanding);
-
-                let minDate = new Date();
-                results.forEach(row => {
-                    if (parseFloat(row.amount || 0) < 0) {
-                        const d = new Date(row.remittance_date);
-                        if (d < minDate) minDate = d;
+            // FIFO: repayments (positive) retire the oldest disbursement
+            // (negative) lots first, so each surviving naira is aged from
+            // when it was actually disbursed — not from the first ever loan.
+            const lots = [];
+            for (const row of results) {
+                const amt = parseFloat(row.amount || 0);
+                if (amt < -0.009) {
+                    lots.push({ amt: -amt, date: new Date(row.remittance_date) });
+                } else if (amt > 0.009) {
+                    let pay = amt;
+                    while (pay > 0.009 && lots.length > 0) {
+                        const lot = lots[0];
+                        const take = Math.min(lot.amt, pay);
+                        lot.amt -= take;
+                        pay -= take;
+                        if (lot.amt <= 0.009) lots.shift();
                     }
-                });
+                }
+            }
+            const outstanding = lots.reduce((s, l) => s + l.amt, 0);
 
-                const diffTime = Math.abs(new Date() - minDate);
-                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+            if (outstanding > 0.01) {
+                const absOutstanding = outstanding;
+                const nowMs = new Date().getTime();
 
-                let bucket1 = '';
-                let bucket2 = '';
-                let bucket3 = '';
-                let bucket4 = '';
-
-                if (diffDays < 30) bucket1 = absOutstanding;
-                else if (diffDays < 60) bucket2 = absOutstanding;
-                else if (diffDays < 90) bucket3 = absOutstanding;
-                else bucket4 = absOutstanding;
+                let bucket1 = 0;
+                let bucket2 = 0;
+                let bucket3 = 0;
+                let bucket4 = 0;
+                for (const lot of lots) {
+                    const d = isNaN(lot.date.getTime()) ? new Date(nowMs) : lot.date;
+                    const diffDays = Math.ceil(Math.abs(nowMs - d.getTime()) / (1000 * 60 * 60 * 24));
+                    if (diffDays < 30) bucket1 += lot.amt;
+                    else if (diffDays < 60) bucket2 += lot.amt;
+                    else if (diffDays < 90) bucket3 += lot.amt;
+                    else bucket4 += lot.amt;
+                }
 
                 const memberIdStr = useSpecialId ? (member.special_id || String(member.registration_no).padStart(4, '0')) : String(member.registration_no).padStart(4, '0');
 
@@ -170,10 +181,10 @@ export async function getMemberPerformanceAgingData(cooperativeId) {
                     `${member.last_name || ''} ${member.first_name || ''} ${member.middle_name || ''}`.trim(),
                     member.status || 'Active',
                     loan.account_name,
-                    bucket1,
-                    bucket2,
-                    bucket3,
-                    bucket4,
+                    bucket1 || '',
+                    bucket2 || '',
+                    bucket3 || '',
+                    bucket4 || '',
                     absOutstanding
                 ]);
             }
@@ -251,11 +262,8 @@ export async function getGeneralNetworthData(cooperativeId, user, dateTo) {
         enterprises.forEach((ent, eIdx) => {
             const val = byMember[mid][ent.id] || 0;
             row.push(val);
+            rowTotal += val;
             entTotals[eIdx] += val;
-
-            const isDue   = ent.compulsory_due == 1 || ent.compulsory_due === '1' || ent.compulsory_due === true;
-            const isPenalty = ent.is_penalty == 1 || ent.is_penalty === '1' || ent.is_penalty === true;
-            if (!isDue && !isPenalty) rowTotal += val;
         });
 
         row.push(rowTotal);
@@ -263,12 +271,8 @@ export async function getGeneralNetworthData(cooperativeId, user, dateTo) {
     });
 
     if (data.length > 0) {
-        let footerTotal = 0;
-        enterprises.forEach((ent, eIdx) => {
-            const isDue     = ent.compulsory_due == 1 || ent.compulsory_due === '1' || ent.compulsory_due === true;
-            const isPenalty = ent.is_penalty == 1 || ent.is_penalty === '1' || ent.is_penalty === true;
-            if (!isDue && !isPenalty) footerTotal += entTotals[eIdx];
-        });
+        // Footer sums every displayed column so column totals tie to row totals.
+        const footerTotal = entTotals.reduce((a, b) => a + b, 0);
         data.push(['TOTAL', '', '', ...entTotals, footerTotal]);
     }
 

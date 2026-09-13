@@ -66,8 +66,8 @@ export function showSimpleReviewModal(
       if (isSavingsRequest && cooperativeId && formData.member_id) {
         const { buildAccountBalance } = await import('../../services/dataService.js');
         const memberIdString = typeof formData.member_id === 'object' ? formData.member_id.id : formData.member_id;
-        const limitRid = formData.r_id !== undefined && formData.r_id !== null ? formData.r_id : null;
-        const { accountBalance } = await buildAccountBalance(cooperativeId, { memberId: memberIdString }, limitRid);
+        const limitKey = formData.id && formData.created_at ? { ts: formData.created_at, id: formData.id } : null;
+        const { accountBalance } = await buildAccountBalance(cooperativeId, { memberId: memberIdString }, limitKey);
         const balObj = accountBalance.find(b => b.id === targetEntId);
         balanceBefore = balObj ? parseFloat(balObj.sum_of_amount || 0) : 0;
         balanceAfter = balanceBefore - amountVal;

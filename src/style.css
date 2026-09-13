@@ -1504,9 +1504,44 @@ h1 {
   gap: 0.5rem;
 }
 
+/* Pull-to-refresh indicator (Android APK only; element only exists there) */
+#ptr-indicator {
+  position: fixed;
+  top: calc(8px + env(safe-area-inset-top));
+  left: 50%;
+  transform: translate(-50%, -80px);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  box-shadow: var(--shadow-md);
+  font-size: 0.8rem;
+  font-weight: 600;
+  z-index: 2000;
+  opacity: 0;
+  transition: transform 0.15s ease, opacity 0.15s ease;
+  pointer-events: none;
+}
+#ptr-indicator.visible {
+  transform: translate(-50%, 0);
+  opacity: 1;
+}
+#ptr-indicator.ready {
+  color: var(--accent-primary);
+  border-color: var(--accent-primary);
+}
+#ptr-indicator-icon {
+  display: inline-flex;
+  font-size: 1rem;
+  line-height: 1;
+}
+
 /* Mobile Bottom Navigation Styling */
-.mobile-bottom-nav {
-  display: none; /* Hidden on Desktop */
+.mobile-bottom-nav {  display: none; /* Hidden on Desktop */
   height: 64px;
   background: var(--bg-card);
   border-top: 1px solid var(--border-light);
@@ -1693,6 +1728,13 @@ h1 {
 
   .mobile-bottom-nav {
     display: flex;
+  }
+
+  /* Remittance is hidden from mobile navigation completely (bottom nav has
+     no entry; this removes it from the sidebar drawer too). A routing guard
+     in main.js bounces deep links back to the dashboard. */
+  .sidebar-nav [data-tab="payments"] {
+    display: none !important;
   }
 
   #mobile-context-fab-container {

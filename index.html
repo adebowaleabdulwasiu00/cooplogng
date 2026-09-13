@@ -15,7 +15,9 @@
   <script type="module" src="/src/main.js"></script>
   <script>
     var SW_BUILD = /*__SW_BUILD__*/ 1;
-    if ('serviceWorker' in navigator) {
+    // Packaged shells (Electron file://, native WebViews) have no SW scope — skip.
+    var __isPackagedShell = location.protocol === 'file:' || !!window.cooplog || !!window.Capacitor;
+    if ('serviceWorker' in navigator && !__isPackagedShell) {
       window.addEventListener('load', function() {
         navigator.serviceWorker.register('/sw.js?v=' + SW_BUILD)
           .then(function(reg) {

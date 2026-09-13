@@ -183,6 +183,7 @@ export async function activateSubscription(collectionName, docId, username, coop
 
         const formattedExpiry = formatExpiry(newExpiryDate);
         const updatePayload = {
+            cooperative_id: String(cooperativeId),
             subscriptionStatus: SUBSCRIPTION_STATUS.SUBSCRIBED,
             expiry_date: formattedExpiry,
             subscriptionExpiry: formattedExpiry, // For backward compatibility
@@ -225,6 +226,7 @@ export async function deactivateSubscription(collectionName, docId, username, co
         const now = Timestamp.now();
 
         const updatePayload = {
+            cooperative_id: String(cooperativeId),
             subscriptionStatus: SUBSCRIPTION_STATUS.UNSUBSCRIBED,
             sync_at: now,
             modified_at: now,

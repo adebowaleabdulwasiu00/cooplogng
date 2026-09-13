@@ -1,0 +1,51 @@
+appId: com.cooplog.app
+productName: CoopLog
+copyright: Copyright (c) Imradex Global
+artifactName: CoopLog-Setup-${version}.${ext}
+
+directories:
+  output: release
+  buildResources: public
+
+# Keep the installer lean: the packaged main process only ever requires
+# electron-updater. Everything else is either bundled into dist/ by Vite
+# (firebase, exceljs, sql.js, capacitor core) or used only by repo scripts /
+# the Android project — never by the running EXE.
+asar: true
+asarUnpack:
+  - '**/*.wasm'
+
+files:
+  - dist/**/*
+  - electron/**/*
+  - package.json
+  - '!node_modules/@capacitor/android/**/*'
+  - '!node_modules/@capacitor/cli/**/*'
+  - '!node_modules/firebase-admin/**/*'
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: public/logo.png
+  publisherName: Imradex Global
+  requestedExecutionLevel: asInvoker
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  allowElevation: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: CoopLog
+  menuCategory: Imradex Global
+  license: license.txt
+  deleteAppDataOnUninstall: true
+  differentialPackage: true
+
+publish:
+  provider: github
+  owner: adebowaleabdulwasiu00
+  repo: cooplogng
+  channel: latest

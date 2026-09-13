@@ -1,6 +1,16 @@
-import ExcelJS from 'exceljs'
 import { getFilteredMembers, getAllMembers, usersList, loadMembersData } from './membersState.js'
+
+// ExcelJS (~900KB) loads lazily on first export/import so dashboard startup stays light.
+let _excelJS = null;
+async function loadExcelJS() {
+    if (!_excelJS) {
+        const mod = await import('exceljs');
+        _excelJS = mod.default || mod;
+    }
+    return _excelJS;
+}
 import { addMember } from '../../services/dataService.js'
+import { generateRandom6Digit } from '../../utils/formatters.js'
 import { getDb, doc, getDoc } from '../../firebase.js'
 import { showToast } from '../../services/toastService.js'
 
@@ -60,6 +70,7 @@ export async function showExportModal(user) {
         btn.disabled = true; btn.innerText = 'Generating...'
 
         try {
+            const ExcelJS = await loadExcelJS();
             const workbook = new ExcelJS.Workbook()
             const worksheet = workbook.addWorksheet('Members')
             
@@ -104,6 +115,7 @@ export async function downloadTemplate(user) {
     const coopName = coopDoc.exists() ? (coopDoc.data().full_name || 'Cooperative') : 'Cooperative'
     const coopShortName = coopDoc.exists() ? (coopDoc.data().short_name || '0000000000') : '0000000000'
 
+    const ExcelJS = await loadExcelJS();
     const workbook = new ExcelJS.Workbook()
     const worksheet = workbook.addWorksheet('Import Template')
 
@@ -209,6 +221,7 @@ export async function showImportModal(user) {
         const file = e.target.files[0]
         if (!file) return
 
+        const ExcelJS = await loadExcelJS();
         const workbook = new ExcelJS.Workbook()
         try {
             await workbook.xlsx.load(file)
@@ -275,11 +288,47 @@ export async function showImportModal(user) {
         btn.disabled = true; btn.innerText = 'Importing...'
 
         try {
+            // Coop-scoped duplicate guard: skip rows whose mobile / special_id
+            // already exists locally or appears twice inside the file itself.
+            // addMember() re-checks anyway; this keeps the bulk run going.
+            const { getAllForCoop } = await import('../../services/sqliteService.js')
+            let existing = []
+            try { existing = await getAllForCoop(String(user.cooperativeId), 'members') } catch { existing = getAllMembers() }
+            const seenMobiles = new Set(
+                (existing || []).map(m => String(m.mobile || '').replace(/\D/g, '').slice(-10)).filter(Boolean)
+            )
+            const seenSpecials = new Set(
+                (existing || []).map(m => String(m.special_id || '').trim().toLowerCase()).filter(Boolean)
+            )
+            let imported = 0
+            const skipped = []
             for (const data of parsedData) {
-                data.password_hash = '1234' // Default for bulk import
-                await addMember(data, user.username)
+                const mk = String(data.mobile || '').replace(/\D/g, '').slice(-10)
+                const sk = String(data.special_id || '').trim().toLowerCase()
+                if ((mk && seenMobiles.has(mk)) || (sk && seenSpecials.has(sk))) {
+                    skipped.push(`${data.last_name || ''} ${data.first_name || ''}`.trim() || data.mobile || 'row')
+                    continue
+                }
+                data.password_hash = generateRandom6Digit() // Default 6-digit PIN for bulk import (force-change on first login via addMember)
+                try {
+                    await addMember(data, user.username)
+                } catch (e) {
+                    // Race/edge: data-layer guard fired (e.g. member synced mid-import)
+                    if (String(e.message || '').includes('already registered')) {
+                        skipped.push(`${data.last_name || ''} ${data.first_name || ''}`.trim() || data.mobile || 'row')
+                        continue
+                    }
+                    throw e
+                }
+                if (mk) seenMobiles.add(mk)
+                if (sk) seenSpecials.add(sk)
+                imported++
             }
-            showToast(`Successfully imported ${parsedData.length} members.`, 'success')
+            if (skipped.length > 0) {
+                showToast(`Imported ${imported}, skipped ${skipped.length} duplicate(s): ${skipped.slice(0, 5).join(', ')}${skipped.length > 5 ? '…' : ''}`, 'warning')
+            } else {
+                showToast(`Successfully imported ${imported} members.`, 'success')
+            }
             document.getElementById('import-modal').remove()
             await loadMembersData(user)
             window.dispatchEvent(new Event('refresh-members'))

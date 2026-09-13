@@ -89,6 +89,41 @@ export function formatDateForInput(dateVal) {
     return `${year}-${month}-${day}`
 }
 
+/**
+ * Real Excel date serial (1900 date system) for a day-precision value.
+ * Built with pure calendar arithmetic — no JS Date is passed to ExcelJS, so
+ * neither ExcelJS nor Excel can apply a timezone shift: the integer serial
+ * carries no time fraction at all. The cell stays a true date (sorting,
+ * filtering, DATEDIF and arithmetic all work) with a date-only number format.
+ * ISO strings use their literal YYYY-MM-DD prefix (the exact DB day);
+ * Date/Timestamp values use local calendar parts (same day the preview shows).
+ * Returns null when the value has no usable calendar day.
+ */
+export function toExcelDateSerial(dateVal) {
+    if (dateVal === null || dateVal === undefined || dateVal === '') return null
+    // A bare number is never a day-precision date here (EOD summary amounts
+    // reuse the report grid) — new Date(50000) would "succeed" as Jan 1970.
+    if (typeof dateVal === 'number') return null
+    let y, m, d
+    if (typeof dateVal === 'string') {
+        const prefix = dateVal.slice(0, 10).split('-')
+        if (prefix.length === 3 && prefix[0].length === 4) {
+            y = Number(prefix[0]); m = Number(prefix[1]) - 1; d = Number(prefix[2])
+        } else {
+            const t = new Date(dateVal)
+            if (isNaN(t.getTime())) return null
+            y = t.getFullYear(); m = t.getMonth(); d = t.getDate()
+        }
+    } else {
+        const ms = dateVal instanceof Date ? dateVal.getTime() : getTimestampMs(dateVal)
+        if (!ms || isNaN(ms)) return null
+        const t = new Date(ms)
+        y = t.getFullYear(); m = t.getMonth(); d = t.getDate()
+    }
+    if (![y, m, d].every(Number.isFinite) || m < 0 || m > 11 || d < 1 || d > 31 || y < 1900 || y > 2100) return null
+    return Math.round(Date.UTC(y, m, d) / 86400000) + 25569
+}
+
 export function escapeHtml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -114,6 +149,26 @@ export function generateRemittanceId(cooperativeId, isAutogen = false) {
     const pad = (n) => String(n).padStart(2, '0');
     const datetime = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
     return isAutogen ? `${prefix}-AUTOGEN-${datetime}` : `${prefix}-${datetime}`;
+}
+
+// Compact human reference for a document id (remittance ids are long
+// timestamp strings like PREFIX-YYYYMMDDHHMMSS). Used anywhere the old
+// sequential receipt number used to be shown.
+export function shortRef(id) {
+    const s = String(id || '').trim();
+    if (!s) return '';
+    return s.length > 8 ? s.slice(-8) : s;
+}
+
+// Last 5 digits of the timestamp embedded in a remittance id, e.g.
+// COOP1-20260912143522-BX7QZ-2 -> "43522". Falls back to shortRef when
+// the id carries no 14-digit timestamp segment.
+export function timestampTail(id) {
+    const s = String(id || '').trim();
+    if (!s) return '';
+    const m = s.match(/\d{14}/);
+    if (m) return m[0].slice(-5);
+    return shortRef(s);
 }
 
 /**
@@ -223,9 +278,122 @@ export async function hashPassword(password) {
 
 /**
  * Generates a random 4-digit numeric string
+ * @deprecated Use generateRandom6Digit() — the system now uses 6-digit PINs.
  */
 export function generateRandom4Digit() {
   return Math.floor(1000 + Math.random() * 9000).toString();
+}
+
+/**
+ * Generates a random 6-digit numeric PIN string
+ */
+export function generateRandom6Digit() {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+/**
+ * Password policy: new passwords must be exactly 6 digits (letters not allowed).
+ */
+export function isSixDigitPin(val) {
+  return typeof val === 'string' && /^\d{6}$/.test(val);
+}
+
+/**
+ * Legacy password policy (grandfathered): min 8 chars with upper, lower,
+ * digit and special character, e.g. "Adex@1234". These keep working
+ * without a forced change.
+ */
+export function isLegacyComplexPassword(val) {
+  return typeof val === 'string' && val.length >= 8
+    && /[a-z]/.test(val)
+    && /[A-Z]/.test(val)
+    && /\d/.test(val)
+    && /[^A-Za-z0-9]/.test(val);
+}
+
+export function isSha256Hex(val) {
+  return typeof val === 'string' && /^[a-f0-9]{64}$/i.test(val);
+}
+
+/**
+ * Force-change evaluation AFTER credentials have verified.
+ * Returns true when the user must set a new 6-digit PIN:
+ *  1. explicit force_password_change flag, or empty/missing stored hash
+ *  2. stored value is plain text (not SHA-256) — ALWAYS forces,
+ *     even if the typed password looks like a legacy-complex password
+ *  3. stored hash verifies but the typed password is neither a 6-digit
+ *     PIN nor a legacy-complex password (catches old <6-digit PINs like
+ *     '1234', whose hashes are valid hex and otherwise indistinguishable).
+ * Grandfathered legacy-complex passwords (e.g. "Adex@1234") pass ONLY
+ * when stored as a hash.
+ */
+export function needsForceChangeAfterMatch(stored, typedInput, forceFlag) {
+  if (forceFlag === true) return true;
+  if (!stored) return true;
+  if (!isSha256Hex(stored)) return true;
+  if (isSixDigitPin(typedInput)) return false;
+  if (isLegacyComplexPassword(typedInput)) return false;
+  return true;
+}
+
+/**
+ * Validates a 6-digit PIN
+ */
+export function validatePin(pin) {
+  return typeof pin === 'string' && /^\d{6}$/.test(pin);
+}
+
+/**
+ * Gets PIN value from 6 individual inputs
+ */
+export function getPinFromInputs(container) {
+  let pin = '';
+  for (let i = 0; i < 6; i++) {
+    const input = container.querySelector(`input[name="pin-${i}"]`) || container.querySelector(`input[name="new-pin-${i}"]`) || container.querySelector(`input[name="confirm-pin-${i}"]`);
+    if (input) pin += input.value;
+  }
+  return pin;
+}
+
+/**
+ * Sets up PIN input auto-focus behavior
+ */
+export function setupPinInputs(container, selectorPrefix = 'pin') {
+  const inputs = Array.from({length: 6}, (_, i) => container.querySelector(`input[name="${selectorPrefix}-${i}"]`));
+  inputs.forEach((input, idx, arr) => {
+    if (!input) return;
+    input.addEventListener('input', (e) => {
+      if (e.target.value.length === 1 && idx < arr.length - 1) {
+        arr[idx + 1]?.focus();
+      }
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Backspace' && !e.target.value && idx > 0) {
+        arr[idx - 1]?.focus();
+      }
+    });
+  });
+  return inputs;
+}
+
+/**
+ * Gmail-style deterministic avatar color for a name (shared by members
+ * table, member modal and duplicates review so colors stay consistent).
+ */
+const AVATAR_COLORS = [
+    '#f44336', '#e91e63', '#9c27b0', '#673ab7',
+    '#3f51b5', '#2196f3', '#03a9f4', '#00bcd4',
+    '#009688', '#4caf50', '#8bc34a', '#cddc39',
+    '#ffeb3b', '#ffc107', '#ff9800', '#ff5722'
+]
+
+export function getAvatarColor(name) {
+    if (!name) return '#999'
+    let hash = 0
+    for (let i = 0; i < name.length; i++) {
+        hash = name.charCodeAt(i) + ((hash << 5) - hash)
+    }
+    return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length]
 }
 
 /**

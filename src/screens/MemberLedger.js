@@ -1,6 +1,6 @@
 import { buildMemberLedger, fetchAllMembers, fetchRemittances, fetchEnterprises, fetchMemberLoans, approveLoanRequest, declineLoanRequest, deleteRemittance } from '../services/dataService.js'
 import { hasPermission } from '../services/permissionService.js'
-import { formatCurrency, escapeHtml, formatDate, formatDateForInput } from '../utils/formatters.js'
+import { formatCurrency, escapeHtml, formatDate, formatDateForInput, shortRef } from '../utils/formatters.js'
 
 if (!window.__ledgerFilters) {
   const now = new Date()
@@ -30,9 +30,10 @@ if (!window.__summaryFilters) {
 if (!window.__pendingLedgerMember) {
   window.__pendingLedgerMember = null
   window.addEventListener('change-tab', (e) => {
-    const { tab, memberId } = e.detail
+    const { tab, memberId, memberName } = e.detail || {}
     if (tab === 'ledger' && memberId) {
       window.__pendingLedgerMember = memberId
+      if (memberName) window.__pendingLedgerMemberName = memberName
     }
   })
 }
@@ -60,6 +61,26 @@ export async function renderMemberLedger(container, user) {
   const currentYear = new Date().getFullYear().toString()
   const isAdmin = user.isAdmin || hasPermission(user.permissions, 'admin') || user.username?.toLowerCase() === 'admin'
   const isMember = user.role === 'member'
+
+  // Consume a member selected from Members preview ("View Ledger").
+  // The old top-of-module copy only ran once at import, so the pending id
+  // was never applied on subsequent navigations -> ledger opened unfiltered.
+  if (window.__pendingLedgerMember) {
+    const pendingId = String(window.__pendingLedgerMember)
+    window.__ledgerFilters.memberId = pendingId
+    window.__ledgerFilters.memberName = window.__pendingLedgerMemberName || 'Selected Member'
+    window.__pendingLedgerMember = null
+    window.__pendingLedgerMemberName = null
+    // Resolve the display name (best-effort; lookup is coop-scoped + offline).
+    try {
+      const found = await fetchAllMembers(user.cooperativeId, user.username, true)
+      const hit = (found || []).find(m => String(m.id) === pendingId)
+      if (hit) {
+        const full = `${hit.first_name || ''} ${hit.last_name || ''}`.trim()
+        if (full) window.__ledgerFilters.memberName = full
+      }
+    } catch {}
+  }
 
   if (isMember && user.memberId && user.memberId !== '0000000000' && window.__ledgerFilters.memberId === 'All') {
     window.__ledgerFilters.memberId = user.memberId
@@ -498,7 +519,7 @@ export async function renderMemberLedger(container, user) {
       subtitleEl.innerHTML = `${viewLabel} | Loading...`
     }
 
-    contentContainer.innerHTML = '<div style="padding: 1rem; text-align: center; color: var(--text-muted); font-size: 0.85rem;">Loading...</div>'
+    contentContainer.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:3rem 1rem;"><div style="width:40px;height:40px;border:4px solid var(--border-medium);border-top-color:var(--accent-primary);border-radius:50%;animation:spin 1s linear infinite;"></div><div style="margin-top:1rem;color:var(--text-primary);font-weight:600;">Loading workspace...</div><div style="color:var(--text-muted);font-size:0.8rem;margin-top:0.25rem;">Please wait while we prepare your workspace</div><style>@keyframes spin{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}</style></div>'
 
     try {
       if (window._activeLedgerTab === 'tab-transactions') {
@@ -540,7 +561,12 @@ export async function renderMemberLedger(container, user) {
       filtered = filtered.filter(r => String(r.member_id) === String(filters.memberId))
     }
 
-    filtered.sort((a, b) => (a.r_id || 0) - (b.r_id || 0))
+    // Chronological entry order follows creation time, id breaks same-ms ties.
+    filtered.sort((a, b) => {
+      const c = String(a.created_at || '').localeCompare(String(b.created_at || ''));
+      if (c !== 0) return c;
+      return String(a.id).localeCompare(String(b.id));
+    })
 
     let openingBalance = 0
     allRemittances.filter(r => r.status === 'Approved').forEach(r => {
@@ -569,7 +595,7 @@ export async function renderMemberLedger(container, user) {
       desktopRows += `
         <tr>
           <td>${formatDate(r.remittance_date)}</td>
-          <td>${String(r.r_id || '').padStart(5, '0')}</td>
+          <td>${shortRef(r.id)}</td>
           <td class="${amt < 0 ? 'text-red' : 'text-green'}">${escapeHtml(r.transaction_type || '')}</td>
           <td>${escapeHtml(r.description || '')}</td>
           <td>${escapeHtml(r.bank_name || '')}</td>
@@ -744,8 +770,84 @@ export async function renderMemberLedger(container, user) {
       return e
     })
 
+    // Month payment indicator: per-month +ve (deposit) totals for the selected
+    // year within the current member scope. Green = paid (>0), red = none (=0),
+    // unstyled = 'All' or a future month.
+    const nowDate = new Date()
+    const nowYear = nowDate.getFullYear()
+    const nowMonth = nowDate.getMonth()
+    const monthlyCredit = new Array(12).fill(0)
+    if (!isNaN(yearNum)) {
+      for (const r of filteredRemittances) {
+        const amt = Number(r.amount) || 0
+        if (amt <= 0) continue
+        const d = new Date(r.remittance_date)
+        if (isNaN(d)) continue
+        if (d.getFullYear() === yearNum) monthlyCredit[d.getMonth()] += amt
+      }
+    }
+    const monthStyleFor = (idx) => {
+      if (isNaN(yearNum)) return ''
+      if (yearNum > nowYear || (yearNum === nowYear && idx > nowMonth)) return ''
+      return monthlyCredit[idx] > 0
+        ? 'background:#15803d;color:#ffffff;font-weight:700;'
+        : 'background:#b91c1c;color:#ffffff;'
+    }
+    const selectedMonthStyle = (() => {
+      if (month === 'All') return ''
+      const idx = parseInt(month)
+      if (isNaN(idx) || idx < 0 || idx > 11) return ''
+      if (isNaN(yearNum)) return ''
+      if (yearNum > nowYear || (yearNum === nowYear && idx > nowMonth)) return ''
+      return monthlyCredit[idx] > 0
+        ? 'background:#15803d;color:#ffffff;font-weight:700;'
+        : 'background:#b91c1c;color:#ffffff;'
+    })()
+    const monthOptions = monthsList.map((m, i) => {
+      let val = m === 'All' ? 'All' : String(i - 1)
+      let sel = val === month ? 'selected' : ''
+      let style = m === 'All' ? '' : ` style="${monthStyleFor(i - 1)}"`
+      return `<option value="${val}"${style} ${sel}>${m}</option>`
+    }).join('')
+
+    // Always include the currently selected year, even if it falls outside
+    // the default last-3-years window (e.g. restored filter from an older year).
+    const yearSet = new Set([0, -1, -2].map(d => Number(currentYear) + d))
+    if (year && !isNaN(parseInt(year))) yearSet.add(parseInt(year))
+    const yearOptions = [...yearSet].sort((a, b) => b - a).map(y => {
+      const sel = String(y) === year ? 'selected' : ''
+      return `<option value="${y}" ${sel}>${y}</option>`
+    }).join('')
+
+    const summaryFilterBar = `
+      <div class="sfils" style="justify-content: space-between; align-items: center; width: 100%;">
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
+          <label>Month <select id="summary-month-select" title="Green = deposit made that month, red = none" style="margin-left: 0.25rem;${selectedMonthStyle}">${monthOptions}</select></label>
+          <label>Year <select id="summary-year-select" style="margin-left: 0.25rem;">${yearOptions}</select></label>
+          <span style="font-size: 0.68rem; color: var(--text-muted);"><span style="display:inline-block;width:0.6rem;height:0.6rem;border-radius:2px;background:#15803d;vertical-align:middle;"></span> paid <span style="display:inline-block;width:0.6rem;height:0.6rem;border-radius:2px;background:#b91c1c;vertical-align:middle;margin-left:0.35rem;"></span> none</span>
+        </div>
+        <button id="summary-toggle-zeroes-btn" class="ghost-button" style="font-size: 0.7rem; height: 1.7rem; padding: 0 0.5rem; border-radius: var(--radius-sm);">${localShowZeroes ? 'Hide Zeroes' : 'Unhide Zeroes'}</button>
+      </div>`
+    const bindSummaryControls = () => {
+      document.getElementById('summary-toggle-zeroes-btn')?.addEventListener('click', () => {
+        window.__ledgerShowZeroes = !window.__ledgerShowZeroes
+        renderActiveTab()
+      })
+      document.getElementById('summary-month-select')?.addEventListener('change', (e) => {
+        window.__summaryFilters.month = e.target.value
+        renderActiveTab()
+      })
+      document.getElementById('summary-year-select')?.addEventListener('change', (e) => {
+        window.__summaryFilters.year = e.target.value
+        renderActiveTab()
+      })
+    }
+
     if (entries.length === 0) {
-      contentContainer.innerHTML = `<div class="card" style="width: 100%; padding: 1rem; color: var(--text-muted); text-align: center; border: 1px solid var(--border-light); background: var(--bg-card); font-size: 0.85rem;">No ledger entries found.</div>`
+      contentContainer.innerHTML = `
+      ${summaryFilterBar}
+      <div class="card" style="width: 100%; padding: 1rem; color: var(--text-muted); text-align: center; border: 1px solid var(--border-light); background: var(--bg-card); font-size: 0.85rem;">No ledger entries found for this period.</div>`
+      bindSummaryControls()
       return
     }
 
@@ -775,44 +877,12 @@ export async function renderMemberLedger(container, user) {
     desktopHtml += `</tbody></table></div></div>`
     mobileHtml += `</div>`
 
-    const monthOptions = monthsList.map((m, i) => {
-      let val = m === 'All' ? 'All' : String(i - 1)
-      let sel = val === month ? 'selected' : ''
-      return `<option value="${val}" ${sel}>${m}</option>`
-    }).join('')
-
-    const yearOptions = [0, -1, -2].map(delta => {
-      const y = Number(currentYear) + delta
-      const sel = String(y) === year ? 'selected' : ''
-      return `<option value="${y}" ${sel}>${y}</option>`
-    }).join('')
-
     contentContainer.innerHTML = `
-      <div class="sfils" style="justify-content: space-between; align-items: center; width: 100%;">
-        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-          <label>Month <select id="summary-month-select" style="margin-left: 0.25rem;">${monthOptions}</select></label>
-          <label>Year <select id="summary-year-select" style="margin-left: 0.25rem;">${yearOptions}</select></label>
-        </div>
-        <button id="summary-toggle-zeroes-btn" class="ghost-button" style="font-size: 0.7rem; height: 1.7rem; padding: 0 0.5rem; border-radius: var(--radius-sm);">${localShowZeroes ? 'Hide Zeroes' : 'Unhide Zeroes'}</button>
-      </div>
+      ${summaryFilterBar}
       ${desktopHtml}
       ${mobileHtml}
     `
-
-    document.getElementById('summary-toggle-zeroes-btn').addEventListener('click', () => {
-      window.__ledgerShowZeroes = !window.__ledgerShowZeroes
-      renderActiveTab()
-    })
-
-    document.getElementById('summary-month-select').addEventListener('change', (e) => {
-      window.__summaryFilters.month = e.target.value
-      renderActiveTab()
-    })
-
-    document.getElementById('summary-year-select').addEventListener('change', (e) => {
-      window.__summaryFilters.year = e.target.value
-      renderActiveTab()
-    })
+    bindSummaryControls()
   }
 
   async function openLoanDetailModal(loanId) {

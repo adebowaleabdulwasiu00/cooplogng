@@ -22,6 +22,7 @@ export async function createNotification(cooperativeId, recipients, type, title,
 
     const notification = {
         id: generateId(cooperativeId),
+        cooperative_id: String(cooperativeId),
         recipient_id: normalizedRecipients.join(','),
         viewed: null, // Null by default
         type,

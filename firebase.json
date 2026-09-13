@@ -1,43 +1,46 @@
 {
   "firestore": {
-    "rules": "firestore.rules"
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
   },
-  "hosting": {
-    "site": "cooplogng",
-    "public": "dist",
-    "ignore": [
-      "firebase.json",
-      "**/.*",
-      "**/node_modules/**"
-    ],
-    "rewrites": [
-      {
-        "source": "**",
-        "destination": "/index.html"
-      }
-    ],
-    "headers": [
-      {
-        "source": "/sw.js",
-        "headers": [
-          { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
-        ]
-      },
-      {
-        "source": "/index.html",
-        "headers": [
-          { "key": "Cache-Control", "value": "no-cache, must-revalidate" }
-        ]
-      },
-      {
-        "source": "**",
-        "headers": [
-          { "key": "Cross-Origin-Opener-Policy",   "value": "same-origin" },
-          { "key": "Cross-Origin-Embedder-Policy",  "value": "require-corp" }
-        ]
-      }
-    ]
-  },
+  "hosting": [
+    {
+      "site": "cooplogng",
+      "public": "dist",
+      "ignore": [
+        "firebase.json",
+        "**/.*",
+        "**/node_modules/**"
+      ],
+      "rewrites": [
+        {
+          "source": "**",
+          "destination": "/index.html"
+        }
+      ],
+      "headers": [
+        {
+          "source": "/sw.js",
+          "headers": [
+            { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
+          ]
+        },
+        {
+          "source": "/index.html",
+          "headers": [
+            { "key": "Cache-Control", "value": "no-cache, must-revalidate" }
+          ]
+        },
+        {
+          "source": "**",
+          "headers": [
+            { "key": "Cross-Origin-Opener-Policy",   "value": "same-origin" },
+            { "key": "Cross-Origin-Embedder-Policy",  "value": "require-corp" }
+          ]
+        }
+      ]
+    }
+  ],
   "emulators": {
     "apphosting": {
       "port": 5002,

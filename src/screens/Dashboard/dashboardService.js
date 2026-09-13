@@ -144,6 +144,7 @@ function renderDashboard() {
 function startDashboardAutoRefresh() {
   if (_dashboardRefreshInterval) clearInterval(_dashboardRefreshInterval)
   _dashboardRefreshInterval = setInterval(() => {
+    if (document.hidden) return
     if (state.activeTab === 'dashboard' && canPerformRefresh()) {
       renderDashboardContent()
     }
@@ -219,6 +220,13 @@ async function populateAvatars() {
         console.log('[Avatars] Using user initials:', getInitials(displayName));
         userContainer.textContent = getInitials(displayName);
       }
+      // Member self-service: clickable only when no photo exists; read-only otherwise.
+      try {
+        const { enableMemberAvatarUpload } = await import('../../components/memberAvatarUpload.js')
+        for (const el of document.querySelectorAll('#user-avatar-container')) {
+          await enableMemberAvatarUpload(el, state.welcomeUser)
+        }
+      } catch {}
     }
   } catch (err) {
     console.error('[Avatars] Failed to populate avatars:', err);
@@ -238,7 +246,20 @@ function isSubscriptionActive() {
 
 const INACTIVE_MSG = 'Your account subscription is inactive. Please contact the administrator.'
 
+let _dashRenderBusy = false;
+let _dashRenderQueued = false;
 async function renderDashboardContent() {
+  if (_dashRenderBusy) { _dashRenderQueued = true; return; }
+  _dashRenderBusy = true;
+  try {
+    await _renderDashboardContentInner();
+  } finally {
+    _dashRenderBusy = false;
+    if (_dashRenderQueued) { _dashRenderQueued = false; renderDashboardContent(); }
+  }
+}
+
+async function _renderDashboardContentInner() {
   const container = document.getElementById('dashboard-main-content')
   if (!container) return
 

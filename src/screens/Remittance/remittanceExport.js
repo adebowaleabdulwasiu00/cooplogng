@@ -1,5 +1,23 @@
 import { showToast } from '../../services/toastService.js';
-import ExcelJS from 'exceljs';
+import { formatDateForInput, toExcelDateSerial, shortRef } from '../../utils/formatters.js';
+
+// Day-precision as a REAL Excel date (serial integer, no time fraction) so
+// formulas/sorting/filtering work. Built from the calendar day with pure
+// arithmetic — no JS Date reaches ExcelJS, so no timezone layer can shift it
+// by hours. Falls back to plain YYYY-MM-DD text when unparseable.
+function excelDay(val) {
+    return toExcelDateSerial(val) ?? formatDateForInput(val) ?? '';
+}
+
+// ExcelJS (~900KB) loads lazily on first export so dashboard startup stays light.
+let _excelJS = null;
+async function loadExcelJS() {
+    if (!_excelJS) {
+        const mod = await import('exceljs');
+        _excelJS = mod.default || mod;
+    }
+    return _excelJS;
+}
 
 export async function exportData(data, isAdmin, getFormattedName) {
     if (data.length === 0) {
@@ -8,6 +26,7 @@ export async function exportData(data, isAdmin, getFormattedName) {
     }
 
     try {
+        const ExcelJS = await loadExcelJS();
         const workbook = new ExcelJS.Workbook();
         const worksheet = workbook.addWorksheet('Remittance History');
 
@@ -15,7 +34,7 @@ export async function exportData(data, isAdmin, getFormattedName) {
             // Full Export for Admin
             worksheet.columns = [
                 { header: 'ID', key: 'id', width: 30 },
-                { header: 'Record ID', key: 'r_id', width: 12 },
+                { header: 'Record ID', key: 'ref', width: 12 },
                 { header: 'Member ID', key: 'member_id', width: 15 },
                 { header: 'Member Name', key: 'member_name', width: 25 },
                 { header: 'Date', key: 'remittance_date', width: 20 },
@@ -31,10 +50,11 @@ export async function exportData(data, isAdmin, getFormattedName) {
             data.forEach(r => {
                 worksheet.addRow({
                     id: r.id,
-                    r_id: r.r_id || '',
+                    ref: shortRef(r.id),
                     member_id: r.member_id,
                     member_name: getFormattedName(r.member_id, r.transaction_type),
-                    remittance_date: new Date(r.remittance_date),
+                    // Real Excel date, exact DB day — see excelDay() above.
+                    remittance_date: excelDay(r.remittance_date),
                     amount: Number(r.amount),
                     bank_name: r.bank_name || '',
                     transaction_type: r.transaction_type || '',
@@ -47,7 +67,7 @@ export async function exportData(data, isAdmin, getFormattedName) {
         } else {
             // Simplified Export for Users
             worksheet.columns = [
-                { header: 'Record ID', key: 'r_id', width: 12 },
+                { header: 'Record ID', key: 'ref', width: 12 },
                 { header: 'Date', key: 'remittance_date', width: 18 },
                 { header: 'Bank / Description', key: 'info', width: 40 },
                 { header: 'Amount', key: 'amount', width: 15 },
@@ -56,8 +76,8 @@ export async function exportData(data, isAdmin, getFormattedName) {
 
             data.forEach(r => {
                 worksheet.addRow({
-                    r_id: r.r_id || r.id.slice(0, 8),
-                    remittance_date: new Date(r.remittance_date),
+                    ref: shortRef(r.id),
+                    remittance_date: excelDay(r.remittance_date),
                     info: `${r.bank_name || 'Direct'} - ${r.description || ''}`,
                     amount: Number(r.amount),
                     status: r.status
@@ -68,7 +88,8 @@ export async function exportData(data, isAdmin, getFormattedName) {
         // Formatting
         worksheet.getRow(1).font = { bold: true };
         worksheet.getColumn('amount').numFmt = '#,##0.00';
-        worksheet.getColumn('remittance_date').numFmt = 'yyyy-mm-dd hh:mm';
+        // Date-only display to match preview/PDF (no time component stored).
+        worksheet.getColumn('remittance_date').numFmt = 'yyyy-mm-dd';
 
         const buffer = await workbook.xlsx.writeBuffer();
         const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });

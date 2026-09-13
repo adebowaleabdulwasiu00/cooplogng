@@ -37,7 +37,26 @@ async function _attachNestedRemittanceData(remittances) {
     }
 }
 
-function applyRBAC(user, tableAlias = 'r') {
+/**
+ * Load the members directory ONCE for the staff RBAC branch
+ * (previously re-read per remittance: O(R x M)). Returns null when the
+ * caller's RBAC path doesn't need it (admin / memberId / member / no user).
+ */
+async function preloadMembersForRBAC(user) {
+    if (!user) return null
+    const _role = (user.role || '').toLowerCase()
+    const _username = (user.username || '').trim().toLowerCase()
+    const _isAdmin = _role === 'admin' || (user.permissions || '').includes('admin') || _username === 'admin'
+    const _hasTarget = user.memberId && user.memberId !== '0000000000'
+    if (_isAdmin || _hasTarget || _role === 'member') return null
+    try {
+        return await getAllItems('members')
+    } catch (e) {
+        return []
+    }
+}
+
+function applyRBAC(user, tableAlias = 'r', preloadedMembers = null) {
     if (!user) return { filter: () => true }
     const role = (user.role || '').toLowerCase()
     const username = (user.username || '').trim().toLowerCase()
@@ -62,13 +81,20 @@ function applyRBAC(user, tableAlias = 'r') {
     const perms = String(user.permissions || '').toLowerCase()
     const canReadCoop = perms.includes('admin') || perms.includes('read_coop_ledger') || perms.includes('*')
 
+    // Members directory is loaded ONCE by the caller (not per remittance).
+    // Same predicate as before, just against the preloaded list.
+    const findMember = (memberId) => {
+        if (!preloadedMembers) return null
+        const key = String(memberId).trim()
+        return preloadedMembers.find(m => String(m.id).trim() === key) || null
+    }
+
     return {
         filter: async (item) => {
             if (item.member_id === '0000000000') return canReadCoop
             if (hasAllEnts) return true
             if (entIds.length === 0) return false
-            const allMembers = await getAllItems('members')
-            const member = allMembers.find(m => String(m.id).trim() === String(item.member_id).trim())
+            const member = findMember(item.member_id)
             if (member && member.account_manager) {
                 const managers = String(member.account_manager).split(',').map(s => s.trim().toLowerCase())
                 if (managers.includes(username)) return true
@@ -98,7 +124,10 @@ export async function getRemittances(cooperativeId, user = null) {
     }
     remittances = remittances.filter(r => !r.is_deleted)
 
-    const rbac = applyRBAC(user, 'r')
+    // Preload the members directory ONCE for the staff RBAC branch below
+    // (previously it was re-read per remittance: O(R x M)).
+    const preloadedMembers = await preloadMembersForRBAC(user)
+    const rbac = applyRBAC(user, 'r', preloadedMembers)
     if (user) {
         const filtered = []
         for (const rem of remittances) {
@@ -110,13 +139,13 @@ export async function getRemittances(cooperativeId, user = null) {
     remittances.sort((a, b) => {
         const dateStrA = getLocalDateString(a.remittance_date)
         const dateStrB = getLocalDateString(b.remittance_date)
-        
+
         const dateCmp = dateStrB.localeCompare(dateStrA)
         if (dateCmp !== 0) return dateCmp
-        
-        const aRid = a.r_id || 0
-        const bRid = b.r_id || 0
-        if (bRid !== aRid) return bRid - aRid
+
+        // Ordering follows creation time, then id as final tiebreak.
+        const createdCmp = String(b.created_at || '').localeCompare(String(a.created_at || ''))
+        if (createdCmp !== 0) return createdCmp
         return String(b.id).localeCompare(String(a.id))
     })
 
@@ -214,7 +243,7 @@ function buildRemittanceFilter(items, options) {
 
         const searchColumn = options.searchColumn || 'All Columns'
         if (searchColumn === 'Remittance ID') {
-            filtered = filtered.filter(r => String(r.id).toLowerCase().includes(term) || String(r.r_id || '').includes(term))
+            filtered = filtered.filter(r => String(r.id).toLowerCase().includes(term))
         } else if (searchColumn === 'Member Number') {
             filtered = filtered.filter(r => String(r.member_id || '').toLowerCase().includes(term))
         } else if (searchColumn === 'Member Name') {
@@ -237,7 +266,6 @@ function buildRemittanceFilter(items, options) {
         } else {
             filtered = filtered.filter(r =>
                 String(r.id).toLowerCase().includes(term) ||
-                String(r.r_id || '').includes(term) ||
                 String(r.member_id || '').includes(term) ||
                 String(r.bank_name || '').toLowerCase().includes(term) ||
                 String(r.description || '').toLowerCase().includes(term) ||
@@ -271,7 +299,7 @@ export async function getRemittancesPage(cooperativeId, user = null, offset = 0,
     remittances = remittances.filter(r => !r.is_deleted)
 
     if (user) {
-        const rbac = applyRBAC(user, 'r')
+        const rbac = applyRBAC(user, 'r', await preloadMembersForRBAC(user))
         const filtered = []
         for (const rem of remittances) {
             if (await rbac.filter(rem)) filtered.push(rem)
@@ -284,13 +312,12 @@ export async function getRemittancesPage(cooperativeId, user = null, offset = 0,
     remittances.sort((a, b) => {
         const dateStrA = getLocalDateString(a.remittance_date)
         const dateStrB = getLocalDateString(b.remittance_date)
-        
+
         const dateCmp = dateStrB.localeCompare(dateStrA)
         if (dateCmp !== 0) return dateCmp
-        
-        const aRid = a.r_id || 0
-        const bRid = b.r_id || 0
-        if (bRid !== aRid) return bRid - aRid
+
+        const createdCmp = String(b.created_at || '').localeCompare(String(a.created_at || ''))
+        if (createdCmp !== 0) return createdCmp
         return String(b.id).localeCompare(String(a.id))
     })
 

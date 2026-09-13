@@ -1,3 +1,4 @@
+import './utils/uuidPolyfill.js'
 import './style.css'
 import { hasPermission } from './services/permissionService.js'
 import {
@@ -21,13 +22,27 @@ import { renderSettings } from './screens/Settings.js'
 import { renderReports } from './screens/Reports.js'
 import { renderReconciliation } from './screens/Reconciliation.js'
 import { renderRegistration } from './screens/Registration.js'
+import { renderLanding } from './screens/Landing.js'
 import { fetchAllMembers, fetchMembersBySearch, isNotDeleted } from './services/dataService.js'
 import { hashPassword, escapeHtml, escapeAttribute, generateId, getInitials, wrapDateInput } from './utils/formatters.js'
 import { initializeSyncService, syncCooperativeData, performHardRestore } from './services/syncService.js'
 import { getAllForCoop, loadDoc, isSynced, queryOne } from './services/sqliteService.js'
 import { validateLogin } from './services/authService.js'
 
-import { attemptOfflineLogin, saveSessionLocally as saveSession, loadSavedSession, clearSavedSession, clearOfflineSession, clearAllOfflineSessions } from './services/offlineAuthService.js'
+import { attemptOfflineLogin, saveSessionLocally as saveSession, loadSavedSession, clearSavedSession, clearOfflineSession, clearAllOfflineSessions, recordActivity, startInactivityWatcher, persistActiveTab, sessionRequiresPasswordChange } from './services/offlineAuthService.js'
+import { loadRememberedIdentity, saveRememberedIdentity, clearRememberedIdentity } from './services/rememberMeService.js'
+
+/**
+ * Persist (or clear) the global remembered login identity after a
+ * successful sign-in. Only username + cooperative are stored — never secrets.
+ */
+function persistRememberMe(username, cooperativeId, cooperativeName) {
+  if (state.rememberMe) {
+    saveRememberedIdentity(username, cooperativeId, cooperativeName)
+  } else {
+    clearRememberedIdentity()
+  }
+}
 import { mountNotificationBell } from './components/NotificationBell.js'
 import { getNotificationListHtml, setupNotificationModalListeners } from './components/NotificationModal.js'
 import { showToast } from './services/toastService.js'
@@ -36,14 +51,32 @@ import { syncBus, SyncEvents } from './services/syncEventBus.js'
 
 const app = document.querySelector('#app')
 
+/**
+ * Landing order for a just-logged-in user (first accessible tab wins):
+ * Dashboard > Ledger > Remittance > Members > Reports > Reconciliation > Settings.
+ * Mirrors sidebar visibility so the landing tab always has a nav item.
+ */
+const LANDING_ORDER = ['dashboard', 'ledger', 'payments', 'members', 'reports', 'reconciliation', 'settings'];
+
+function canAccessTab(user, tab) {
+  if (!user) return tab === 'dashboard';
+  const isMember = user.role === 'member';
+  switch (tab) {
+    case 'dashboard': return isMember || hasPermission(user.permissions, 'dashboard_view');
+    case 'ledger': return isMember || hasPermission(user.permissions, 'read_ledger') || hasPermission(user.permissions, 'read_coop_ledger');
+    case 'payments': return hasPermission(user.permissions, 'read_remittance');
+    case 'members': return !isMember && hasPermission(user.permissions, 'read_member');
+    case 'reports': return !isMember && hasPermission(user.permissions, 'read_member');
+    case 'reconciliation': return hasPermission(user.permissions, 'read_reconcile');
+    case 'settings': return isMember || hasPermission(user.permissions, 'settings_manage');
+    default: return false;
+  }
+}
+
 function getDefaultTab(user) {
-  if (!user) return 'dashboard';
-  if (user.role === 'member' || hasPermission(user.permissions, 'dashboard_view')) return 'dashboard';
-  if (user.role !== 'member' && hasPermission(user.permissions, 'read_member')) return 'members';
-  if (hasPermission(user.permissions, 'read_remittance')) return 'payments';
-  if (user.role === 'member' || hasPermission(user.permissions, 'read_ledger') || hasPermission(user.permissions, 'read_coop_ledger')) return 'ledger';
-  if (hasPermission(user.permissions, 'read_reconcile')) return 'reconciliation';
-  if (user.role === 'member' || hasPermission(user.permissions, 'settings_manage')) return 'settings';
+  for (const tab of LANDING_ORDER) {
+    if (canAccessTab(user, tab)) return tab;
+  }
   return 'dashboard';
 }
 
@@ -115,6 +148,7 @@ const state = {
   editingRemittanceId: null, // ID of record being edited
   members: [], // List of all members for Admins
   isRegistering: false,
+  publicView: null, // logged-out view: 'landing' | 'login' (resolved lazily)
   coopSearchQuery: '', // NEW: For searchable dropdown
   showActivationKeyPrompt: false,
   activationKeyInput: '',
@@ -198,8 +232,23 @@ function handleRouting() {
   }
 
   const [tab, ...parts] = hash.split('/')
+  // Remittance is hidden from mobile navigation entirely (bottom nav has no
+  // entry and the sidebar entry is CSS-hidden) — bounce deep links/bookmarks
+  // back to the dashboard so the page is unreachable on mobile layout.
+  if (tab === 'payments' && isMobileLayout()) {
+    window.location.hash = 'dashboard'
+    state.activeTab = 'dashboard'
+    state.routeParts = []
+    persistActiveTab('dashboard').catch(() => {})
+    document.body.className = 'tab-dashboard'
+    return
+  }
   state.activeTab = tab
   state.routeParts = parts
+
+  // Remember last page so resume (reload / cold start) lands back here.
+  // Fresh logins override this with getDefaultTab().
+  persistActiveTab(tab).catch(() => {})
 
   // Add body class for tab-specific styling (e.g. moving sync indicator)
   document.body.className = `tab-${tab}`
@@ -259,8 +308,26 @@ async function bootstrapApp() {
     }
   }
 
-  if (state.welcomeUser && (state.welcomeUser.subscriptionStatus === undefined || state.welcomeUser.subscriptionExpiry === undefined)) {
+  // Policy: a restored session must never reach the dashboard on a weak
+  // stored credential (plaintext "1234" etc.). Restores skip password
+  // entry, so re-check the live row — weak means back to login, where
+  // fresh auth will route through the force-change modal.
+  if (state.welcomeUser) {
     try {
+      if (await sessionRequiresPasswordChange(state.welcomeUser)) {
+        console.warn('[Bootstrap] Session requires password change; forcing fresh login.')
+        clearSavedSession()
+        state.welcomeUser = null
+        state.activeTab = 'dashboard'
+        state.stage = 1
+        state.errorMessage = 'Your password must be changed before continuing. Please log in.'
+      }
+    } catch (e) {
+      console.warn('[Bootstrap] Session password check skipped:', e?.message)
+    }
+  }
+
+  if (state.welcomeUser && (state.welcomeUser.subscriptionStatus === undefined || state.welcomeUser.subscriptionExpiry === undefined)) {    try {
       const { queryOne } = await import('./services/sqliteService.js')
       const userRecord = await queryOne(
         'SELECT subscriptionStatus, expiry_date FROM users WHERE cooperative_id = ? AND username = ? AND is_deleted = 0',
@@ -277,6 +344,13 @@ async function bootstrapApp() {
 
   // Start real connectivity pings (replaces unreliable navigator.onLine)
   startConnectivityCheck();
+
+  // Auto-logout after 10 minutes of inactivity (active users stay logged in
+  // via recordActivity on every interaction). Started once; it no-ops when logged out.
+  startInactivityWatcher(() => {
+    if (!state.welcomeUser) return
+    performLogout(true)
+  });
 
   console.log(`[DEBUG] [${Date.now()}] bootstrapApp: Initializing sync service...`);
   // Start the background sync loop
@@ -306,8 +380,37 @@ async function bootstrapApp() {
     }
   }
 
+  // Every (re)load with a populated DB pulls immediately instead of waiting
+  // for the background timer. Browser F5/Ctrl+R, Android pull-down reload and
+  // EXE reload all reboot through this bootstrap, so all of them now sync on
+  // refresh. Non-blocking: the loop timer remains the steady-state fallback.
+  if (isSyncedAlready && navigator.onLine) {
+    import('./services/backgroundSyncService.js').then(async (bg) => {
+      try {
+        // Session restore (initializeSyncService above) is async — wait briefly.
+        let session = null
+        for (let i = 0; i < 10 && !session; i++) {
+          session = bg.getSyncSession()
+          if (!session) await new Promise(r => setTimeout(r, 300))
+        }
+        if (!session || !navigator.onLine) return
+        const cooperativeId = session.cooperative_id || session.cooperativeId
+        if (!cooperativeId) return
+        console.log('[Sync] Refresh detected: pulling latest changes...')
+        try {
+          const { pushQueue } = await import('./services/syncService.js')
+          await pushQueue(cooperativeId).catch(() => {})
+        } catch {}
+        await bg.triggerDeltaSync(session).catch(() => {})
+      } catch (e) {
+        console.warn('[Sync] Refresh pull failed (background loop will retry):', e?.message)
+      }
+    })
+  }
+
   console.log(`[DEBUG] [${Date.now()}] bootstrapApp: Setting up PWA listener...`);
   setupPWAUpdateListener()
+  setupAndroidPullToRefresh()
 
   // Network indicator is handled by the main listeners above
 
@@ -323,6 +426,53 @@ bootstrapApp()
  * PWA Update Listener.
  * Notifies the user when a new version of the app is available.
  */
+/**
+ * Which logged-out view to show. First-ever visit -> landing page;
+ * returning users (and anyone logged out) -> login screen.
+ * Registration always returns to login.
+ */
+const VISITED_KEY = 'cooplog-has-visited';
+function hasVisitedBefore() {
+  try { return localStorage.getItem(VISITED_KEY) === '1'; } catch { return true; }
+}
+function markVisited() {
+  try { localStorage.setItem(VISITED_KEY, '1'); } catch {}
+}
+// Packaged shells (Android APK via Capacitor, desktop via Electron) always
+// start at login — the marketing landing page is web-only.
+function isPackagedApp() {
+  try {
+    if (typeof window === 'undefined') return false
+    if (window.cooplog) return true // Electron preload bridge
+    const cap = window.Capacitor
+    if (!cap) return false
+    if (typeof cap.isNativePlatform === 'function') return cap.isNativePlatform()
+    return true // Capacitor runtime without web fallback = native WebView
+  } catch { return false }
+}
+function isNativeAndroid() {
+  try {
+    if (typeof window === 'undefined') return false
+    const cap = window.Capacitor
+    if (!cap) return false
+    if (typeof cap.isNativePlatform === 'function') return cap.isNativePlatform()
+    return true
+  } catch { return false }
+}
+// Mobile layout = the layout that shows the bottom nav (kept in sync with
+// the max-width: 768px media query in style.css).
+function isMobileLayout() {
+  try {
+    if (isNativeAndroid()) return true
+    return typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches
+  } catch { return false }
+}
+function resolvePublicView() {
+  if (state.publicView) return state.publicView;
+  if (isPackagedApp()) return 'login';
+  return hasVisitedBefore() ? 'login' : 'landing';
+}
+
 function setupPWAUpdateListener() {
   if ('serviceWorker' in navigator) {
     // Guard against infinite reload loops caused by frequent controller changes
@@ -338,6 +488,162 @@ function setupPWAUpdateListener() {
     // Reset the flag after a short delay to allow future legitimate updates
     setTimeout(() => { window.__hasReloaded = false; }, 5000);
   }
+}
+
+// Pull-down to refresh for the Android APK. The native WebView has no
+// browser pull-to-refresh gesture, so a drag down from the very top of the
+// main content reloads the page — and the bootstrap refresh-pull then syncs.
+// Mobile browsers already reload natively, so this is native-shell only.
+function setupAndroidPullToRefresh() {
+  if (window.__ptrSetup) return
+  window.__ptrSetup = true
+  if (!isNativeAndroid()) return
+
+  const THRESHOLD_PX = 90
+  let startY = null
+  let armed = false
+  let ready = false
+  let indicator = null
+
+  function scroller() {
+    return document.getElementById('dashboard-main-content')
+  }
+  function atTop() {
+    const sc = scroller()
+    const scTop = sc ? sc.scrollTop : 0
+    return scTop <= 0 && (window.scrollY || 0) <= 0
+  }
+  function ensureIndicator() {
+    if (indicator || !document.body) return indicator
+    indicator = document.createElement('div')
+    indicator.id = 'ptr-indicator'
+    indicator.innerHTML = '<span id="ptr-indicator-icon">↓</span><span id="ptr-indicator-text">Pull to refresh</span>'
+    document.body.appendChild(indicator)
+    return indicator
+  }
+  function show(pulledPx, isReady) {
+    const el = ensureIndicator()
+    if (!el) return
+    el.classList.add('visible')
+    el.classList.toggle('ready', isReady)
+    const icon = el.querySelector('#ptr-indicator-icon')
+    const text = el.querySelector('#ptr-indicator-text')
+    if (icon) {
+      icon.textContent = isReady ? '↑' : '↓'
+      icon.style.transform = `rotate(${Math.min(pulledPx, THRESHOLD_PX * 1.5)}deg)`
+    }
+    if (text) text.textContent = isReady ? 'Release to refresh' : 'Pull to refresh'
+  }
+  function hide() {
+    if (!indicator) return
+    indicator.classList.remove('visible', 'ready')
+  }
+
+  document.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1) { armed = false; return }
+    const t = e.touches[0]
+    // Only gestures starting inside the main content at scroll-top qualify.
+    const sc = scroller()
+    if (!sc || (e.target !== sc && !sc.contains(e.target))) { armed = false; return }
+    if (!atTop()) { armed = false; return }
+    startY = t.clientY
+    armed = true
+    ready = false
+  }, { passive: true })
+
+  document.addEventListener('touchmove', (e) => {
+    if (!armed || e.touches.length !== 1 || startY === null) return
+    if (!atTop()) { armed = false; ready = false; hide(); return }
+    const deltaY = e.touches[0].clientY - startY
+    if (deltaY <= 0) { ready = false; hide(); return }
+    show(deltaY, deltaY >= THRESHOLD_PX)
+    ready = deltaY >= THRESHOLD_PX
+  }, { passive: true })
+
+  function reset() {
+    startY = null
+    armed = false
+    ready = false
+    hide()
+  }
+  document.addEventListener('touchend', () => {
+    if (armed && ready) {
+      show(THRESHOLD_PX, true)
+      const text = indicator?.querySelector('#ptr-indicator-text')
+      if (text) text.textContent = 'Refreshing…'
+      reset()
+      window.location.reload()
+      return
+    }
+    reset()
+  }, { passive: true })
+  document.addEventListener('touchcancel', reset, { passive: true })
+}
+
+/**
+ * Full logout shared by the manual Log Out button and the inactivity
+ * auto-logout watcher. Clears tab session + all persistent offline
+ * sessions so a refresh cannot restore the session.
+ */
+async function performLogout(isAuto = false) {
+  // Capture user info before clearing state
+  const coopId = state.welcomeUser?.cooperativeId
+  const userId = state.welcomeUser?.userId || state.welcomeUser?.memberId
+  try {
+    const { auth } = getFirebaseAuth();
+    if (auth) {
+      await signOut(auth);
+    }
+  } catch (e) {
+    console.warn('Failed to sign out from Firebase', e);
+  }
+  state.welcomeUser = null
+  state.stage = 1
+  state.isGoogleLoginFlow = false
+  // Global remember-me survives logout: pre-fill the remembered username
+  // so the next sign-in needs no typing (only the password/PIN).
+  const rememberedAfterLogout = loadRememberedIdentity()
+  state.username = rememberedAfterLogout?.username || ''
+  state.rememberMe = !!rememberedAfterLogout
+  state.password = ''
+  state.selectedCooperativeId = ''
+  state.cooperatives = []
+  state.coopSearchQuery = ''
+  // Auto-logout lands silently on login: policy is to log the user out with
+  // no reason displayed.
+  state.errorMessage = ''
+  // Both manual and automatic logout return to the login screen (never landing).
+  state.publicView = 'login'
+  state.activeTab = 'dashboard'
+  state.selectedMemberId = null
+  state.members = []
+  state.editingRemittance = null
+  state.editingRemittanceId = null
+  state.loanRequest = {
+    step: 1,
+    enterpriseId: '',
+    amount: 0,
+    duration: 1,
+    guarantors: [],
+    bankDetails: {
+      bankName: '',
+      accountName: '',
+      accountNumber: ''
+    }
+  }
+  saveSession(null)
+  // Stop background sync FIRST so the old session can never keep writing.
+  try {
+    const { stopBackgroundSync, clearSyncSession } = await import('./services/backgroundSyncService.js')
+    stopBackgroundSync()
+    clearSyncSession()
+  } catch {}
+  // Clear ALL persistent offline sessions from IndexedDB so refresh cannot auto-login
+  if (coopId && userId) {
+    await clearOfflineSession(coopId, userId)
+  }
+  await clearAllOfflineSessions()
+  render()
 }
 
 
@@ -414,47 +720,7 @@ app.addEventListener('click', async (event) => {
   }
 
   if (action === 'logout') {
-    // Capture user info before clearing state
-    const coopId = state.welcomeUser?.cooperativeId
-    const userId = state.welcomeUser?.userId || state.welcomeUser?.memberId
-    try {
-      const { auth } = getFirebaseAuth();
-      if (auth) {
-        await signOut(auth);
-      }
-    } catch (e) {
-      console.warn('Failed to sign out from Firebase', e);
-    }
-    state.welcomeUser = null
-    state.stage = 1
-    state.isGoogleLoginFlow = false
-    state.username = ''
-    state.password = ''
-    state.selectedCooperativeId = ''
-    state.cooperatives = []
-    state.coopSearchQuery = ''
-    state.errorMessage = ''
-    state.activeTab = 'dashboard'
-    state.selectedMemberId = null
-    state.members = []
-    state.editingRemittance = null
-    state.editingRemittanceId = null
-    state.loanRequest = {
-      step: 1,
-      enterpriseId: '',
-      amount: 0,
-      duration: 1,
-      guarantors: [],
-      bankDetails: {
-        bankName: '',
-        accountName: '',
-        accountNumber: ''
-      }
-    }
-    saveSession(null)
-    // Clear ALL persistent offline sessions from IndexedDB so refresh cannot auto-login
-    await clearAllOfflineSessions()
-    render()
+    await performLogout(false)
     return
   }
 
@@ -525,6 +791,23 @@ app.addEventListener('click', async (event) => {
     render()
     return
   }
+
+  if (action === 'go-login') {
+    state.publicView = 'login'
+    state.stage = 1
+    state.errorMessage = ''
+    render()
+    return
+  }
+
+  if (action === 'go-landing') {
+    if (state.welcomeUser) return
+    state.publicView = 'landing'
+    state.showActivationKeyPrompt = false
+    state.isRegistering = false
+    render()
+    return
+  }
   
   if (action === 'activation-key-back') {
     state.showActivationKeyPrompt = false
@@ -534,20 +817,6 @@ app.addEventListener('click', async (event) => {
     return
   }
   
-  if (action === 'hard-reset') {
-    // Show the same confirmation as in Settings
-    if (!confirm('Final Confirmation: Are you absolutely sure? The app will reload and force a new login.')) return
-    
-    // Call performHardRestore
-    try {
-      await performHardRestore(null);
-    } catch (err) {
-      console.error('Hard restore failed:', err);
-      showToast('Restore failed: ' + err.message, 'error');
-    }
-    return
-  }
-
   if (action === 'toggle-theme') {
     toggleTheme()
     return
@@ -600,22 +869,29 @@ window.addEventListener('cancel-edit-remittance', () => {
 
 // Listen for tab change requests (e.g. from Members page to Ledger)
 window.addEventListener('change-tab', (e) => {
-  const { tab, memberId } = e.detail
+  const { tab, memberId, memberName } = e.detail || {}
   state.activeTab = tab
-  if (memberId) state.selectedMemberId = memberId
+  if (memberId) {
+    state.selectedMemberId = memberId
+    // Mirror into the ledger handoff so renderMemberLedger picks it up even
+    // if its own listener hasn't run yet.
+    window.__pendingLedgerMember = memberId
+    if (memberName) window.__pendingLedgerMemberName = memberName
+  }
   render()
 })
 
 let _lastInteractionTs = Date.now()
 window.__isFormDirty = false
 
-// Track user interactions to accurately check idle state
-window.addEventListener('mousemove', () => _lastInteractionTs = Date.now(), { passive: true })
-window.addEventListener('keydown', () => _lastInteractionTs = Date.now(), { passive: true })
-window.addEventListener('scroll', () => _lastInteractionTs = Date.now(), { passive: true })
-window.addEventListener('mousedown', () => _lastInteractionTs = Date.now(), { passive: true })
-window.addEventListener('touchstart', () => _lastInteractionTs = Date.now(), { passive: true })
-window.addEventListener('click', () => _lastInteractionTs = Date.now(), { passive: true })
+// Track user interactions to accurately check idle state.
+// recordActivity() keeps the 10-min session alive while the user is active.
+window.addEventListener('mousemove', () => { _lastInteractionTs = Date.now(); recordActivity() }, { passive: true })
+window.addEventListener('keydown', () => { _lastInteractionTs = Date.now(); recordActivity() }, { passive: true })
+window.addEventListener('scroll', () => { _lastInteractionTs = Date.now(); recordActivity() }, { passive: true })
+window.addEventListener('mousedown', () => { _lastInteractionTs = Date.now(); recordActivity() }, { passive: true })
+window.addEventListener('touchstart', () => { _lastInteractionTs = Date.now(); recordActivity() }, { passive: true })
+window.addEventListener('click', () => { _lastInteractionTs = Date.now(); recordActivity() }, { passive: true })
 
 // Track dirty form inputs globally
 window.addEventListener('input', (e) => {
@@ -839,6 +1115,13 @@ app.addEventListener('input', (event) => {
     state.username = target.value
   }
 
+  if (target.name === 'remember-me' && target.type === 'checkbox') {
+    state.rememberMe = target.checked
+    // Unchecking forgets immediately (e.g. shared device); checking
+    // takes effect on the next successful sign-in.
+    if (!target.checked) clearRememberedIdentity()
+  }
+
   if (target.name === 'password') {
     state.password = target.value
   }
@@ -976,6 +1259,7 @@ function render() {
     }, (result) => {
       showToast(`Registration Successful!\nCooperative ID: ${result.cooperativeId}\n\nYou can now log in with the 'admin' account.`, 'success')
       state.isRegistering = false
+      state.publicView = 'login'
       state.username = 'admin'
       state.stage = 1
       render()
@@ -988,6 +1272,7 @@ function render() {
   }
 
   if (state.welcomeUser) {
+    markVisited();
     renderDashboard()
     
     // Mount Notification Bell
@@ -995,6 +1280,21 @@ function render() {
     if (bellContainer) {
         mountNotificationBell(bellContainer, state.welcomeUser)
     }
+    return
+  }
+
+  // Logged out: landing page for first-timers, login screen otherwise.
+  // (Auto/manual logout always lands on login — see performLogout.)
+  if (!state.isRegistering && !state.showActivationKeyPrompt && resolvePublicView() === 'landing') {
+    renderLanding(app, {
+      onLogin: () => { state.publicView = 'login'; state.stage = 1; state.errorMessage = ''; render(); },
+      onRegister: () => {
+        state.showActivationKeyPrompt = true
+        state.activationKeyInput = ''
+        state.activationKeyError = ''
+        render()
+      },
+    })
     return
   }
 
@@ -1006,6 +1306,9 @@ function render() {
     if (s.includes('@')) return '✉️ Email';
     return '👤 Username';
   };
+  // Desktop (Electron) cannot do Google popup sign-in (file:// origin is
+  // rejected by Google) — those users sign in with username + PIN instead.
+  const isElectron = typeof window !== 'undefined' && !!window.cooplog;
 
   const titles = {
     1: 'Welcome Back',
@@ -1028,9 +1331,6 @@ function render() {
             <span>${networkIndicatorLabel()}</span>
           </div>
         </div>
-        <button type="button" class="ghost-button" data-action="hard-reset" style="position: absolute; top: 1rem; right: 1rem; width: 2.5rem; height: 2.5rem; padding: 0; border-radius: 50%; display: flex; align-items: center; justify-content: center;" title="Hard Reset App">
-          <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 0A1 1 0 0012 3m0 0v12m0-12L7.054 7.054A7 7 0 005 12v4 12a7 7 0 0014 0 7 7 0 00-.054-.946"></path></svg>
-        </button>
         <div class="brand">COOPERATIVE LOG APP</div>
         <h1 style="font-weight: 800; font-size: 1.75rem; color: var(--text-primary); margin-top: 0; text-align: center;">${titles[state.stage]}</h1>
         <div style="margin-bottom: 2rem;"></div>
@@ -1047,6 +1347,17 @@ function render() {
             />
             ${state.username ? `<div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 0.25rem;">Detected: ${detectInputType(state.username)}</div>` : ''}
           </label>
+          ${state.stage === 1 ? `
+          <div style="display: flex; align-items: center; gap: 0.5rem; margin: 0.75rem 0 0; font-size: 0.85rem; color: var(--text-muted);">
+            <input
+              type="checkbox"
+              name="remember-me"
+              ${state.rememberMe ? 'checked' : ''}
+              style="width: 1.05rem; height: 1.05rem; accent-color: var(--accent-primary); cursor: pointer;"
+            />
+            <span>Remember me on this device</span>
+          </div>
+          ` : ''}
 
           <label class="field ${state.stage !== 2 ? 'field-hidden' : ''}" style="position: relative; margin-top: 1rem;">
             <span style="font-size: 0.7rem; font-weight: 700; color: var(--text-muted); margin-bottom: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; display: block;">Cooperative Context</span>
@@ -1120,7 +1431,7 @@ function render() {
             </button>
           </div>
 
-          ${state.stage === 1 ? `
+          ${state.stage === 1 && !isElectron ? `
           <div style="margin-top: 1rem;">
             <button type="button" class="secondary-button" data-action="google-login" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 0.5rem;" ${state.isSubmitting ? 'disabled' : ''}>
               <svg width="18" height="18" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
@@ -1132,6 +1443,9 @@ function render() {
           <div style="margin-top: 2.5rem; text-align: center; border-top: 1px solid var(--border-light); padding-top: 2rem;">
             <button type="button" class="ghost-button" data-action="show-registration" style="width: 100%; height: 3.25rem;">
                 Register New Cooperative
+            </button>
+            <button type="button" class="ghost-button" data-action="go-landing" style="width: 100%; margin-top: 0.5rem; font-size: 0.82rem; color: var(--text-muted);">
+                ← Back to home
             </button>
           </div>
         </form>
@@ -1359,12 +1673,7 @@ function renderDashboard() {
               <span class="nav-label">Ledger</span>
             </button>
           ` : ''}
-          ${hasPermission(state.welcomeUser.permissions, 'read_remittance') ? `
-            <button class="bottom-nav-item ${state.activeTab === 'payments' ? 'active' : ''}" data-action="nav-tab" data-tab="payments">
-              <svg class="nav-icon" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-              <span class="nav-label">Remittance</span>
-            </button>
-          ` : ''}
+          
         `}
         ${(state.welcomeUser.role === 'member' || hasPermission(state.welcomeUser.permissions, 'settings_manage')) ? `
           <button class="bottom-nav-item ${state.activeTab === 'settings' ? 'active' : ''}" data-action="nav-tab" data-tab="settings">
@@ -1542,6 +1851,9 @@ function updateMobileFab() {
 function startDashboardAutoRefresh() {
   if (_dashboardRefreshInterval) clearInterval(_dashboardRefreshInterval)
   _dashboardRefreshInterval = setInterval(() => {
+    // Skip while hidden: Electron keeps firing timers when minimized/occluded
+    // where Chrome would throttle the tab — pointless full scans otherwise.
+    if (document.hidden) return
     if (state.activeTab === 'dashboard' && canPerformRefresh()) {
       renderDashboardContent()
     }
@@ -1617,6 +1929,13 @@ async function populateAvatars() {
         console.log('[Avatars] Using user initials:', getInitials(displayName));
         userContainer.textContent = getInitials(displayName);
       }
+      // Member self-service: clickable only when no photo exists; read-only otherwise.
+      try {
+        const { enableMemberAvatarUpload } = await import('./components/memberAvatarUpload.js')
+        for (const el of document.querySelectorAll('#user-avatar-container')) {
+          await enableMemberAvatarUpload(el, state.welcomeUser)
+        }
+      } catch {}
     }
   } catch (err) {
     console.error('[Avatars] Failed to populate avatars:', err);
@@ -1720,7 +2039,24 @@ function classifyLoginError(err) {
   return { type: 'unknown', message: 'An unexpected error occurred during login. Please try again or contact your administrator if the problem persists.' }
 }
 
+// Coalesces overlapping renders: sync events + the 60s auto-refresh used to
+// stack concurrent full-dataset renders, each holding the whole DB in memory
+// (the classic Electron all-day-session blowup; web tabs get discarded first).
+// A render already in flight defers newcomers to a single follow-up pass.
+let _dashRenderBusy = false;
+let _dashRenderQueued = false;
 async function renderDashboardContent() {
+  if (_dashRenderBusy) { _dashRenderQueued = true; return; }
+  _dashRenderBusy = true;
+  try {
+    await _renderDashboardContentInner();
+  } finally {
+    _dashRenderBusy = false;
+    if (_dashRenderQueued) { _dashRenderQueued = false; renderDashboardContent(); }
+  }
+}
+
+async function _renderDashboardContentInner() {
   const container = document.getElementById('dashboard-main-content')
   if (!container) return
 
@@ -1761,6 +2097,14 @@ async function renderDashboardContent() {
   if (isMemberRole && state.activeTab === 'members') {
     state.activeTab = 'payments'
     window.location.hash = 'payments'
+    return
+  }
+
+  // Hide Remittance page on mobile
+  const isMobile = window.innerWidth < 768
+  if (isMobile && state.activeTab === 'payments') {
+    state.activeTab = 'dashboard'
+    window.location.hash = 'dashboard'
     return
   }
 
@@ -1966,7 +2310,7 @@ window.showTransactionModal = async (remittance) => {
     // Fetch all members (full list) to ensure guarantor names can be resolved even for non-admins
     const allMembers = await fetchAllMembers(state.welcomeUser.cooperativeId, state.welcomeUser.username, true)
 
-    title.innerText = `#${String(remittance.r_id || '').padStart(5, '0')} — ${fmt.formatDate(remittance.remittance_date)}`
+    title.innerText = `#${fmt.shortRef(remittance.id)} — ${fmt.formatDate(remittance.remittance_date)}`
     const enterprisesArray = await fetchEnterprises(state.welcomeUser.cooperativeId, true)
     const enterpriseNames = {}
     enterprisesArray.forEach(e => { enterpriseNames[e.id] = e.account_name })
@@ -1986,8 +2330,8 @@ window.showTransactionModal = async (remittance) => {
 
     if (isSavingsRequest && remittance.member_id) {
       const { buildAccountBalance } = await import('./services/dataService.js');
-      const limitRid = remittance.r_id !== undefined && remittance.r_id !== null ? remittance.r_id : null;
-      const { accountBalance } = await buildAccountBalance(state.welcomeUser.cooperativeId, { memberId: remittance.member_id }, limitRid);
+      const limitKey = remittance && remittance.created_at ? { ts: remittance.created_at, id: remittance.id } : null;
+      const { accountBalance } = await buildAccountBalance(state.welcomeUser.cooperativeId, { memberId: remittance.member_id }, limitKey);
       const balObj = accountBalance.find(b => b.id === targetEntId);
       balanceBefore = balObj ? parseFloat(balObj.sum_of_amount || 0) : 0;
       balanceAfter = balanceBefore - Math.abs(parseFloat(remittance.amount || detail.amount || 0));
@@ -2331,6 +2675,14 @@ function handleBack() {
 async function handleGoogleLogin() {
   if (state.isSubmitting) return;
 
+  // Desktop (Electron) has no Google button, but guard anyway: the popup
+  // flow cannot work from a file:// origin ("requested action is invalid").
+  if (typeof window !== 'undefined' && window.cooplog) {
+    state.errorMessage = 'Google sign-in is not available in the desktop app. Please use your username and PIN, or sign in with Google in the browser.';
+    render();
+    return;
+  }
+
   try {
     state.isSubmitting = true;
     state.errorMessage = '';
@@ -2357,7 +2709,8 @@ async function handleGoogleLogin() {
       const session = await validateGoogleLogin(user.email, cooperatives[0].id);
       if (session) {
         state.welcomeUser = session;
-        await saveSession(session);
+        await saveSession(session, undefined, state.rememberMe);
+        persistRememberMe(session.username || user.email, session.cooperativeId, session.cooperativeName);
         state.isSubmitting = false;
         render();
       } else {
@@ -2446,9 +2799,12 @@ async function handleUsernameStage() {
       state.selectedCooperativeId = cooperatives[0].id;
       state.stage = 3;
     } else {
-      // Remember last selected cooperative for this username
+      // Remember last selected cooperative for this username (fall back to
+      // the global remembered cooperative so returning users skip picking).
       const lastCoop = localStorage.getItem('cooplog-last-coop-' + username.toLowerCase());
-      state.selectedCooperativeId = lastCoop && cooperatives.some(c => c.id === lastCoop) ? lastCoop : '';
+      const rememberedCoop = loadRememberedIdentity()?.cooperativeId;
+      const preselect = lastCoop || rememberedCoop;
+      state.selectedCooperativeId = preselect && cooperatives.some(c => c.id === preselect) ? preselect : '';
       state.stage = 2;
     }
   } catch (error) {
@@ -2476,7 +2832,8 @@ async function handleCooperativeStage() {
       const session = await validateGoogleLogin(state.username, state.selectedCooperativeId);
       if (session) {
         state.welcomeUser = session;
-        await saveSession(session);
+        await saveSession(session, undefined, state.rememberMe);
+        persistRememberMe(session.username || state.username, session.cooperativeId, session.cooperativeName);
         render();
       } else {
         throw new Error('Login validation failed.');
@@ -2585,10 +2942,12 @@ async function handlePasswordStage() {
     }
 
     // Save for future offline access (non-blocking - session already in sessionStorage)
-    saveSession(session, password).catch(err => console.warn('[Login] Offline save failed:', err))
+    saveSession(session, password, state.rememberMe).catch(err => console.warn('[Login] Offline save failed:', err))
 
     const cooperativeName =
-      state.cooperatives.find((coop) => coop.id === session.cooperativeId)?.name || session.cooperativeId
+      state.cooperatives.find((coop) => coop.id === session.cooperativeId)?.name
+      || session.cooperativeName
+      || session.cooperativeId
 
     // Reset session-specific state
     state.selectedMemberId = null
@@ -2620,16 +2979,19 @@ async function handlePasswordStage() {
     }
 
     // Save to sessionStorage synchronously
-    saveSession(state.welcomeUser)
+    saveSession(state.welcomeUser, undefined, state.rememberMe)
+    persistRememberMe(state.welcomeUser.username, state.welcomeUser.cooperativeId, state.welcomeUser.cooperativeName)
 
     if (!isSubscriptionActive()) {
       state.activeTab = 'dashboard'
       window.location.hash = 'dashboard'
     }
 
-    // Default to appropriate tab on successful login
+    // Default to appropriate tab on successful login (landing order:
+    // dashboard first, then ledger, remittance, members, reports, ...).
     const defaultTab = getDefaultTab(state.welcomeUser)
     state.activeTab = defaultTab
+    state.welcomeUser.activeTab = defaultTab
     window.history.replaceState(null, '', `#${defaultTab}`)
 
     // Reset login stage
@@ -2721,45 +3083,59 @@ async function handlePasswordStage() {
 
 
 async function showForcePasswordChangeModal(userDoc, collectionName) {
-  state.modal.title = "Secure Your Account";
+  state.modal.title = "Set Your 6-Digit PIN";
   state.modal.type = "force-password";
   state.modal.data = { userDoc, collectionName };
   state.modal.isOpen = true;
   state.modal.content = `
         <div style="padding: 1rem 0;">
             <p style="color: #64748b; font-size: 0.9rem; margin-bottom: 1.5rem;">
-                Your account is currently using a default or temporary password. For your security, please set a new strong password to continue.
+                Your account is currently using a default or temporary password. For your security, please set a new 6-digit numeric PIN to continue. Letters are not allowed.
             </p>
-            
+
             <form id="force-pwd-form" style="display: flex; flex-direction: column; gap: 1.25rem;">
                 <div class="field">
-                    <span>New Password</span>
-                    <div class="password-wrap" style="position: relative;">
-                        <input type="password" id="new-pwd" placeholder="••••••••" required style="width: 100%;" />
-                        <button type="button" class="ghost-button toggle-pwd-btn" style="position: absolute; right: 0.5rem; top: 50%; transform: translateY(-50%); font-size: 0.7rem;">Show</button>
+                    <span>New 6-Digit PIN (numbers only)</span>
+                    <div class="pin-wrap" style="display: flex; gap: 0.5rem; justify-content: center; margin-bottom: 1rem;">
+                      ${[0,1,2,3,4,5].map(i => `
+                        <input
+                          type="text"
+                          name="new-pin-${i}"
+                          maxlength="1"
+                          pattern="[0-9]"
+                          inputmode="numeric"
+                          style="width: 3rem; height: 3rem; font-size: 1.5rem; text-align: center; border: 2px solid var(--border-medium); border-radius: 0.5rem; background: var(--bg-primary); color: var(--text-primary);"
+                          aria-label="New PIN digit ${i+1}"
+                        />
+                      `).join('')}
                     </div>
                 </div>
                 <div class="field">
-                    <span>Confirm New Password</span>
-                    <div class="password-wrap" style="position: relative;">
-                        <input type="password" id="confirm-pwd" placeholder="••••••••" required style="width: 100%;" />
-                        <button type="button" class="ghost-button toggle-pwd-btn" style="position: absolute; right: 0.5rem; top: 50%; transform: translateY(-50%); font-size: 0.7rem;">Show</button>
+                    <span>Confirm 6-Digit PIN</span>
+                    <div class="pin-wrap" style="display: flex; gap: 0.5rem; justify-content: center; margin-bottom: 1rem;">
+                      ${[0,1,2,3,4,5].map(i => `
+                        <input
+                          type="text"
+                          name="confirm-pin-${i}"
+                          maxlength="1"
+                          pattern="[0-9]"
+                          inputmode="numeric"
+                          style="width: 3rem; height: 3rem; font-size: 1.5rem; text-align: center; border: 2px solid var(--border-medium); border-radius: 0.5rem; background: var(--bg-primary); color: var(--text-primary);"
+                          aria-label="Confirm PIN digit ${i+1}"
+                        />
+                      `).join('')}
                     </div>
                 </div>
 
                 <div id="pwd-requirements" style="background: var(--bg-secondary); padding: 1rem; border-radius: 0.75rem; border: 1px solid var(--border-medium);">
                     <div style="font-size: 0.75rem; font-weight: 700; color: var(--text-primary); margin-bottom: 0.75rem; text-transform: uppercase;">Requirements</div>
                     <ul style="list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; font-size: 0.8rem;">
-                        <li id="req-length" style="color: var(--text-muted); display: flex; align-items: center; gap: 0.4rem;">○ Min 6 characters</li>
-                        <li id="req-num" style="color: var(--text-muted); display: flex; align-items: center; gap: 0.4rem;">○ Include a number</li>
-                        <li id="req-spec" style="color: var(--text-muted); display: flex; align-items: center; gap: 0.4rem;">○ Special character</li>
-                        <li id="req-upper" style="color: var(--text-muted); display: flex; align-items: center; gap: 0.4rem;">○ Uppercase letter</li>
-                        <li id="req-lower" style="color: var(--text-muted); display: flex; align-items: center; gap: 0.4rem;">○ Lowercase letter</li>
-                        <li id="req-match" style="color: var(--text-muted); display: flex; align-items: center; gap: 0.4rem;">○ Passwords match</li>
+                        <li id="req-length" style="color: var(--text-muted); display: flex; align-items: center; gap: 0.4rem;">○ Exactly 6 digits</li>
+                        <li id="req-match" style="color: var(--text-muted); display: flex; align-items: center; gap: 0.4rem;">○ PINs match</li>
                     </ul>
                 </div>
 
-                <button type="submit" id="submit-new-pwd" class="primary-button" style="width: 100%; margin-top: 1rem;" disabled>Update & Login</button>
+                <button type="submit" id="submit-new-pwd" class="primary-button" style="width: 100%; margin-top: 1rem;" disabled>Set PIN & Login</button>
             </form>
         </div>
     `;
@@ -2775,48 +3151,45 @@ function setupForcePwdListeners() {
   const collectionName = state.modal.data?.collectionName;
   if (!userDoc) return;
 
-  const newPwdInput = body.querySelector('#new-pwd');
-  const confirmPwdInput = body.querySelector('#confirm-pwd');
+  const newPinInputs = Array.from({length: 6}, (_, i) => body.querySelector(`input[name="new-pin-${i}"]`));
+  const confirmPinInputs = Array.from({length: 6}, (_, i) => body.querySelector(`input[name="confirm-pin-${i}"]`));
   const submitBtn = body.querySelector('#submit-new-pwd');
   const form = body.querySelector('#force-pwd-form');
 
-  const validate = () => {
-    const val = newPwdInput.value;
-    const confirm = confirmPwdInput.value;
+  const getPinValue = (inputs) => inputs.map(i => i?.value || '').join('');
 
+  const validate = () => {
+    const newPin = getPinValue(newPinInputs);
+    const confirmPin = getPinValue(confirmPinInputs);
+
+    // Strict 6-digit numeric PIN — letters are not allowed
     const checks = {
-      length: val.length >= 6,
-      num: /[0-9]/.test(val),
-      spec: /[!@#$%^&*(),.?":{}|<>]/.test(val),
-      upper: /[A-Z]/.test(val),
-      lower: /[a-z]/.test(val),
-      match: val.length > 0 && val === confirm
+      length: newPin.length === 6 && /^\d{6}$/.test(newPin),
+      match: newPin.length === 6 && newPin === confirmPin
     };
 
-    Object.keys(checks).forEach(id => {
-      const el = body.querySelector(`#req-${id}`);
-      if (!el) return;
-      if (checks[id]) {
-        el.style.color = '#10b981';
-        el.innerText = '● ' + el.innerText.substring(2);
-      } else {
-        el.style.color = '#94a3b8';
-        el.innerText = '○ ' + el.innerText.substring(2);
-      }
-    });
+    const reqLength = body.querySelector('#req-length');
+    const reqMatch = body.querySelector('#req-match');
+    [reqLength, reqMatch].forEach(el => { if (el) el.remove(); });
 
     submitBtn.disabled = !Object.values(checks).every(v => v === true);
   };
 
-  newPwdInput?.addEventListener('input', validate);
-  confirmPwdInput?.addEventListener('input', validate);
-
-  body.querySelectorAll('.toggle-pwd-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const input = btn.previousElementSibling;
-      const type = input.type === 'password' ? 'text' : 'password';
-      input.type = type;
-      btn.innerText = type === 'password' ? 'Show' : 'Hide';
+  // Auto-focus next input on digit entry
+  [...newPinInputs, ...confirmPinInputs].forEach((input, idx, arr) => {
+    if (!input) return;
+    input.addEventListener('input', (e) => {
+      // Strip non-digits immediately (alphabet not allowed)
+      e.target.value = e.target.value.replace(/\D/g, '').slice(0, 1);
+      if (e.target.value.length === 1 && idx < arr.length - 1) {
+        arr[idx + 1]?.focus();
+      }
+      validate();
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Backspace' && !e.target.value && idx > 0) {
+        arr[idx - 1]?.focus();
+      }
     });
   });
 
@@ -2824,47 +3197,77 @@ function setupForcePwdListeners() {
     e.preventDefault();
     try {
       submitBtn.disabled = true;
-      submitBtn.innerText = "Updating...";
+      submitBtn.innerText = "Setting PIN...";
 
-      const newPwd = newPwdInput.value;
+      const newPin = getPinValue(newPinInputs);
+      const confirmPin = getPinValue(confirmPinInputs);
+      if (newPin !== confirmPin) {
+        showToast('PINs do not match.', 'warning');
+        submitBtn.disabled = false;
+        submitBtn.innerText = "Set PIN & Login";
+        return;
+      }
+      if (!/^\d{6}$/.test(newPin)) {
+        showToast('PIN must be exactly 6 digits (numbers only).', 'warning');
+        submitBtn.disabled = false;
+        submitBtn.innerText = "Set PIN & Login";
+        return;
+      }
+      const newPwd = newPin;
+      // Forced PIN change is online-only: cloud must succeed before local login.
+      if (!navigator.onLine) {
+        showToast('Internet connection required to set PIN. Please connect and try again.', 'error');
+        submitBtn.disabled = false;
+        submitBtn.innerText = "Set PIN & Login";
+        return;
+      }
       const hashed = await hashPassword(newPwd);
       console.log('[PasswordChange] Generated new hash:', {
         length: hashed.length,
         isHash: /^[a-f0-9]{64}$/i.test(hashed)
       });
 
+      const nowIso = new Date().toISOString();
       const minimalPayload = {
+        cooperative_id: String(userDoc.cooperative_id),
         password_hash: hashed,
         force_password_change: false,
-        modified_at: new Date().toISOString(),
-        modified_by: 'system-security'
+        modified_at: nowIso,
+        modified_by: 'system-security',
+        sync_at: nowIso
       };
 
-      // ── 1. Write directly to Firestore (immediate, bypasses sync queue)
-      // This is critical: the sync queue is eventually-consistent; without this direct
-      // write, a re-login while the queue is pending would re-fetch the old password
-      // from Firestore and trigger the forceChange modal again.
-      if (navigator.onLine) {
-        try {
-          const { getDb, doc: fsDoc, updateDoc } = await import('./firebase.js');
-          const db = getDb();
-          await updateDoc(fsDoc(db, collectionName, userDoc.id), minimalPayload);
-          console.log('[PasswordChange] Firestore write successful');
-        } catch (fsErr) {
-          console.warn('[PasswordChange] Firestore direct write failed (will rely on sync queue):', fsErr.message);
+      // ── 1. Push directly to Firestore first — must succeed before login.
+      try {
+        const { getDb, doc: fsDoc, updateDoc } = await import('./firebase.js');
+        const db = getDb();
+        await updateDoc(fsDoc(db, collectionName, userDoc.id), minimalPayload);
+        console.log('[PasswordChange] Firestore write successful');
+      } catch (fsErr) {
+        console.error('[PasswordChange] Firestore write failed, aborting login:', fsErr.message);
+        showToast('Failed to update PIN online: ' + (fsErr.message || 'network error'), 'error');
+        submitBtn.disabled = false;
+        submitBtn.innerText = "Set PIN & Login";
+        return;
+      }
+
+      // ── 2. Mirror locally. updateMember/updateUser hash internally,
+      // so pass the PLAINTEXT PIN (not `hashed`) to avoid double-hashing.
+      let localMirrorOk = true;
+      try {
+        const localPayload = { ...userDoc, password_hash: newPwd, force_password_change: false, modified_at: nowIso, modified_by: 'system-security' };
+        const { updateMember, updateUser } = await import('./services/dataService.js');
+        if (collectionName === 'members') {
+          await updateMember(userDoc.id, localPayload, 'system-security');
+        } else {
+          await updateUser(userDoc.id, localPayload, 'system-security');
         }
+      } catch (localErr) {
+        localMirrorOk = false;
+        console.warn('[PasswordChange] Local mirror failed (cloud already updated):', localErr.message);
       }
 
-      // ── 2. Update SQLite locally and enqueue for sync (offline resilience)
-      const fullPayload = { ...userDoc, ...minimalPayload };
-      const { updateMember, updateUser } = await import('./services/dataService.js');
-      if (collectionName === 'members') {
-        await updateMember(userDoc.id, fullPayload, 'system-security');
-      } else {
-        await updateUser(userDoc.id, fullPayload, 'system-security');
-      }
-
-      showToast("Password updated successfully! Welcome to your dashboard.", "success");
+      showToast("PIN updated successfully! Welcome to your dashboard.", "success");
 
       // ── 3. Reset ALL modal and login state completely
       state.modal.isOpen = false;
@@ -2899,11 +3302,12 @@ function setupForcePwdListeners() {
       state.welcomeUser = welcomeUser;
 
       // Save session synchronously to sessionStorage first
-      await saveSession(state.welcomeUser, newPwd);
+      await saveSession(state.welcomeUser, newPwd, state.rememberMe);
+      persistRememberMe(state.welcomeUser.username, state.welcomeUser.cooperativeId, state.welcomeUser.cooperativeName);
 
-      // ── 5. Navigate to dashboard
-      state.activeTab = 'history';
-      window.history.replaceState(null, '', '#history');
+      // ── 5. Navigate to the default landing tab (dashboard for members)
+      state.activeTab = 'dashboard';
+      window.history.replaceState(null, '', '#dashboard');
 
       // ── 6. Trigger background sync to push any remaining queue items
       setTimeout(async () => {
@@ -2925,9 +3329,9 @@ function setupForcePwdListeners() {
 
       render();
     } catch (err) {
-      showToast("Failed to update password: " + err.message, "error");
+      showToast("Failed to update PIN: " + err.message, "error");
       submitBtn.disabled = false;
-      submitBtn.innerText = "Update & Login";
+      submitBtn.innerText = "Set PIN & Login";
     }
   });
 }
@@ -3543,11 +3947,10 @@ async function setupLoanRequestListeners() {
 async function finalizeLoanRequest() {
   // First, determine enterprise type
   const { 
-    fetchEnterprises, 
-    fetchAllMembers, 
-    addRemittance, 
-    getNextRemittanceRid, 
-    updateMemberBankInfo 
+    fetchEnterprises,
+    fetchAllMembers,
+    addRemittance,
+    updateMemberBankInfo
   } = await import('./services/dataService.js');
   const { showToast } = await import('./services/toastService.js');
   const { generateId } = await import('./utils/formatters.js');
@@ -3573,7 +3976,6 @@ async function finalizeLoanRequest() {
   let transactionType = isSavingsEnterprise ? 'Savings Withdrawal' : 'Member Loan';
   let amount = isSavingsEnterprise ? -Math.abs(state.loanRequest.amount) : -Math.abs(state.loanRequest.amount);
 
-  const nextRid = await getNextRemittanceRid(state.welcomeUser.cooperativeId);
   const status = 'Pending'; // As per instruction
   const description = isSavingsEnterprise ? 'Savings Withdrawal Request' : 'Loan Request';
 
@@ -3585,7 +3987,6 @@ async function finalizeLoanRequest() {
     description: description,
     remittance_date: new Date().toISOString().split('T')[0],
     bank_name: state.loanRequest.bankDetails.bankName || '',
-    r_id: nextRid,
     cooperative_id: state.welcomeUser.cooperativeId,
     user_role: state.welcomeUser.role || 'member',
     user_roles: [state.welcomeUser.role || 'member'],
@@ -3653,11 +4054,10 @@ async function finalizeLoanRequest() {
 
 async function showWithdrawalWizard() {
   const { 
-    fetchEnterprises, 
-    fetchAllMembers, 
-    addRemittance, 
-    getNextRemittanceRid,
-    buildAccountBalance 
+    fetchEnterprises,
+    fetchAllMembers,
+    addRemittance,
+    buildAccountBalance
   } = await import('./services/dataService.js');
   const { showToast } = await import('./services/toastService.js');
   const { generateId, formatCurrency, escapeHtml } = await import('./utils/formatters.js');
@@ -4246,8 +4646,6 @@ async function showWithdrawalWizard() {
           const selectedMember = allMembers.find(m => m.id === selectedMemberId);
           const transactionType = selectedEnterprise.type === 'loan' ? 'Member Loan' : 'Savings Withdrawal';
           const amount = -Math.abs(withdrawalAmount);
-          const nextRid = await getNextRemittanceRid(state.welcomeUser.cooperativeId);
-          
           const details = [
             {
               id: generateId(state.welcomeUser.cooperativeId),
@@ -4285,7 +4683,6 @@ async function showWithdrawalWizard() {
             details: details,
             isLoanRequest: selectedEnterprise.type === 'loan',
             isWithdrawalRequest: true,
-            r_id: nextRid,
             cooperative_id: state.welcomeUser.cooperativeId,
             user_role: state.welcomeUser.role || 'member',
             user_roles: [state.welcomeUser.role || 'member'],

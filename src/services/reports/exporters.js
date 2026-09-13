@@ -1,4 +1,23 @@
-import { formatNumber, formatDate } from '../../utils/formatters.js';
+import { formatNumber, formatDate, toExcelDateSerial, formatDateForInput } from '../../utils/formatters.js';
+
+// A value only qualifies for date conversion when it actually looks like a
+// date (Date instance, Firestore Timestamp, or a date-shaped string).
+// Summary rows reuse the report grid, so plain numbers sitting under a Date
+// header (EOD bank-summary amounts) must stay amounts — new Date(50000) would
+// "succeed" as Jan 1970 and destroy the figure.
+function looksLikeDate(val) {
+    if (val instanceof Date) return !isNaN(val.getTime())
+    if (typeof val === 'object' && val !== null) {
+        if (typeof val.toDate === 'function') return true
+        if (val.seconds !== undefined || val._seconds !== undefined) return true
+        return false
+    }
+    if (typeof val !== 'string') return false
+    const s = val.trim()
+    if (!s) return false
+    if (/[a-zA-Z]{3,}/.test(s)) return !isNaN(new Date(s).getTime())
+    return /\d{4}-\d{1,2}-\d{1,2}/.test(s) || /\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4}/.test(s)
+}
 
 export async function exportToExcel(cooperativeName, title, headers, data) {
     const ExcelJS = window.ExcelJS || (await import('exceljs')).default;
@@ -33,11 +52,23 @@ export async function exportToExcel(cooperativeName, title, headers, data) {
             const cell = r.getCell(colIdx + 1);
             const header = headers[colIdx];
 
-            if ((header === 'Date Joined' || header === 'Date') && val) {
-                const parsedDate = new Date(val);
-                if (!isNaN(parsedDate.getTime())) {
-                    cell.value = parsedDate;
-                    cell.numFmt = 'dd mmm, yyyy';
+            if ((header === 'Date Joined' || header === 'Date') && val !== '' && val !== null && val !== undefined) {
+                if (typeof val === 'number') {
+                    // Amount from a summary row sitting under a Date header —
+                    // keep it an amount, formatted like the preview figures.
+                    cell.value = val;
+                    cell.numFmt = '#,##0.00';
+                } else if (looksLikeDate(val)) {
+                    // Real Excel date (serial integer, no time fraction) so formulas
+                    // work, built from the calendar day with pure arithmetic — same
+                    // day the preview/PDF show, immune to timezone shifts.
+                    const serial = toExcelDateSerial(val);
+                    if (serial !== null) {
+                        cell.value = serial;
+                        cell.numFmt = 'dd mmm, yyyy';
+                    } else {
+                        cell.value = val;
+                    }
                 } else {
                     cell.value = val;
                 }

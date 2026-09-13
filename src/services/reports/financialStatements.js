@@ -58,6 +58,7 @@ export async function getTrialBalanceData(cooperativeId, fiscalYear) {
         SELECT bank_name, SUM(amount) as net_balance
         FROM remittance
         WHERE cooperative_id = ? AND status = 'Approved' AND is_deleted = 0
+          AND bank_name != 'Internal Transfer'
           AND date(remittance_date) <= date(?)
         GROUP BY bank_name
     `;
@@ -109,6 +110,37 @@ export async function getTrialBalanceData(cooperativeId, fiscalYear) {
         data.push([idx++, `Cash in Bank - ${b.bank_name || 'Unspecified'}`, 'CASH/BANK', dr, cr]);
     });
 
+    // Retained Earnings (header rule, same base as the Income &
+    // Expenditure statement) so the TB suspense below ties to the
+    // Balance Sheet suspense instead of hiding undistributed surplus.
+    const reRows = await queryRows(`
+        SELECT
+            SUM(CASE WHEN category IN ('Revenue','Operating Income','Loan Income','Other Income') THEN amount ELSE 0 END) as rev,
+            SUM(CASE WHEN category IN ('Expense','Expenses','Operating Expense','Administrative Expense','Finance Expense','Welfare Expense','Other Operating Expense','Other Expenses') THEN ABS(amount) ELSE 0 END) as exp
+        FROM remittance
+        WHERE cooperative_id = ? AND status = 'Approved' AND is_deleted = 0
+          AND date(remittance_date) <= date(?)
+    `, [cooperativeId, endStr]);
+    const reNet = parseFloat(reRows[0]?.rev || 0) - parseFloat(reRows[0]?.exp || 0);
+    if (Math.abs(reNet) >= 0.01) {
+        if (reNet > 0) { totalCredit += reNet; data.push([idx++, 'Retained Earnings', 'EQUITY', 0, reNet]); }
+        else { totalDebit += -reNet; data.push([idx++, 'Retained Earnings', 'EQUITY', -reNet, 0]); }
+    }
+
+    // Single-entry books can't self-balance: header totals and detail totals
+    // differ by header-only postings (detail-less opening rows). Disclose the
+    // gap as suspense so the footing is honest instead of a bare mismatch.
+    const suspense = totalDebit - totalCredit;
+    if (Math.abs(suspense) >= 0.01) {
+        if (suspense > 0) {
+            totalCredit += suspense;
+            data.push([idx++, 'Suspense – header-only postings gap', '', 0, suspense]);
+        } else {
+            totalDebit += -suspense;
+            data.push([idx++, 'Suspense – header-only postings gap', '', -suspense, 0]);
+        }
+    }
+
     data.push([]);
     data.push(['', 'TOTAL', '', totalDebit, totalCredit]);
 
@@ -130,18 +162,18 @@ export async function getIncomeExpenditureData(cooperativeId, fiscalYear) {
     const startStr = `${startDate.getFullYear()}-${String(startDate.getMonth()+1).padStart(2, '0')}-01`;
     const endStr = `${endDate.getFullYear()}-${String(endDate.getMonth()+1).padStart(2, '0')}-${String(new Date(endDate.getFullYear(), endDate.getMonth() + 1, 0).getDate()).padStart(2, '0')}`;
 
+    // Header-based accounting: income/expenditure follow the remittance
+    // category + header amount (details are member-level breakdowns only).
     const sql = `
         SELECT 
-            rd.amount as detail_amount,
-            e.account_name,
-            e.account_type,
-            e.revenue as is_revenue
+            r.category,
+            r.transaction_type,
+            SUM(r.amount) as total
         FROM remittance r
-        JOIN remittance_detail rd ON r.id = rd.remittance_id
-        LEFT JOIN enterprise e ON rd.enterprise_id = e.id
-        WHERE r.cooperative_id = ? AND r.status = 'Approved' AND r.is_deleted = 0 AND rd.is_deleted = 0
+        WHERE r.cooperative_id = ? AND r.status = 'Approved' AND r.is_deleted = 0
             AND date(r.remittance_date) >= date(?) 
             AND date(r.remittance_date) <= date(?)
+        GROUP BY r.category, r.transaction_type
     `;
 
     const rows = await queryRows(sql, [cooperativeId, startStr, endStr]);
@@ -151,16 +183,14 @@ export async function getIncomeExpenditureData(cooperativeId, fiscalYear) {
     let totalIncome = 0;
     let totalExpense = 0;
 
+    const INC_CATS = ['Revenue', 'Operating Income', 'Loan Income', 'Other Income'];
+    const EXP_CATS = ['Expense', 'Expenses', 'Operating Expense', 'Administrative Expense', 'Finance Expense', 'Welfare Expense', 'Other Operating Expense', 'Other Expenses'];
     rows.forEach(r => {
-        const amount = parseFloat(r.detail_amount || 0);
-        const name = r.account_name || 'Unknown Account';
-        const type = (r.account_type || '').toLowerCase();
-        const isRevenue = r.is_revenue == 1 || r.is_revenue === '1' || r.is_revenue === 'true' || r.is_revenue === true || type === 'revenue';
-        const isExpense = type === 'expense';
-
-        if (isRevenue) {
+        const amount = parseFloat(r.total || 0);
+        const name = r.transaction_type || r.category || 'Unknown';
+        if (INC_CATS.includes(r.category)) {
             incomeMap[name] = (incomeMap[name] || 0) + amount;
-        } else if (isExpense) {
+        } else if (EXP_CATS.includes(r.category)) {
             expenseMap[name] = (expenseMap[name] || 0) + amount;
         }
     });
@@ -229,23 +259,25 @@ export async function getBalanceSheetData(cooperativeId, fiscalYear) {
         SELECT bank_name, SUM(amount) as net_balance
         FROM remittance
         WHERE cooperative_id = ? AND status = 'Approved' AND is_deleted = 0
+          AND bank_name != 'Internal Transfer'
           AND date(remittance_date) <= date(?)
         GROUP BY bank_name
     `;
     const bankRows = await queryRows(bankSql, [cooperativeId, endStr]);
 
+    // Retained Earnings follows the header rule (same base as the Income &
+    // Expenditure statement): income-category headers minus expense-category
+    // headers (absolute), cumulative to the balance-sheet date.
     const reSql = `
         SELECT 
-            SUM(CASE WHEN e.revenue = 1 OR e.revenue = '1' OR e.revenue = 'true' OR e.account_type = 'revenue' THEN rd.amount ELSE 0 END) as total_rev,
-            SUM(CASE WHEN e.account_type = 'expense' THEN rd.amount ELSE 0 END) as total_exp
-        FROM remittance_detail rd
-        JOIN remittance r ON r.id = rd.remittance_id
-        LEFT JOIN enterprise e ON rd.enterprise_id = e.id
-        WHERE rd.cooperative_id = ? AND r.status = 'Approved' AND r.is_deleted = 0 AND rd.is_deleted = 0
+            SUM(CASE WHEN r.category IN ('Revenue','Operating Income','Loan Income','Other Income') THEN r.amount ELSE 0 END) as total_rev,
+            SUM(CASE WHEN r.category IN ('Expense','Expenses','Operating Expense','Administrative Expense','Finance Expense','Welfare Expense','Other Operating Expense','Other Expenses') THEN ABS(r.amount) ELSE 0 END) as total_exp
+        FROM remittance r
+        WHERE r.cooperative_id = ? AND r.status = 'Approved' AND r.is_deleted = 0
           AND date(r.remittance_date) <= date(?)
     `;
     const reResult = await queryRows(reSql, [cooperativeId, endStr]);
-    const netSurplus = parseFloat(reResult[0]?.total_rev || 0) + parseFloat(reResult[0]?.total_exp || 0);
+    const netSurplus = parseFloat(reResult[0]?.total_rev || 0) - parseFloat(reResult[0]?.total_exp || 0);
 
     const assetAccounts = [];
     const liabilityAccounts = [];
@@ -315,6 +347,13 @@ export async function getBalanceSheetData(cooperativeId, fiscalYear) {
     });
     data.push([`  ${idx++}`, 'Retained Earnings (Cumulative Net Surplus)', netSurplus]);
     totalEquity += netSurplus;
+    // Same single-entry gap as the Trial Balance (header-only postings):
+    // disclosed here so Assets always equals Liabilities + Equity.
+    const bsGap = totalAssets - (totalLiabilities + totalEquity);
+    if (Math.abs(bsGap) >= 0.01) {
+        totalEquity += bsGap;
+        data.push([`  ${idx++}`, 'Suspense – header-only postings gap', bsGap]);
+    }
     data.push(['', 'TOTAL EQUITY', totalEquity]);
     data.push([]);
 
@@ -351,42 +390,41 @@ export async function getCashFlowData(cooperativeId, fiscalYear) {
     const openingResult = await queryRows(openingSql, [cooperativeId, startStr]);
     const openingBalance = parseFloat(openingResult[0]?.opening || 0);
 
+    // Header-based cash flow: every movement comes from the remittance
+    // header amount + category (single base, so closing always equals
+    // opening + movements). Internal transfers get their own memo section —
+    // they move money between own pots, not in/out of the cooperative.
     const remSql = `
         SELECT 
-            rd.amount as detail_amount,
-            e.account_type as ent_type,
-            e.revenue as is_revenue
+            r.amount,
+            r.category
         FROM remittance r
-        JOIN remittance_detail rd ON r.id = rd.remittance_id
-        LEFT JOIN enterprise e ON rd.enterprise_id = e.id
-        WHERE r.cooperative_id = ? AND r.status = 'Approved' AND r.is_deleted = 0 AND rd.is_deleted = 0
+        WHERE r.cooperative_id = ? AND r.status = 'Approved' AND r.is_deleted = 0
             AND date(r.remittance_date) >= date(?) AND date(r.remittance_date) <= date(?)
     `;
     const remRows = await queryRows(remSql, [cooperativeId, startStr, endStr]);
 
+    const INC_CATS_CF = ['Revenue', 'Operating Income', 'Loan Income', 'Other Income'];
+    const EXP_CATS_CF = ['Expense', 'Expenses', 'Operating Expense', 'Administrative Expense', 'Finance Expense', 'Welfare Expense', 'Other Operating Expense', 'Other Expenses'];
     let operatingInflow = 0, operatingOutflow = 0;
     let investingInflow = 0, investingOutflow = 0;
     let financingInflow = 0, financingOutflow = 0;
+    let transferNet = 0;
 
     remRows.forEach(r => {
-        const detailAmt = parseFloat(r.detail_amount || 0);
-        const entType = (r.ent_type || '').toLowerCase();
-        const isRevenue = r.is_revenue == 1 || r.is_revenue === '1' || r.is_revenue === 'true' || r.is_revenue === true || entType === 'revenue';
-        const isExpense = entType === 'expense';
-
-        if (isRevenue) {
-            if (detailAmt > 0) operatingInflow += detailAmt;
-        } else if (isExpense) {
-            if (detailAmt < 0) operatingOutflow += Math.abs(detailAmt);
-        } else if (entType === 'asset') {
-            if (detailAmt > 0) investingInflow += detailAmt;
-            else investingOutflow += Math.abs(detailAmt);
-        } else if (entType === 'loan') {
-            if (detailAmt < 0) investingOutflow += Math.abs(detailAmt);
-            else investingInflow += detailAmt;
-        } else if (entType === 'liability' || entType === 'savings') {
-            if (detailAmt > 0) financingInflow += detailAmt;
-            else financingOutflow += Math.abs(detailAmt);
+        const amt = parseFloat(r.amount || 0);
+        const cat = r.category || '';
+        if (INC_CATS_CF.includes(cat)) {
+            if (amt > 0) operatingInflow += amt; else operatingOutflow += Math.abs(amt);
+        } else if (EXP_CATS_CF.includes(cat)) {
+            if (amt < 0) operatingOutflow += Math.abs(amt); else operatingInflow += amt;
+        } else if (cat === 'Loan Asset' || cat === 'Fixed Asset') {
+            if (amt < 0) investingOutflow += Math.abs(amt); else investingInflow += amt;
+        } else if (cat === 'Member Liability') {
+            if (amt > 0) financingInflow += amt; else financingOutflow += Math.abs(amt);
+        } else {
+            // Transfer and anything unclassified: internal movement memo.
+            transferNet += amt;
         }
     });
 
@@ -412,7 +450,11 @@ export async function getCashFlowData(cooperativeId, fiscalYear) {
     data.push(['  Net Cash from Financing Activities', '-----', netFinancing]);
     data.push([]);
 
-    const netCashMovement = netOperating + netInvesting + netFinancing;
+    data.push(['INTERNAL TRANSFERS (MEMO)', '', '']);
+    data.push(['  Net Internal Transfers (between own pots)', '', transferNet]);
+    data.push([]);
+
+    const netCashMovement = netOperating + netInvesting + netFinancing + transferNet;
     const closingBalance = openingBalance + netCashMovement;
 
     data.push(['SUMMARY', '', '']);

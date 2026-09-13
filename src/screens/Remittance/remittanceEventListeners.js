@@ -123,13 +123,21 @@ export function attachEventListeners(container, deps) {
             memSuggestions.style.width = `${rect.width}px`;
           }
         };
-        window.addEventListener('scroll', updateDropdownPosition, true);
-        window.addEventListener('resize', updateDropdownPosition);
-        document.addEventListener('click', (e) => {
+        // Global listeners are replaced (not stacked): this setup re-runs on
+        // every remittance-page render and old closures retain dead DOM + datasets.
+        if (window._remitMemPos) window.removeEventListener('scroll', window._remitMemPos, true);
+        if (window._remitMemResize) window.removeEventListener('resize', window._remitMemResize);
+        if (window._remitMemOutside) document.removeEventListener('click', window._remitMemOutside);
+        window._remitMemPos = updateDropdownPosition;
+        window._remitMemResize = updateDropdownPosition;
+        window._remitMemOutside = (e) => {
           if (!memSearch.contains(e.target) && !memSuggestions.contains(e.target)) {
             memSuggestions.style.display = 'none';
           }
-        });
+        };
+        window.addEventListener('scroll', window._remitMemPos, true);
+        window.addEventListener('resize', window._remitMemResize);
+        document.addEventListener('click', window._remitMemOutside);
       }
       if (resetMemberBtn) {
         resetMemberBtn.addEventListener('click', async () => {
@@ -273,6 +281,10 @@ export function attachEventListeners(container, deps) {
         clearForm();
       });
       container.querySelector('#submit-log-btn')?.addEventListener('click', handleSubmit);
+      container.querySelector('#bulk-log-btn')?.addEventListener('click', async () => {
+        const { showBulkRemittanceModal } = await import('./remittanceBulk.js');
+        showBulkRemittanceModal(deps);
+      });
       container.querySelector('#review-log-btn')?.addEventListener('click', async () => {
         const firstLoanDetail = formData.details.find(d => d.loan_info);
         if (firstLoanDetail) {
@@ -348,7 +360,7 @@ export function attachEventListeners(container, deps) {
                 historyState.selectedRemittanceIds.add(id);
                 updateHistoryTable();
                 updateDeleteSelectedButton();
-                console.log('[RowClick] Calling loadRemittanceToForm for remit id:', remit.id, 'r_id:', remit.r_id, 'details count:', remit.details?.length);
+                console.log('[RowClick] Calling loadRemittanceToForm for remit id:', remit.id, 'details count:', remit.details?.length);
                 await loadRemittanceToForm(remit);
                 console.log('[RowClick] loadRemittanceToForm completed');
               }
@@ -361,7 +373,9 @@ export function attachEventListeners(container, deps) {
         }
       });
 
-      document.addEventListener('keydown', (e) => {
+      // Replaced (not stacked) on every history render — see note above.
+      if (window._remitHistArrowNav) document.removeEventListener('keydown', window._remitHistArrowNav);
+      window._remitHistArrowNav = (e) => {
         if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
         const active = document.activeElement;
         if (active && active.closest('.history-table-container') !== container.querySelector('.history-table-container')) return;
@@ -371,7 +385,8 @@ export function attachEventListeners(container, deps) {
         const curIdx = rows.findIndex(r => r.dataset.id === historyState.selectedRemittanceId);
         const nextIdx = curIdx === -1 ? 0 : (e.key === 'ArrowDown' ? Math.min(curIdx + 1, rows.length - 1) : Math.max(curIdx - 1, 0));
         selectRow(nextIdx);
-      });
+      };
+      document.addEventListener('keydown', window._remitHistArrowNav);
     }
     function updateBreakdownTable() {
       const tableContainer = container.querySelector('.breakdown-table-container');
@@ -417,7 +432,7 @@ export function attachEventListeners(container, deps) {
               ${advise === 0 ? '-' : advise.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2})}
             </td>
             <td style="padding: 0.2rem;">
-              <input type="number" step="0.01" class="detail-amt-grid clear-on-zero" data-opening="${opening}" value="${inputAmt}" data-row-index="${idx}" ${previewMode ? 'disabled' : ''}>
+              <input type="number" step="0.01" class="detail-amt-grid clear-on-zero" data-opening="${opening}" value="${inputAmt}" data-row-index="${idx}" ${previewMode || e.compulsory_due ? 'disabled' : ''} ${!previewMode && e.compulsory_due ? 'title="Compulsory due — charged separately on save"' : ''}>
             </td>
             <td class="row-closing-bal" style="padding: 0.4rem 0.6rem; font-weight: 600; color: ${closing < 0 ? 'var(--danger)' : 'inherit'}">
               ${closing === 0 ? '-' : closing.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2})}
@@ -592,7 +607,9 @@ export function attachEventListeners(container, deps) {
         updateHistoryTable();
       });
     }
-    document.addEventListener('keydown', async (e) => {
+    // Replaced (not stacked) on every history setup — same leak as above.
+    if (window._remitHistKeys) document.removeEventListener('keydown', window._remitHistKeys);
+    window._remitHistKeys = async (e) => {
       const activeEl = document.activeElement;
       if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'SELECT')) {
         return;
@@ -679,7 +696,8 @@ export function attachEventListeners(container, deps) {
         const row = container.querySelector(`tr[data-id="${newRemit.id}"]`);
         if (row) row.scrollIntoView({ block: 'nearest' });
       }
-    });
+    };
+    document.addEventListener('keydown', window._remitHistKeys);
     const resizerV = document.getElementById('resizer-v');
     if (resizerV) {
       let isResizing = false;

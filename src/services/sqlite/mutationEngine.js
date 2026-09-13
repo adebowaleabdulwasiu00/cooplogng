@@ -97,10 +97,31 @@ export async function saveDoc(tableName, doc, skipEnqueue = false) {
                     }
                 }
             }
+            // Direct autogen children (dues/penalty autos link loan_id straight
+            // to the parent remittance id — no loan bridge). Deleting the parent
+            // cascades to them on every delete path (single, bulk, sync-applied).
+            // Loan-charge children are unaffected: their loan_id is a loan id,
+            // never a remittance id (distinct id formats).
+            const directChildren = await getAllByIndex('remittance', 'loan_id', doc.id)
+            for (const child of directChildren) {
+                if (child.autogen === 1 && (child.is_deleted === 0 || !child.is_deleted)) {
+                    await saveDoc('remittance', { ...child, is_deleted: 1 })
+                }
+            }
             if (doc.autogen === 1 && doc.loan_id) {
                 const loan = await getDocById_Global('loans', doc.loan_id)
                 if (loan && loan.remittance_id) {
                     const parentRem = await getDocById_Global('remittance', loan.remittance_id)
+                    if (parentRem && (parentRem.is_deleted === 0 || !parentRem.is_deleted)) {
+                        await saveDoc('remittance', { ...parentRem, is_deleted: 1 })
+                    }
+                } else {
+                    // Dues/penalty-style child: loan_id points straight at the
+                    // parent remittance (no loan bridge). Deleting the child
+                    // deletes the parent, which cascades to all siblings via
+                    // the direct-children block above. Terminates: the parent
+                    // is already deleted when siblings recurse back here.
+                    const parentRem = await getDocById_Global('remittance', doc.loan_id)
                     if (parentRem && (parentRem.is_deleted === 0 || !parentRem.is_deleted)) {
                         await saveDoc('remittance', { ...parentRem, is_deleted: 1 })
                     }
@@ -171,7 +192,7 @@ export async function saveDoc(tableName, doc, skipEnqueue = false) {
     }
 
     if (!skipEnqueue) {
-        const topLevelCollections = ['enterprise', 'bank', 'members', 'remittance', 'users', 'notifications', 'cooperatives', 'transaction_types', 'bank_reconciliation_summary']
+        const topLevelCollections = ['enterprise', 'bank', 'members', 'remittance', 'users', 'notifications', 'cooperatives', 'transaction_types', 'bank_reconciliation_summary', 'feedback']
         
         let targetQueue = null;
 
@@ -207,6 +228,14 @@ export async function saveDoc(tableName, doc, skipEnqueue = false) {
             }
             if (payload) {
                 await enqueueWrite(targetQueue.cooperativeId, targetQueue.collection, targetQueue.id, targetQueue.op, payload)
+                // Immediate push (debounced, best-effort): offline or busy states
+                // are swallowed; exponential backoff in the queue covers failures.
+                try {
+                    if (typeof navigator === 'undefined' || navigator.onLine) {
+                        const { scheduleImmediatePush } = await import('../backgroundSyncService.js')
+                        scheduleImmediatePush(targetQueue.cooperativeId)
+                    }
+                } catch {}
             }
         }
     }
@@ -271,13 +300,22 @@ export async function loadDoc(tableName, id, cooperativeId) {
 
 export async function saveMany(tableName, docs) {
     if (!docs || docs.length === 0) return 0
-    let changedCount = 0
-    for (const doc of docs) {
-        const cols = TABLE_COLUMNS[tableName] || Object.keys(doc)
+    const cols = TABLE_COLUMNS[tableName] || null
+    // Filter columns once per doc (same rule as before)
+    const filteredDocs = docs.map(doc => {
+        const keys = cols || Object.keys(doc)
         const filtered = {}
-        for (const col of cols) {
+        for (const col of keys) {
             if (doc[col] !== undefined) filtered[col] = doc[col]
         }
+        return { doc, filtered }
+    })
+
+    let changedCount = 0
+
+    // ── Deletes first (rare path, kept per-doc, unchanged logic) ──
+    const liveDocs = []
+    for (const { doc, filtered } of filteredDocs) {
         if (doc.is_deleted === 1 || doc.is_deleted === true) {
             await deleteItem(tableName, String(doc.id))
             if (tableName === 'remittance') {
@@ -290,43 +328,123 @@ export async function saveMany(tableName, docs) {
             }
             changedCount++
         } else {
-            const existing = await getItem(tableName, String(doc.id))
-            if (existing) {
-                let allMatch = true
-                for (const col of cols) {
-                    if (filtered[col] !== undefined && existing[col] !== filtered[col]) {
-                        allMatch = false
-                        break
-                    }
+            liveDocs.push({ doc, filtered })
+        }
+    }
+    if (liveDocs.length === 0) return changedCount
+
+    // ── Bulk read current state once (was: getItem per doc + getAllItems
+    // per doc for dedup = O(N) transactions and O(N^2) for members) ──
+    const currentById = new Map()
+    try {
+        const existingRows = await getAllItems(tableName)
+        for (const row of existingRows) {
+            currentById.set(String(row.id), row)
+        }
+    } catch (e) {
+        // fall through with empty map (all docs treated as new)
+    }
+    // Apply the deletes above to the in-memory view so later docs in this
+    // batch see post-delete state, exactly like the old sequential loop.
+    for (const { doc } of filteredDocs) {
+        if (doc.is_deleted === 1 || doc.is_deleted === true) {
+            currentById.delete(String(doc.id))
+        }
+    }
+
+    const colsForCompare = cols || Object.keys(liveDocs[0].doc)
+    const toWrite = []
+    const dupIdsToDelete = new Set()
+    const dupKeyOf = (table, d) => {
+        if (table === 'members' && d.cooperative_id && d.mobile) {
+            return `m|${String(d.cooperative_id)}|${String(d.mobile)}`
+        }
+        if (table === 'bank' && d.cooperative_id && d.bank_name) {
+            return `b|${String(d.cooperative_id)}|${String(d.bank_name)}`
+        }
+        if (table === 'users' && d.cooperative_id && d.username) {
+            return `u|${String(d.cooperative_id)}|${String(d.username)}`
+        }
+        return null
+    }
+    // Seed dedup map from current rows (same predicate as the old per-doc scan)
+    const dupMap = new Map()
+    // Members additionally dedup on non-blank special_id_lower (case-insensitive).
+    // Blanks never collide — mirrors the form + data-layer guard.
+    const specialDupKeyOf = (d) => {
+        if (!d.cooperative_id) return null
+        const raw = d.special_id_lower !== undefined && d.special_id_lower !== null
+            ? String(d.special_id_lower)
+            : String(d.special_id || '')
+        const k = raw.trim().toLowerCase()
+        return k ? `ms|${String(d.cooperative_id)}|${k}` : null
+    }
+    const specialDupMap = new Map()
+    if (['members', 'bank', 'users'].includes(tableName)) {
+        for (const row of currentById.values()) {
+            const k = dupKeyOf(tableName, {
+                cooperative_id: row.cooperative_id,
+                mobile: row.mobile, bank_name: row.bank_name, username: row.username,
+            })
+            if (k) dupMap.set(k, String(row.id))
+            if (tableName === 'members') {
+                const sk = specialDupKeyOf(row)
+                if (sk) specialDupMap.set(sk, String(row.id))
+            }
+        }
+    }
+
+    for (const { doc, filtered } of liveDocs) {
+        const id = String(doc.id)
+        const current = currentById.get(id)
+        // Skip identical rows (same as old allMatch continue)
+        if (current) {
+            let allMatch = true
+            for (const col of colsForCompare) {
+                if (filtered[col] !== undefined && current[col] !== filtered[col]) {
+                    allMatch = false
+                    break
                 }
-                if (allMatch) continue
             }
-            if (tableName === 'members' && doc.cooperative_id && doc.mobile) {
-                const allMembers = await getAllItems('members')
-                const dup = allMembers.find(m =>
-                    m.cooperative_id === String(doc.cooperative_id) &&
-                    m.mobile === String(doc.mobile) &&
-                    m.id !== String(doc.id)
-                )
-                if (dup) await deleteItem('members', dup.id)
-            } else if (tableName === 'bank' && doc.cooperative_id && doc.bank_name) {
-                const allBanks = await getAllItems('bank')
-                const dup = allBanks.find(b =>
-                    b.cooperative_id === String(doc.cooperative_id) &&
-                    b.bank_name === String(doc.bank_name) &&
-                    b.id !== String(doc.id)
-                )
-                if (dup) await deleteItem('bank', dup.id)
-            } else if (tableName === 'users' && doc.cooperative_id && doc.username) {
-                const allUsers = await getAllItems('users')
-                const dup = allUsers.find(u =>
-                    u.cooperative_id === String(doc.cooperative_id) &&
-                    u.username === String(doc.username) &&
-                    u.id !== String(doc.id)
-                )
-                if (dup) await deleteItem('users', dup.id)
+            if (allMatch) continue
+        }
+        // Dedup against current view (existing rows + earlier batch placements,
+        // minus rows already scheduled for delete) — last write wins, as before.
+        const dk = dupKeyOf(tableName, doc)
+        if (dk) {
+            const dupId = dupMap.get(dk)
+            if (dupId && dupId !== id) {
+                dupIdsToDelete.add(dupId)
+                currentById.delete(dupId)
             }
-            await putItem(tableName, filtered)
+            dupMap.set(dk, id)
+        }
+        if (tableName === 'members') {
+            const sk = specialDupKeyOf(doc)
+            if (sk) {
+                const dupId = specialDupMap.get(sk)
+                if (dupId && dupId !== id) {
+                    dupIdsToDelete.add(dupId)
+                    currentById.delete(dupId)
+                }
+                specialDupMap.set(sk, id)
+            }
+        }
+        // A re-placed id cancels its pending delete (old code deleted then put)
+        dupIdsToDelete.delete(id)
+        currentById.set(id, filtered)
+        toWrite.push({ doc, filtered })
+    }
+
+    if (dupIdsToDelete.size > 0) {
+        await Promise.all([...dupIdsToDelete].map(dupId => deleteItem(tableName, dupId)))
+    }
+    if (toWrite.length > 0) {
+        await putItemsBatch(tableName, toWrite.map(w => w.filtered))
+    }
+
+    // ── Child rows per written doc (unchanged logic, same order) ──
+    for (const { doc } of toWrite) {
             if (tableName === 'remittance') {
                 if (doc.is_deleted === 1 || doc.is_deleted === true) {
                     const idbDetails = await getAllByIndex('remittance_detail', 'remittance_id', doc.id)
@@ -400,6 +518,5 @@ export async function saveMany(tableName, docs) {
             }
             changedCount++
         }
-    }
     return changedCount
 }

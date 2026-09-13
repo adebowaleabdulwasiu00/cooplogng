@@ -2,7 +2,7 @@ import { getItem, putItem } from '../indexedDbService.js'
 
 export const SYNC_COLLECTIONS = [
   'enterprise', 'bank', 'cooperatives', 'transaction_types',
-  'members', 'users', 'remittance', 'notifications'
+  'members', 'users', 'remittance', 'notifications', 'feedback'
 ]
 
 export async function isSynced(cooperativeId) {

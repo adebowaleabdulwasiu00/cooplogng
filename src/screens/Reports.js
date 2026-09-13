@@ -20,8 +20,10 @@ import { fetchBanks, fetchEnterprises, fetchAllMembers } from '../services/dataS
 import { queryOne, queryRows } from '../services/sqliteService.js';
 import { escapeHtml, formatNumber, wrapDateInput } from '../utils/formatters.js';
 import { showToast } from '../services/toastService.js';
+import { showWorkspaceSpinner } from '../components/workspaceSpinner.js';
 
 export async function renderReports(container, user) {
+    showWorkspaceSpinner(container);
     const cooperativeId = user?.cooperativeId;
     const isAdmin = user.role === 'admin' || (user.permissions || '').includes('admin');
     
@@ -561,11 +563,17 @@ export async function renderReports(container, user) {
         }
     });
 
-    document.addEventListener('click', (e) => {
-        if (!container.querySelector('#member-fields-container')?.contains(e.target)) {
-            menu?.classList.add('hidden');
-        }
-    });
+    // Bound once: per-render closures here stacked a document listener on
+    // every Reports visit and retained the whole container in memory.
+    if (!window._reportsFieldOutside) {
+        window._reportsFieldOutside = (e) => {
+            const m = document.getElementById('field-dropdown');
+            if (m && !m.classList.contains('hidden') && !document.getElementById('member-fields-container')?.contains(e.target)) {
+                m.classList.add('hidden');
+            }
+        };
+        document.addEventListener('click', window._reportsFieldOutside);
+    }
 
     const updateGlobalState = () => {
         if (user.onReportsStateChange) {

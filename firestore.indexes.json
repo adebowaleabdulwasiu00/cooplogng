@@ -1,0 +1,794 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "bank",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "modified_at",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "bank",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sync_at",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "cooperatives",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sync_at",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "enterprise",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "modified_at",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "enterprise",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sync_at",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "feedback",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sync_at",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "loan_guarantors",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sync_at",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "loans",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "member_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "modified_at",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "loans",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "modified_at",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "loans",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sync_at",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "members",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "email_lower",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "members",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "member_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sync_at",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "members",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "mobile",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "members",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "modified_at",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "members",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "registration_no_str",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "members",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "special_id_lower",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "members",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sync_at",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "notifications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "modified_at",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "notifications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "recipient_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sync_at",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "notifications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sync_at",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "notifications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "recipient_id",
+          "arrayConfig": "CONTAINS"
+        },
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sync_at",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "payment_advise",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sync_at",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "payments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "member_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "modified_at",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "payments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "modified_at",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "remittance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "is_deleted",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "member_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "r_id",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "DESCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "remittance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "is_deleted",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "r_id",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "DESCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "remittance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "member_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "modified_at",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "remittance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "member_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sync_at",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "remittance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "modified_at",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "remittance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "remittance_date",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "remittance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "remittance_date",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "DESCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "remittance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sync_at",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "remittance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sync_at",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "remittance_date",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "remittance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "is_deleted",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "member_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "remittance_date",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "DESCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "transaction_types",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sync_at",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "users",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "email_lower",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "users",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "modified_at",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "users",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sync_at",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "users",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cooperative_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "username_lower",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    }
+  ],
+  "fieldOverrides": []
+}

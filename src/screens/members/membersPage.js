@@ -1,6 +1,7 @@
 import { renderMembersFilters, attachFiltersListeners } from './membersFilters.js'
 import { renderMembersTable, getTableStyles } from './membersTable.js'
 import { hasPermission } from '../../services/permissionService.js'
+import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js'
 
 export async function renderMembersPage(container, user) {
     const isAdmin = hasPermission(user.permissions, 'admin') || user.username?.toLowerCase() === 'admin'
@@ -11,7 +12,7 @@ export async function renderMembersPage(container, user) {
     if (existingPage) {
         try {
             const { applyFilters, getFilteredMembers } = await import('./membersState.js')
-            const { renderMembersStats } = await import('./membersStats.js')
+            const statsMod = await import('./membersStats.js')
             
             // Re-apply current search/filters
             applyFilters()
@@ -19,7 +20,8 @@ export async function renderMembersPage(container, user) {
             // Update stats
             const statsContainer = container.querySelector('#members-stats-mount')
             if (statsContainer) {
-                statsContainer.innerHTML = renderMembersStats(getFilteredMembers())
+                statsContainer.innerHTML = statsMod.renderMembersStats(getFilteredMembers())
+                statsMod.attachStatsListeners?.(container)
             }
             
             // Diff-render the table
@@ -30,7 +32,8 @@ export async function renderMembersPage(container, user) {
         }
     }
 
-    // 2. Initial Scaffold
+    // 2. Initial Scaffold (spinner first — data load below can be slow)
+    showWorkspaceSpinner(container);
     container.innerHTML = `
       ${getTableStyles()}
       <style>
@@ -55,6 +58,66 @@ export async function renderMembersPage(container, user) {
               padding-bottom: 0.25rem;
           }
 
+          .members-stats-grid {
+              display: grid;
+              grid-template-columns: repeat(4, 1fr);
+              gap: 0.6rem;
+              margin-top: 0.6rem;
+          }
+          .members-stats-grid .stat-card {
+              background: var(--bg-card);
+              border: 1px solid var(--border-light);
+              border-radius: var(--radius-lg);
+              padding: 0.65rem 0.9rem;
+              box-shadow: var(--shadow-sm);
+              min-width: 0;
+          }
+          .members-stats-grid .stat-label {
+              font-size: 0.68rem;
+              font-weight: 700;
+              text-transform: uppercase;
+              letter-spacing: 0.07em;
+              color: var(--text-muted);
+          }
+          .members-stats-grid .stat-value {
+              font-size: 1.25rem;
+              font-weight: 800;
+              color: var(--text-primary);
+              font-variant-numeric: tabular-nums;
+              line-height: 1.2;
+          }
+          .members-stats-grid .stat-sub {
+              font-size: 0.68rem;
+              color: var(--text-muted);
+              font-weight: 600;
+              margin-top: 0.15rem;
+              white-space: nowrap;
+              overflow: hidden;
+              text-overflow: ellipsis;
+          }
+          .members-stats-grid .stat-card[data-stat] {
+              cursor: pointer;
+              transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+          }
+          .members-stats-grid .stat-card[data-stat]:hover {
+              transform: translateY(-1px);
+              box-shadow: var(--shadow-md, var(--shadow-sm));
+              border-color: var(--border-medium);
+          }
+          .members-stats-grid .stat-card[data-stat].active {
+              border-color: var(--accent-primary);
+              box-shadow: 0 0 0 2px var(--accent-soft);
+          }
+          .members-stats-grid .stat-card[data-stat]:focus-visible {
+              outline: 2px solid var(--accent-primary);
+              outline-offset: 2px;
+          }
+          @media (max-width: 768px) {
+              .members-stats-grid { gap: 0.4rem; }
+              .members-stats-grid .stat-card { padding: 0.5rem 0.6rem; border-radius: var(--radius-md); }
+              .members-stats-grid .stat-value { font-size: 1.05rem; }
+          }
+
           .members-content-area {
               flex: 1;
               width: 100%;
@@ -74,7 +137,33 @@ export async function renderMembersPage(container, user) {
               box-shadow: var(--shadow-sm);
               scrollbar-width: thin;
               scrollbar-color: var(--border-medium) transparent;
+              position: relative;
           }
+          .members-count {
+              font-size: 0.75rem;
+              color: var(--text-muted);
+              font-weight: 600;
+              padding: 0.15rem 0.25rem 0.4rem;
+              font-variant-numeric: tabular-nums;
+          }
+          #members-back-to-top {
+              position: sticky;
+              bottom: 1rem;
+              margin-left: calc(100% - 3rem);
+              width: 2.25rem;
+              height: 2.25rem;
+              border-radius: 50%;
+              border: 1px solid var(--border-medium);
+              background: var(--bg-card);
+              color: var(--text-primary);
+              box-shadow: var(--shadow-lg);
+              display: none;
+              align-items: center;
+              justify-content: center;
+              cursor: pointer;
+              z-index: 20;
+          }
+          #members-back-to-top.show { display: inline-flex; }
           .table-container::-webkit-scrollbar { width: 6px; }
           .table-container::-webkit-scrollbar-thumb { background: var(--border-medium); border-radius: 10px; }
 
@@ -104,6 +193,8 @@ export async function renderMembersPage(container, user) {
               transform: scale(1.08);
           }
 
+          /* Mobile filter toggle: hidden on desktop, reveals the filter panel */
+          #members-filter-toggle { display: none; }
           @media (max-width: 768px) {
               .members-page {
                 padding: 0 !important;
@@ -120,26 +211,60 @@ export async function renderMembersPage(container, user) {
                 background: transparent;
               }
               .fab-container { display: none !important; }
+              /* Audit columns crowd small screens — name/mobile/status stay.
+                 (Full card layout deferred as follow-up; see Phase 7 notes.) */
+              .styled-table th[data-sort="created"],
+              .styled-table th[data-sort="modified"],
+              .styled-table td.col-created,
+              .styled-table td.col-modified { display: none !important; }
+              #members-filter-toggle {
+                  display: inline-flex;
+                  align-items: center;
+                  gap: 0.4rem;
+                  margin: 0.4rem 0.5rem 0;
+                  padding: 0.45rem 0.9rem;
+                  border-radius: 999px;
+                  border: 1px solid var(--border-medium);
+                  background: var(--bg-card);
+                  color: var(--text-primary);
+                  font-size: 0.78rem;
+                  font-weight: 700;
+                  cursor: pointer;
+                  align-self: flex-start;
+              }
+              #members-filter-toggle[aria-expanded="true"] {
+                  background: var(--accent-soft);
+                  border-color: var(--accent-primary);
+                  color: var(--accent-primary);
+              }
+              #members-count { padding-left: 0.75rem; }
           }
       </style>
 
       <div class="members-page">
           <div class="members-sticky-header">
               <div id="members-filters-mount"></div>
+              <div id="members-stats-mount"></div>
           </div>
 
+          <button type="button" id="members-filter-toggle" aria-expanded="false" aria-controls="members-filters-mount">
+              <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"></path></svg>
+              Filters
+          </button>
           <div class="members-content-area">
+              <div id="members-count" class="members-count" aria-live="polite"></div>
               <div class="table-container" id="members-table-container">
                   <table class="styled-table">
         <thead>
             <tr style="position: sticky; top: 0; background: var(--bg-main); z-index: 10;">
             <th class="col-profile"></th>
-            <th class="col-reg-no" style="width: 55px; text-align: center;">Reg No</th>
-            <th>Name</th>
-            <th class="col-mobile">Mobile</th>
-            <th>Status</th>
-            <th>Created</th>
-            <th>Last Modified</th>
+            <th class="col-reg-no" data-sort="reg" style="width: 55px; text-align: center;">Reg No<span class="sort-arrow"></span></th>
+            <th class="desktop-only" data-sort="special">Special ID<span class="sort-arrow"></span></th>
+            <th data-sort="name">Name<span class="sort-arrow"></span></th>
+            <th class="col-mobile" data-sort="mobile">Mobile<span class="sort-arrow"></span></th>
+            <th data-sort="status">Status<span class="sort-arrow"></span></th>
+            <th data-sort="created">Created<span class="sort-arrow"></span></th>
+            <th data-sort="modified">Last Modified<span class="sort-arrow"></span></th>
         </tr>
         </thead>
         <tbody id="members-table-body"></tbody>
@@ -165,6 +290,19 @@ export async function renderMembersPage(container, user) {
                 filtersMount.innerHTML = renderMembersFilters(container, user)
                 attachFiltersListeners(container, user)
             }
+            // Render stats on first paint (data already loaded by index.js).
+            // Silent-refresh path above handles subsequent updates.
+            try {
+                const { getFilteredMembers } = await import('./membersState.js')
+                const statsMod2 = await import('./membersStats.js')
+                const statsMount = container.querySelector('#members-stats-mount')
+                if (statsMount) {
+                    statsMount.innerHTML = statsMod2.renderMembersStats(getFilteredMembers())
+                    statsMod2.attachStatsListeners?.(container)
+                }
+            } catch (e) {
+                console.warn('[MembersPage] Stats render skipped:', e?.message)
+            }
         } catch (err) {
             console.error("[MembersPage] Render Error:", err)
             const errorMsg = document.createElement('div')
@@ -176,6 +314,16 @@ export async function renderMembersPage(container, user) {
 
         container.querySelector('#fab-add-btn')?.addEventListener('click', () => {
             window.location.hash = 'members/add'
+        })
+
+        // Mobile filter panel toggle (desktop button stays hidden via CSS;
+        // the panel itself is governed by .show-on-mobile in membersFilters).
+        container.querySelector('#members-filter-toggle')?.addEventListener('click', (e) => {
+            const btn = e.currentTarget
+            const panel = container.querySelector('.members-filters-row')
+            const expanded = btn.getAttribute('aria-expanded') === 'true'
+            btn.setAttribute('aria-expanded', String(!expanded))
+            panel?.classList.toggle('show-on-mobile', !expanded)
         })
 
 

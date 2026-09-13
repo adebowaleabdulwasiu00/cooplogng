@@ -1,5 +1,5 @@
 import { state } from '../state/appState.js'
-import { escapeHtml, escapeAttribute, formatCurrency, formatDate, wrapDateInput } from '../utils/formatters.js'
+import { escapeHtml, escapeAttribute, formatCurrency, formatDate, wrapDateInput, shortRef } from '../utils/formatters.js'
 import { showToast } from '../services/toastService.js'
 import { hasPermission } from '../services/permissionService.js'
 
@@ -23,10 +23,21 @@ window.showTransactionModal = async (remittance) => {
     // Fetch all members (full list) to ensure guarantor names can be resolved even for non-admins
     const allMembers = await fetchAllMembers(state.welcomeUser.cooperativeId, state.welcomeUser.username, true)
 
-    title.innerText = `#${String(remittance.r_id || '').padStart(5, '0')} — ${fmt.formatDate(remittance.remittance_date)}`
+    title.innerText = `#${shortRef(remittance.id)} — ${fmt.formatDate(remittance.remittance_date)}`
     const enterprisesArray = await fetchEnterprises(state.welcomeUser.cooperativeId, true)
     const enterpriseNames = {}
     enterprisesArray.forEach(e => { enterpriseNames[e.id] = e.account_name })
+
+    // Resolve member / recipient display names from the already-fetched list.
+    const memberNameOf = (m) => {
+      if (!m) return ''
+      const full = [m.first_name, m.middle_name, m.last_name].filter(Boolean).join(' ').trim()
+      return m.name || full || m.username || m.mobile || m.id || ''
+    }
+    const memberId = remittance.member_id && remittance.member_id !== '0000000000' ? remittance.member_id : ''
+    const memberObj = memberId ? allMembers.find(m => m.id === memberId) : null
+    const recipientObj = remittance.recipient_id ? allMembers.find(m => m.id === remittance.recipient_id) : null
+    const recipientLabel = remittance.recipient_id ? (memberNameOf(recipientObj) || remittance.recipient_id) : ''
     
     const details = remittance.details || []
 
@@ -43,8 +54,8 @@ window.showTransactionModal = async (remittance) => {
 
     if (isSavingsRequest && remittance.member_id) {
       const { buildAccountBalance } = await import('../services/dataService.js');
-      const limitRid = remittance.r_id !== undefined && remittance.r_id !== null ? remittance.r_id : null;
-      const { accountBalance } = await buildAccountBalance(state.welcomeUser.cooperativeId, { memberId: remittance.member_id }, limitRid);
+      const limitKey = remittance && remittance.created_at ? { ts: remittance.created_at, id: remittance.id } : null;
+      const { accountBalance } = await buildAccountBalance(state.welcomeUser.cooperativeId, { memberId: remittance.member_id }, limitKey);
       const balObj = accountBalance.find(b => b.id === targetEntId);
       balanceBefore = balObj ? parseFloat(balObj.sum_of_amount || 0) : 0;
       balanceAfter = balanceBefore - Math.abs(parseFloat(remittance.amount || detail.amount || 0));
@@ -60,10 +71,57 @@ window.showTransactionModal = async (remittance) => {
                          <div style="font-size: 0.75rem; color: var(--text-muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;">Total Amount</div>
                          <div style="font-size: 1.75rem; font-weight: 800; color: ${remittance.amount < 0 ? 'var(--danger)' : 'var(--accent-primary)'}; line-height: 1;">${fmt.formatCurrency(remittance.amount)}</div>
                     </div>
-                    <span class="status-badge status-${escapeHtml(remittance.status)}">${escapeHtml(remittance.status)}</span>
+                     <span class="status-badge status-${escapeHtml(remittance.status)}">${escapeHtml(remittance.status)}</span>
                 </div>
             </div>
         `
+
+    // ── Member + transaction info (only rows with data) ──
+    const infoRows = []
+    if (memberObj || memberId) {
+      const sub = memberObj
+        ? [memberObj.registration_no || memberObj.special_id, memberObj.mobile].filter(Boolean).join(' • ')
+        : ''
+      infoRows.push({
+        label: 'Member',
+        value: `<div style="font-weight: 600;">${escapeHtml(memberNameOf(memberObj) || memberId)}</div>` +
+          (sub ? `<div style="font-size: 0.75rem; color: var(--text-muted);">${escapeHtml(sub)}</div>` : '')
+      })
+    }
+    if (remittance.transaction_type) infoRows.push({ label: 'Type', value: escapeHtml(remittance.transaction_type) })
+    if (remittance.category) infoRows.push({ label: 'Category', value: escapeHtml(remittance.category) })
+    if (remittance.description) infoRows.push({ label: 'Description', value: escapeHtml(remittance.description) })
+    if (remittance.cheque_number) infoRows.push({ label: 'Cheque No', value: escapeHtml(remittance.cheque_number) })
+    if (recipientLabel) infoRows.push({ label: 'Recipient', value: escapeHtml(recipientLabel) })
+    if (remittance.created_by || remittance.created_at) {
+      infoRows.push({
+        label: 'Recorded',
+        value: escapeHtml([remittance.created_by, remittance.created_at ? fmt.formatDate(remittance.created_at) : ''].filter(Boolean).join(' • '))
+      })
+    }
+    if (remittance.modified_at && remittance.modified_at !== remittance.created_at) {
+      infoRows.push({
+        label: remittance.status === 'Declined' ? 'Declined' : 'Last update',
+        value: escapeHtml([remittance.modified_by, remittance.modified_at ? fmt.formatDate(remittance.modified_at) : ''].filter(Boolean).join(' • '))
+      })
+    }
+    if (remittance.approved_by || remittance.approved_at) {
+      infoRows.push({
+        label: 'Approved',
+        value: escapeHtml([remittance.approved_by, remittance.approved_at ? fmt.formatDate(remittance.approved_at) : ''].filter(Boolean).join(' • '))
+      })
+    }
+    if (infoRows.length > 0) {
+      html += `
+        <div style="margin-bottom: 1.5rem; padding: 1rem 1.1rem; background: var(--bg-card); border: 1px solid var(--border-light); border-radius: 0.75rem; display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem 1rem;">
+          ${infoRows.map(r => `
+            <div>
+              <div style="font-size: 0.7rem; color: var(--text-muted); font-weight: 700; text-transform: uppercase;">${escapeHtml(r.label)}</div>
+              <div style="font-size: 0.88rem; color: var(--text-primary); margin-top: 0.15rem;">${r.value}</div>
+            </div>`).join('')}
+        </div>
+      `
+    }
 
     if (isSavingsRequest) {
       html += `
@@ -101,10 +159,14 @@ window.showTransactionModal = async (remittance) => {
       details.forEach(d => {
         const name = enterpriseNames[d.enterprise_id] || d.enterprise_name || d.item || 'General Contribution'
         const amt = parseFloat(d.amount || 0)
+        const lineNote = d.notes || d.auto_description || ''
         html += `
-                <div class="detail-row" style="background: var(--bg-card); padding: 1rem; border-radius: 0.85rem; border: 1px solid var(--border-light); transition: all 0.2s;">
-                    <span class="detail-name" style="font-weight: 600; color: var(--text-secondary);">${escapeHtml(name)}</span>
-                    <span class="detail-amount ${amt < 0 ? 'text-red' : 'text-green'}" style="font-weight: 700; font-size: 1.05rem;">${fmt.formatCurrency(amt)}</span>
+                <div class="detail-row" style="background: var(--bg-card); padding: 1rem; border-radius: 0.85rem; border: 1px solid var(--border-light); transition: all 0.2s; display: flex; flex-direction: column; gap: 0.35rem;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.75rem;">
+                      <span class="detail-name" style="font-weight: 600; color: var(--text-secondary);">${escapeHtml(name)}</span>
+                      <span class="detail-amount ${amt < 0 ? 'text-red' : 'text-green'}" style="font-weight: 700; font-size: 1.05rem;">${fmt.formatCurrency(amt)}</span>
+                    </div>
+                    ${lineNote ? `<div style="font-size: 0.78rem; color: var(--text-muted); line-height: 1.5;">${escapeHtml(lineNote)}</div>` : ''}
                 </div>
             `
       })

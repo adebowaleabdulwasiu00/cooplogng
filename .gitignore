@@ -15,6 +15,10 @@ jspm_packages/
 dist/
 dist-ssr/
 out/
+release/
+updates/*.exe
+updates/*.blockmap
+updates/latest.yml
 
 # Environment and Secrets
 .env
@@ -46,3 +50,11 @@ dump/
 *.sln
 *.sw?
 Thumbs.db
+
+# Firebase service account keys (cloud wipe script)
+serviceAccountKey.json
+*-service-account*.json
+scripts/serviceAccountKey.json
+
+# Local backup files
+*.bak

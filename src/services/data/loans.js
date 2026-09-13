@@ -1,7 +1,7 @@
 import { generateId } from '../../utils/formatters.js'
 import {
     getDocById_Global, queryRows, saveDoc, enqueueWrite,
-    getTransactionTypes, getMaxRid, runSql
+    getTransactionTypes, runSql
 } from '../sqliteService.js'
 import { addRemittance } from './remittances.js'
 
@@ -81,7 +81,6 @@ export async function approveLoanRequest(remittanceId, approvedBy, options = {})
         status: 'Approved',
         transaction_type: 'Member Loan',
         category: parentCategory || 'Loan Asset',
-        r_id: remittance.r_id || 0,
         modified_at: now,
         modified_by: approvedBy,
         is_synced: 0
@@ -99,8 +98,8 @@ export async function approveLoanRequest(remittanceId, approvedBy, options = {})
         'SELECT * FROM loans WHERE (id = ? OR remittance_id = ?) AND cooperative_id = ? AND is_deleted = 0',
         [remittanceId, remittanceId, cooperativeId]
     )
-    const baseRid = await getMaxRid(cooperativeId)
     let chargeIndex = 0
+    let pickupIndex = 0
 
     for (const loan of loans) {
         if (loan.status === 'Active') continue
@@ -152,12 +151,14 @@ export async function approveLoanRequest(remittanceId, approvedBy, options = {})
                 console.error('[approveLoanRequest] Error fetching Loan Charges classification:', e)
             }
             const principalAmount = Math.abs(parseFloat(loan.principal_amount || 0))
+            let loanChargeTotal = 0
             for (const charge of userCharges) {
                 let val = parseFloat(charge.value) || 0
                 if (charge.type === 'percentage') {
                     val = (val / 100) * principalAmount
                 }
                 if (val > 0) {
+                    loanChargeTotal += val
                     chargeIndex++
                     const chargeId = `${remittanceId}-CHARGE-${chargeIndex}`
                     const chargeDate = remittance_date || remittance.remittance_date
@@ -174,7 +175,6 @@ export async function approveLoanRequest(remittanceId, approvedBy, options = {})
                         autogen: 1,
                         loan_id: loan.id || remittanceId,
                         status: 'Approved',
-                        r_id: baseRid + chargeIndex,
                         details: [{
                             id: `${chargeId}_detail`,
                             enterprise_id: loan.enterprise_id,
@@ -184,6 +184,33 @@ export async function approveLoanRequest(remittanceId, approvedBy, options = {})
                         }]
                     }, approvedBy)
                 }
+            }
+            // Loan income pickup (one per loan): +ve Internal Transfer to admin
+            // 0000000000 totalling this approval run's charges above. Header
+            // only (no details on admin remittances).
+            if (loanChargeTotal > 0) {
+                pickupIndex++
+                let pickupMemberName = loan.member_id || remittance.member_id
+                try {
+                    const mDoc = await getDocById_Global('members', pickupMemberName)
+                    if (mDoc) {
+                        pickupMemberName = [mDoc.last_name, mDoc.first_name, mDoc.middle_name].filter(Boolean).join(' ')
+                            || mDoc.name || pickupMemberName
+                    }
+                } catch {}
+                await addRemittance({
+                    id: `${remittanceId}-LOANPICKUP-${pickupIndex}`,
+                    cooperative_id: cooperativeId,
+                    member_id: '0000000000',
+                    amount: loanChargeTotal,
+                    remittance_date: remittance_date || remittance.remittance_date,
+                    bank_name: 'Internal Transfer',
+                    transaction_type: 'Loan Charges',
+                    description: `Auto Loan Charges Income - ${pickupMemberName}`,
+                    autogen: 1,
+                    loan_id: loan.id || remittanceId,
+                    status: 'Approved',
+                }, approvedBy)
             }
         }
 

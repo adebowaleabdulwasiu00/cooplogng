@@ -17,6 +17,77 @@ export let searchTerm = ""
 export let statusFilter = "All Status"
 export let managerFilter = "All Managers"
 
+// Column-sort state. Default 'reg' = Reg No, then Special ID (ascending).
+export let sortKey = "reg"
+export let sortDir = "asc"
+
+const sortVal = (m, key) => {
+    switch (key) {
+        case 'reg': return String(m.registration_no ?? m.reg_no ?? '').trim()
+        case 'special': return String(m.special_id ?? '').trim()
+        case 'name': return String(m.name ?? '').trim()
+        case 'mobile': return String(m.mobile ?? '').trim()
+        case 'status': return String(m.status ?? '').trim()
+        case 'created': return m.created_at ?? ''
+        case 'modified': return m.modified_at ?? m.created_at ?? ''
+        default: return ''
+    }
+}
+
+// Natural order (2 before 10), empties always last in both directions.
+const cmpNatural = (a, b, dir) => {
+    const ae = !a
+    const be = !b
+    if (ae && be) return 0
+    if (ae) return 1
+    if (be) return -1
+    const r = String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' })
+    return dir === 'desc' ? -r : r
+}
+
+const cmpDate = (a, b, dir) => {
+    const ta = Date.parse(a)
+    const tb = Date.parse(b)
+    const ae = isNaN(ta)
+    const be = isNaN(tb)
+    if (ae && be) return 0
+    if (ae) return 1
+    if (be) return -1
+    return dir === 'desc' ? tb - ta : ta - tb
+}
+
+export function applySort() {
+    const dateKey = sortKey === 'created' || sortKey === 'modified'
+    _filteredMembers.sort((ma, mb) => {
+        let r = dateKey
+            ? cmpDate(sortVal(ma, sortKey), sortVal(mb, sortKey), sortDir)
+            : cmpNatural(sortVal(ma, sortKey), sortVal(mb, sortKey), sortDir)
+        if (r === 0 && sortKey === 'reg') r = cmpNatural(sortVal(ma, 'special'), sortVal(mb, 'special'), sortDir)
+        if (r === 0) r = cmpNatural(sortVal(ma, 'name'), sortVal(mb, 'name'), sortDir)
+        return r
+    })
+}
+
+// Explicit sort setter (used by stats shortcuts; no toggle surprises).
+export function setSortExplicit(key, dir = 'asc') {
+    if (!key) return
+    sortKey = key
+    sortDir = dir === 'desc' ? 'desc' : 'asc'
+    applySort()
+}
+
+// Header click: same column toggles A-Z/Z-A, new column starts at A-Z.
+export function setSort(key) {
+    if (!key) return
+    if (sortKey === key) {
+        sortDir = sortDir === 'asc' ? 'desc' : 'asc'
+    } else {
+        sortKey = key
+        sortDir = 'asc'
+    }
+    applySort()
+}
+
 // Selection state
 export let isSelectionMode = false
 export let selectedIds = new Set()
@@ -56,8 +127,24 @@ export async function loadMembersData(user) {
     usersList = users || []
     enterpriseList = enterprises || []
     
-    // Sort members safely (e.g. by name or date)
-    _allMembers.sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+    // Sort by Reg No, then Special ID (natural order: 2 before 10).
+    // Members missing an ID sort last rather than floating to the top.
+    const idRank = (m) => {
+        const reg = String(m.registration_no ?? m.reg_no ?? '').trim()
+        const sid = String(m.special_id ?? '').trim()
+        return { reg, sid }
+    }
+    const cmpId = (a, b) => {
+        if (!a && !b) return 0
+        if (!a) return 1
+        if (!b) return -1
+        return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' })
+    }
+    _allMembers.sort((a, b) => {
+        const ra = idRank(a)
+        const rb = idRank(b)
+        return cmpId(ra.reg, rb.reg) || cmpId(ra.sid, rb.sid) || (a.name || '').localeCompare(b.name || '')
+    })
     
     applyFilters()
 }
@@ -69,8 +156,10 @@ export function applyFilters() {
     const s = searchTerm.toLowerCase()
     
     _filteredMembers = _allMembers.filter(m => {
-        // 1. Status Dropdown Filter
-        const matchesStatus = statusFilter === "All Status" || m.status === statusFilter
+        // 1. Status Dropdown Filter ('Issues' pseudo-status = Inactive OR Suspended)
+        const matchesStatus = statusFilter === "All Status"
+            || (statusFilter === "Issues" && (m.status === "Inactive" || m.status === "Suspended"))
+            || m.status === statusFilter
         if (!matchesStatus) return false
 
         // 2. Manager Dropdown Filter
@@ -108,6 +197,8 @@ export function applyFilters() {
 
         return true
     })
+
+    applySort()
     
     // Reset pagination to first batch when filters change
     visibleLimit = 50

@@ -14,7 +14,7 @@ export {
 } from './sqlExecutor.js'
 export {
     getAllForCoop, getDocById, getDocById_Global, checkMemberHasRemittances,
-    getMaxRid, getUserByUsername, getUsersByUsername,
+    getUserByUsername, getUsersByUsername,
     getMemberByMobile, getMemberByRegistrationNo,
     getUserByEmail, getMemberByEmail,
     getGuarantorStatsLocal, getPendingGuarantorRequestsLocal, getMemberLoans
@@ -37,7 +37,8 @@ export {
     enqueueWrite, updateQueueStatus, hasPendingWrites, checkDbExists,
     getSyncQueueSummary, getSyncQueueDetails, restartAllSyncItems,
     resetProcessingQueueItems, resetSyncQueueAndMarkUnsynced, clearSyncQueueLogs,
-    scanAndEnqueueUnsynced, getPendingQueue, removeQueueItem, removeQueueItemsBatch, incrementQueueRetry
+    scanAndEnqueueUnsynced, reconcileUnsyncedQueue, getPendingQueue, removeQueueItem, removeQueueItemsBatch, incrementQueueRetry,
+    getQueueSnapshot, healChildQueueItem, resolveChildParent, CHILD_QUEUE_COLLECTIONS, MAX_QUEUE_ATTEMPTS
 } from './syncQueue.js'
 export {
     initializeDefaultTransactionTypes, getTransactionTypes,

@@ -13,7 +13,7 @@ export default defineConfig({
     port: 5173,
   },
   build: {
-    target: 'esnext', // Support top-level await
+    target: 'es2017',
     chunkSizeWarningLimit: 1000,
     rollupOptions: {
       output: {

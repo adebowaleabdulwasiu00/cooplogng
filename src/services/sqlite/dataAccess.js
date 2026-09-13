@@ -1,5 +1,4 @@
 import { getAllItems, getAllByIndex, getItem } from '../indexedDbService.js'
-
 export async function getAllForCoop(cooperativeId, tableName) {
     let results
     if (tableName === 'cooperatives') {
@@ -22,13 +21,34 @@ export async function getAllForCoop(cooperativeId, tableName) {
         }
     }
     if (tableName === 'members') {
+        // Bulk-fetch payment_advise once (1 read) instead of one query per
+        // member (N reads). Same resulting attachment per member.
+        let adviseByMember = null
+        try {
+            const allAdvise = await getAllItems('payment_advise')
+            adviseByMember = {}
+            for (const p of allAdvise) {
+                if (p.is_deleted) continue
+                const mid = String(p.member_id || '')
+                if (!mid) continue
+                if (!adviseByMember[mid]) adviseByMember[mid] = []
+                adviseByMember[mid].push(p)
+            }
+        } catch (e) {
+            adviseByMember = null
+        }
         for (const member of results) {
             member.name = `${member.first_name || ''} ${member.last_name || ''}`.trim()
-            try {
-                member.payment_advise = await getAllByIndex('payment_advise', 'member_id', member.id)
-                member.payment_advise = member.payment_advise.filter(p => !p.is_deleted)
-            } catch (e) {
-                member.payment_advise = []
+            if (adviseByMember) {
+                member.payment_advise = adviseByMember[String(member.id)] || []
+            } else {
+                // Fallback: per-member query (slow path, same result)
+                try {
+                    member.payment_advise = await getAllByIndex('payment_advise', 'member_id', member.id)
+                    member.payment_advise = member.payment_advise.filter(p => !p.is_deleted)
+                } catch (e) {
+                    member.payment_advise = []
+                }
             }
         }
     }
@@ -66,30 +86,6 @@ export async function checkMemberHasRemittances(cooperativeId, memberId) {
         rems = all.filter(r => r.member_id === String(memberId))
     }
     return rems.some(r => !r.is_deleted)
-}
-
-export async function getMaxRid(cooperativeId) {
-    let rems
-    try {
-        rems = await getAllByIndex('remittance', 'cooperative_id', String(cooperativeId))
-        if (!rems || rems.length === 0) {
-            const all = await getAllItems('remittance')
-            if (all.length > 0) {
-                rems = all.filter(r => r.cooperative_id === String(cooperativeId))
-            }
-        }
-    } catch (e) {
-        const all = await getAllItems('remittance')
-        rems = all.filter(r => r.cooperative_id === String(cooperativeId))
-    }
-    let max = 0
-    for (const r of rems) {
-        const numericRid = Number(r.r_id);
-        if (!isNaN(numericRid) && numericRid > max) {
-            max = numericRid;
-        }
-    }
-    return max
 }
 
 export async function getUserByUsername(username) {

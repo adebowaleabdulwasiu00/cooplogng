@@ -5,11 +5,12 @@ import { escapeHtml } from '../../utils/formatters.js';
 
 export function renderEnterpriseSection(area) {
   area.innerHTML = `
-      <h3>Enterprise Accounts</h3>
-      <p class="section-desc">Configure the enterprise accounts used in remittance distribution.</p>
-      <div id="ent-form-container"></div>
-      <div style="margin-bottom: 1rem; text-align: right;">
-        <button id="show-add-ent-btn" class="primary-button" style="padding: 0.5rem 1.25rem; font-size: 0.85rem; width: ${window.innerWidth <= 768 ? '100%' : 'auto'};">+ Add Account</button>
+      <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.5rem;">
+        <div>
+          <h3 style="margin:0;">Enterprise Accounts</h3>
+          <p class="section-desc" style="margin: 0.35rem 0 0 0;">Configure the enterprise accounts used in remittance distribution.</p>
+        </div>
+        <button id="show-add-ent-btn" class="primary-button" style="padding: 0.6rem 1.5rem; font-size: 0.85rem; border-radius: var(--radius-md); width: ${window.innerWidth <= 768 ? '100%' : 'auto'};">+ Add Account</button>
       </div>
       <div id="ent-table-container" class="table-responsive"><p style="color: var(--text-muted); font-style: italic;">Loading enterprise accounts...</p></div>
     `;
@@ -25,37 +26,50 @@ export function setupEnterpriseListeners(user, cooperativeId) {
     overlay.innerHTML = `
         <div class="settings-modal-content">
           <div class="modal-header">
-            <h3 style="margin:0;">${ent ? 'Edit Enterprise Account' : 'Add Enterprise Account'}</h3>
-            <button id="close-modal-x" style="background:transparent; border:none; color:var(--text-muted); font-size:1.5rem; cursor:pointer;">&times;</button>
+            <div>
+              <h3>${ent ? 'Edit Enterprise Account' : 'Add Enterprise Account'}</h3>
+              <p class="modal-sub">${ent ? `Update <strong>${escapeHtml(ent.account_name || '')}</strong> and how it behaves in remittance.` : 'Create a savings or loan account used in remittance distribution.'}</p>
+            </div>
+            <button id="close-modal-x" style="background:var(--bg-secondary); border:1px solid var(--border-light); color:var(--text-muted); font-size:1.1rem; cursor:pointer; width:32px; height:32px; border-radius:50%; flex-shrink:0; line-height:1;">&times;</button>
           </div>
           <div class="modal-body">
-            <div class="inline-form" style="display:flex; flex-direction:column; gap:1.25rem;">
-                <div class="field">
-                  <label>📝 Account Name *</label>
+            <div class="stg-section">
+              <div class="stg-section-title">Basic Information</div>
+              <div class="stg-grid">
+                <div class="stg-field">
+                  <span>Account Name *</span>
                   <input type="text" id="ent-name-input" value="${escapeHtml(ent?.account_name || '')}" placeholder="e.g. Savings Account" required>
                 </div>
-                <div class="field">
-                  <label>🏷️ Account Type *</label>
+                <div class="stg-field">
+                  <span>Account Type *</span>
                   <select id="ent-type-input">
                     <option value="Savings" ${(ent?.account_type || '') === 'Savings' ? 'selected' : ''}>Savings</option>
                     <option value="Loan" ${(ent?.account_type || '') === 'Loan' ? 'selected' : ''}>Loan</option>
                   </select>
+                  <div class="stg-helper">Loan accounts support multipliers and interest on loans.</div>
                 </div>
-                <div class="field">
-                  <label>📈 Interest Rate</label>
+              </div>
+            </div>
+            <div class="stg-section">
+              <div class="stg-section-title">Charges &amp; Interest</div>
+              <div class="stg-grid">
+                <div class="stg-field">
+                  <span>Interest Rate</span>
                   <div class="input-with-toggle">
                     <input type="number" step="0.01" id="ent-interest-input" value="${ent?.interest_rate ?? 0}" min="0">
                     <label class="input-toggle-wrap">
                       <input type="checkbox" id="ent-interest-percent" ${ent?.interest_is_percent ? 'checked' : ''}> %
                     </label>
                   </div>
+                  <div class="stg-helper">Tick % for percentage, else flat amount.</div>
                 </div>
-                <div class="field">
-                  <label>✖️ Loan Multiplier</label>
+                <div class="stg-field">
+                  <span>Loan Multiplier</span>
                   <input type="number" step="0.01" id="ent-multiplier-input" value="${ent?.loan_multiplier ?? 0}" min="0">
+                  <div class="stg-helper">e.g. 2 means member can borrow 2x savings.</div>
                 </div>
-                <div class="field">
-                  <label>📑 Form Fee</label>
+                <div class="stg-field">
+                  <span>Form Fee</span>
                   <div class="input-with-toggle">
                     <input type="number" step="0.01" id="ent-formfee-input" value="${ent?.form_fee ?? 0}" min="0">
                     <label class="input-toggle-wrap">
@@ -63,8 +77,8 @@ export function setupEnterpriseListeners(user, cooperativeId) {
                     </label>
                   </div>
                 </div>
-                <div class="field">
-                  <label>🛡️ Admin Charge</label>
+                <div class="stg-field">
+                  <span>Admin Charge</span>
                   <div class="input-with-toggle">
                     <input type="number" step="0.01" id="ent-admin-input" value="${ent?.admin_charge ?? 0}" min="0">
                     <label class="input-toggle-wrap">
@@ -72,71 +86,72 @@ export function setupEnterpriseListeners(user, cooperativeId) {
                     </label>
                   </div>
                 </div>
-                <div class="field">
-                  <label>🔢 Distribution Priority</label>
+              </div>
+            </div>
+            <div class="stg-section">
+              <div class="stg-section-title">Distribution &amp; Rules</div>
+              <div class="stg-grid" style="margin-bottom: 1rem;">
+                <div class="stg-field">
+                  <span>Distribution Priority</span>
                   <input type="number" id="ent-priority-input" value="${ent?.distribution_priority ?? 0}" min="0">
+                  <div class="stg-helper">Lower numbers are settled first.</div>
                 </div>
-                <div class="field">
-                  <label>⚠️ Compulsory Due</label>
-                  <div style="display:flex; align-items:center; gap:0.5rem;">
-                    <input type="checkbox" id="ent-compulsory-due" ${ent?.compulsory_due ? 'checked' : ''}>
-                    <span style="color:var(--text-muted);">This is a compulsory due account</span>
-                  </div>
-                </div>
-                <div class="field">
-                  <label>💰 Compulsory Amount</label>
+                <div class="stg-field">
+                  <span>Compulsory Amount</span>
                   <input type="number" step="0.01" id="ent-compulsory-amount" value="${ent?.compulsory_amount ?? 0.00}" min="0">
                 </div>
-                <div class="field">
-                  <label>📊 Revenue</label>
-                  <div style="display:flex; align-items:center; gap:0.5rem;">
-                    <input type="checkbox" id="ent-revenue" ${ent?.revenue ? 'checked' : ''}>
-                    <span style="color:var(--text-muted);">Classify as Revenue</span>
-                  </div>
-                </div>
-                <div class="field">
-                  <label>🚫 Is Penalty</label>
-                  <div style="display:flex; align-items:center; gap:0.5rem;">
-                    <input type="checkbox" id="ent-is-penalty" ${ent?.is_penalty ? 'checked' : ''}>
-                    <span style="color:var(--text-muted);">This is a penalty account</span>
-                  </div>
-                </div>
+              </div>
+              <div style="display:flex; flex-direction:column; gap:0.75rem;">
+                <label class="stg-check-card">
+                  <input type="checkbox" id="ent-compulsory-due" ${ent?.compulsory_due ? 'checked' : ''}>
+                  <div><div class="stg-check-title">Compulsory due account</div><div class="stg-check-desc">Every member must contribute to this account each cycle.</div></div>
+                </label>
+                <label class="stg-check-card">
+                  <input type="checkbox" id="ent-revenue" ${ent?.revenue ? 'checked' : ''}>
+                  <div><div class="stg-check-title">Classify as Revenue</div><div class="stg-check-desc">Count collections here as cooperative income.</div></div>
+                </label>
+                <label class="stg-check-card">
+                  <input type="checkbox" id="ent-is-penalty" ${ent?.is_penalty ? 'checked' : ''}>
+                  <div><div class="stg-check-title">Penalty account</div><div class="stg-check-desc">Used for fines and default charges.</div></div>
+                </label>
+              </div>
             </div>
           </div>
           <div class="modal-footer">
-            <button id="cancel-ent-btn" class="secondary-button" style="padding:0.6rem 1.2rem;">Cancel</button>
-            <button id="save-ent-btn" class="primary-button" style="padding:0.6rem 2rem;">${ent ? 'Update' : 'Add'}</button>
+            <button id="cancel-ent-btn" class="secondary-button" style="padding:0.7rem 1.5rem; border-radius:var(--radius-md);">Cancel</button>
+            <button id="save-ent-btn" class="primary-button" style="padding:0.7rem 2rem; border-radius:var(--radius-md);">${ent ? 'Update' : 'Add Account'}</button>
           </div>
         </div>
       `;
     document.body.appendChild(overlay);
 
     const closeModal = () => { overlay.remove(); editingEnt = null; };
-    document.getElementById('close-modal-x').onclick = closeModal;
-    document.getElementById('cancel-ent-btn').onclick = closeModal;
+    overlay.querySelector('#close-modal-x').onclick = closeModal;
+    overlay.querySelector('#cancel-ent-btn').onclick = closeModal;
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
 
-    document.getElementById('save-ent-btn').addEventListener('click', async () => {
-      const name = document.getElementById('ent-name-input').value.trim();
-      const type = document.getElementById('ent-type-input').value;
+    overlay.querySelector('#save-ent-btn').addEventListener('click', async () => {
+      const name = overlay.querySelector('#ent-name-input').value.trim();
+      const type = overlay.querySelector('#ent-type-input').value;
       if (!name || !type) { showToast('Account Name and Type are required.', 'warning'); return; }
       const payload = {
         account_name: name,
         account_type: type,
-        interest_rate: parseFloat(document.getElementById('ent-interest-input').value || 0),
-        interest_is_percent: document.getElementById('ent-interest-percent').checked ? 1 : 0,
-        loan_multiplier: parseFloat(document.getElementById('ent-multiplier-input').value || 0),
-        form_fee: parseFloat(document.getElementById('ent-formfee-input').value || 0),
-        form_fee_is_percent: document.getElementById('ent-formfee-percent').checked ? 1 : 0,
-        admin_charge: parseFloat(document.getElementById('ent-admin-input').value || 0),
-        admin_charge_is_percent: document.getElementById('ent-admin-percent').checked ? 1 : 0,
-        distribution_priority: parseInt(document.getElementById('ent-priority-input').value || 0),
-        compulsory_due: document.getElementById('ent-compulsory-due').checked ? 1 : 0,
-        compulsory_amount: parseFloat(document.getElementById('ent-compulsory-amount').value || 0),
-        revenue: document.getElementById('ent-revenue').checked ? 1 : 0,
-        is_penalty: document.getElementById('ent-is-penalty').checked ? 1 : 0,
+        interest_rate: parseFloat(overlay.querySelector('#ent-interest-input').value || 0),
+        interest_is_percent: overlay.querySelector('#ent-interest-percent').checked ? 1 : 0,
+        loan_multiplier: parseFloat(overlay.querySelector('#ent-multiplier-input').value || 0),
+        form_fee: parseFloat(overlay.querySelector('#ent-formfee-input').value || 0),
+        form_fee_is_percent: overlay.querySelector('#ent-formfee-percent').checked ? 1 : 0,
+        admin_charge: parseFloat(overlay.querySelector('#ent-admin-input').value || 0),
+        admin_charge_is_percent: overlay.querySelector('#ent-admin-percent').checked ? 1 : 0,
+        distribution_priority: parseInt(overlay.querySelector('#ent-priority-input').value || 0),
+        compulsory_due: overlay.querySelector('#ent-compulsory-due').checked ? 1 : 0,
+        compulsory_amount: parseFloat(overlay.querySelector('#ent-compulsory-amount').value || 0),
+        revenue: overlay.querySelector('#ent-revenue').checked ? 1 : 0,
+        is_penalty: overlay.querySelector('#ent-is-penalty').checked ? 1 : 0,
         cooperative_id: cooperativeId
       };
-      const saveBtn = document.getElementById('save-ent-btn');
+      const saveBtn = overlay.querySelector('#save-ent-btn');
       if (!saveBtn) return;
       try {
         saveBtn.disabled = true; saveBtn.innerText = 'Saving...';
@@ -147,7 +162,7 @@ export function setupEnterpriseListeners(user, cooperativeId) {
         }
         closeModal();
         loadEnterprises();
-      } catch (err) { showToast('Error: ' + err.message, 'error'); saveBtn.disabled = false; saveBtn.innerText = editingEnt ? 'Update' : 'Add'; }
+      } catch (err) { showToast('Error: ' + err.message, 'error'); saveBtn.disabled = false; saveBtn.innerText = editingEnt ? 'Update' : 'Add Account'; }
     });
   };
 

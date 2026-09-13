@@ -1,6 +1,8 @@
 import { buildAccountBalance, fetchEnterprises, fetchRemittances, fetchAllMembers, fetchBanks } from '../services/dataService.js'
+import { buildWeeklyActivity, reconstructBalances, areaChartSVG, weekPctChange, compactCurr, CHART_WEEKS } from '../components/weeklyChart.js'
+import { showWorkspaceSpinner } from '../components/workspaceSpinner.js'
 import { hasPermission } from '../services/permissionService.js'
-import { formatCurrency, escapeHtml } from '../utils/formatters.js'
+import { formatCurrency, escapeHtml, escapeAttribute } from '../utils/formatters.js'
 import { getPendingQueue, queryRows } from '../services/sqliteService.js'
 import { showToast } from '../services/toastService.js'
 import { showWithdrawalWizard } from '../components/WithdrawalWizard.js'
@@ -37,6 +39,23 @@ function getShowZeroBalancePreference() {
 
 let maskBalances = getMaskPreference()
 let showZeroBalances = getShowZeroBalancePreference()
+
+// Which card chart is open (metric key). Module-level so a dashboard
+// auto-refresh re-renders with the same chart still open.
+let openChartKey = null
+// Escape-key closer is bound once (re-renders must not stack it).
+let chartModalEscBound = false
+// Signature of the last painted dashboard figures. Background refreshes that
+// recompute identical figures skip the DOM write entirely — no spinner, no
+// flicker; only genuinely changed figures repaint (still with no spinner).
+let _lastDashboardSig = null
+
+// Money canonicalized to display precision so float dust (e.g. summation
+// order differences in the last ulp) can never trigger a repaint.
+function _sigMoney(n) {
+    const v = Number(n)
+    return Number.isFinite(v) ? v.toFixed(2) : '0.00'
+}
 
 
 
@@ -130,15 +149,90 @@ export async function renderAccountBalance(container, user) {
     <div class="page-container" id="balance-content"></div>
   `
 
+    // Declared outside try so the catch block can also tell first paint
+    // (spinner/empty container) apart from a background update.
+    let isFirstPaint = !container.querySelector('#balance-content')
     try {
+        // Spinner only on first paint. Updates reuse the live DOM (see the
+        // signature check below) so figures change without any flicker.
+        if (isFirstPaint) showWorkspaceSpinner(container);
         let visibleBalance = []
 
         const queryUser = JSON.parse(JSON.stringify(user));
+        const coopId = String(user.cooperativeId);
 
-        let { accountBalance } = await buildAccountBalance(user.cooperativeId, queryUser)
+        // ONE shared remittance load for balance + recent + revenue + counts
+        // (previously the full set was loaded 2x, 3x with the retry below).
+        // All independent reads then run in parallel (previously sequential).
+        // Computation below is unchanged, so figures are identical.
+        const sharedRemittances = await fetchRemittances(user.cooperativeId, queryUser)
+
+        // Derived in-memory from the single shared load above. Previously this
+        // screen re-scanned the whole remittance table 3 more times (bank cash,
+        // monthly stats, plus a remittance×detail JOIN that materialized the
+        // cartesian product) — 4 concurrent full-DB copies per paint, which is
+        // what OOMs long-lived Electron sessions on large cooperatives.
+        // Full-scope users (admin/all-access) get bit-identical figures; scoped
+        // users now see scope-consistent figures instead of global ones.
+        let _bankCashTotal = 0
+        const monthlyRows = []
+        for (const _r of sharedRemittances) {
+            if (_r.status !== 'Approved') continue
+            if (_r.bank_name == null || _r.bank_name !== 'Internal Transfer') {
+                _bankCashTotal += parseFloat(_r.amount || 0)
+            }
+            monthlyRows.push({
+                amount: _r.amount,
+                category: _r.category,
+                transaction_type: _r.transaction_type,
+                remittance_date: _r.remittance_date
+            })
+        }
+        const bankBalResult = [{ net_balance: _bankCashTotal }]
+        // Same rows + filter as the old GROUP BY query, grouped in memory over
+        // the already-attached details (no extra IndexedDB scan).
+        const loanDetailRows = []
+        {
+            const _bal = new Map()
+            for (const _r of sharedRemittances) {
+                if (_r.status !== 'Approved') continue
+                for (const _d of (_r.details || [])) {
+                    const _k = `${_r.member_id}|||${_d.enterprise_id || _d.item || ''}`
+                    _bal.set(_k, (_bal.get(_k) || 0) + parseFloat(_d.amount || 0))
+                }
+            }
+            for (const [_k, _net] of _bal) {
+                const _i = _k.indexOf('|||')
+                loanDetailRows.push({
+                    member_id: _k.slice(0, _i),
+                    enterprise_id: _k.slice(_i + 3),
+                    net_amt: _net
+                })
+            }
+        }
+        const loansSql = `SELECT * FROM loans WHERE cooperative_id = ? AND is_deleted = 0`;
+        // Members scope flag must be computed BEFORE the parallel fetch below.
+        // Identical to the original: hasAllAccess is only ever true for staff
+        // whose rights include 'all' (plus admins via isAdmin).
+        const _rightsTokens = String(user.enterprise_rights || user.enterprises || '').split(',').map(p => p.trim()).filter(p => p.length > 0);
+        const _allAccessForMembers = isAdmin || (isStaff && _rightsTokens.some(r => r.toLowerCase() === 'all'));
+
+        const [
+            enterpriseRows,
+            banks,
+            membersAll,
+            loansAll,
+            syncQueue,
+        ] = await Promise.all([
+            fetchEnterprises(user.cooperativeId, true),
+            fetchBanks(user.cooperativeId),
+            fetchAllMembers(user.cooperativeId, user.username, _allAccessForMembers),
+            queryRows(loansSql, [coopId]).catch(e => { console.warn('Error fetching loans for stats:', e); return []; }),
+            getPendingQueue(user.cooperativeId),
+        ]);
+
+        let { accountBalance } = await buildAccountBalance(user.cooperativeId, queryUser, null, { remittances: sharedRemittances, enterprises: enterpriseRows })
         visibleBalance = accountBalance
-
-        const enterpriseRows = await fetchEnterprises(user.cooperativeId, true)
         const allEnts = {}
         const entObjMap = {}
         enterpriseRows.forEach(e => {
@@ -220,19 +314,7 @@ export async function renderAccountBalance(container, user) {
             return b;
         }).filter(Boolean)
 
-        let totalBankCash = 0;
-        try {
-            const bankBalSql = `
-                SELECT SUM(amount) as net_balance
-                FROM remittance
-                WHERE cooperative_id = ? AND status = 'Approved' AND is_deleted = 0
-                  AND (bank_name IS NULL OR bank_name != 'Internal Transfer')
-            `;
-            const bankBalResult = await queryRows(bankBalSql, [String(user.cooperativeId)]);
-            totalBankCash = parseFloat(bankBalResult[0]?.net_balance || 0);
-        } catch (e) {
-            console.warn('Failed to calculate bank cash:', e);
-        }
+        let totalBankCash = parseFloat(bankBalResult[0]?.net_balance || 0);
 
         const subtitleEl = container.querySelector('.subtitle')
         if (subtitleEl) {
@@ -243,34 +325,25 @@ export async function renderAccountBalance(container, user) {
             }
         }
 
-        let remittances = await fetchRemittances(user.cooperativeId, queryUser)
+        // Reuses the single shared remittance load above (same rows, same order)
+        let remittances = sharedRemittances
         if (queryUser.memberId && queryUser.memberId !== '0000000000') {
             remittances = remittances.filter(r => r.member_id === queryUser.memberId);
         }
         const recentRemittances = remittances.slice(0, 10)
 
-        const banks = await fetchBanks(user.cooperativeId)
-
-        // Add revenue from income-classified transactions across all enterprises,
-        // and from positive amounts in penalty enterprises (revenue regardless of category)
+        // Accounting lives on the remittance header (transaction_type/category):
+        // revenue counts income-category headers at header amount. Details
+        // are only for member-level enterprise breakdowns, not accounting.
         for (const rem of remittances) {
             if (rem.status !== 'Approved') continue;
-            const cls = rem.category || '';
-            const isIncomeCat = isDashboardIncome(cls);
-            for (const d of (rem.details || [])) {
-                const entObj = entObjMap[d.enterprise_id];
-                if (!entObj) continue;
-                const isRevenueEnt = entObj && (entObj.revenue == 1 || entObj.revenue === '1' || entObj.revenue === 'true' || entObj.revenue === true || entObj.account_type === 'revenue');
-                const isPenaltyEnt = entObj && (entObj.is_penalty == 1 || entObj.is_penalty === '1' || entObj.is_penalty === 'true' || entObj.is_penalty === true);
-                const amt = parseFloat(d.amount || 0);
-                if (isIncomeCat || ((isRevenueEnt || isPenaltyEnt) && amt > 0)) {
-                    totalRevenueCollected += amt;
-                }
+            if (isDashboardIncome(rem.category || '')) {
+                totalRevenueCollected += parseFloat(rem.amount || 0);
             }
         }
 
-        // Fetch statistics
-        let members = await fetchAllMembers(user.cooperativeId, user.username, isAdmin || hasAllAccess)
+        // Fetch statistics (pre-fetched above)
+        let members = membersAll
         if (queryUser.memberId && queryUser.memberId !== '0000000000') {
             members = members.filter(m => m.id === queryUser.memberId);
         }
@@ -294,59 +367,39 @@ export async function renderAccountBalance(container, user) {
             return r.status === 'Approved' && remitDate >= thisMonthStart
         }).length
 
-        // Calculate organizational revenue, expenses, net position at detail level
+        // Calculate organizational revenue, expenses, net position at header
+        // level (rows pre-fetched in parallel above; accounting follows the
+        // remittance category, not the member-level details).
         let organizationalRevenue = 0
         let organizationalExpenses = 0
-        try {
-            const monthStartStr = `${new Date(thisMonthStart).getFullYear()}-${String(new Date(thisMonthStart).getMonth() + 1).padStart(2, '0')}-01`;
-            const monthlySql = `
-                SELECT rd.amount, r.category, rd.enterprise_id, r.remittance_date
-                FROM remittance r
-                JOIN remittance_detail rd ON r.id = rd.remittance_id
-                WHERE r.cooperative_id = ? AND r.status = 'Approved' AND r.is_deleted = 0
-            `;
-            const monthlyRows = await queryRows(monthlySql, [String(user.cooperativeId)]);
+        {
             monthlyRows.forEach(row => {
                 const remDate = new Date(row.remittance_date).getTime();
                 if (isNaN(remDate) || remDate < thisMonthStart) return;
                 const amt = parseFloat(row.amount || 0);
                 const cls = row.category || '';
-                const entObj = entObjMap[row.enterprise_id];
-                const isRevenueEnt = entObj && (entObj.revenue == 1 || entObj.revenue === '1' || entObj.revenue === 'true' || entObj.revenue === true || entObj.account_type === 'revenue');
-                const isPenaltyEnt = entObj && (entObj.is_penalty == 1 || entObj.is_penalty === '1' || entObj.is_penalty === 'true' || entObj.is_penalty === true);
-                if (isDashboardIncome(cls) || ((isRevenueEnt || isPenaltyEnt) && amt > 0)) {
+                if (isDashboardIncome(cls)) {
                     organizationalRevenue += amt;
                 } else if (isDashboardExpense(cls)) {
                     organizationalExpenses += Math.abs(amt);
                 }
             });
-        } catch (e) {
-            console.warn('Failed to calculate dashboard monthly stats:', e);
         }
         const netPosition = organizationalRevenue - organizationalExpenses
         
-        // Fetch loans outstanding balances
+        // Fetch loans outstanding balances (rows pre-fetched in parallel above)
         let activeLoans = 0
         let activeLoansAmount = 0
         let overdueLoans = 0
         let overdueLoansAmount = 0
-        try {
-            let loans = await queryRows(`SELECT * FROM loans WHERE cooperative_id = ? AND is_deleted = 0`, [String(user.cooperativeId)])
+        {
+            let loans = loansAll
             if (queryUser.memberId && queryUser.memberId !== '0000000000') {
                 loans = loans.filter(l => l.member_id === queryUser.memberId);
             }
-            
-            const loanDetailsSql = `
-                SELECT r.member_id, rd.enterprise_id, SUM(rd.amount) as net_amt
-                FROM remittance r
-                JOIN remittance_detail rd ON r.id = rd.remittance_id
-                WHERE r.cooperative_id = ? AND r.status = 'Approved' AND r.is_deleted = 0
-                GROUP BY r.member_id, rd.enterprise_id
-            `;
-            const loanDetailsRows = await queryRows(loanDetailsSql, [String(user.cooperativeId)]);
-            
+
             const loanBalMap = {};
-            loanDetailsRows.forEach(row => {
+            loanDetailRows.forEach(row => {
                 const key = `${row.member_id}_${row.enterprise_id}`;
                 loanBalMap[key] = Math.abs(parseFloat(row.net_amt || 0));
             });
@@ -364,12 +417,54 @@ export async function renderAccountBalance(container, user) {
                     overdueLoansAmount += outstanding;
                 }
             })
-        } catch (e) {
-            console.warn('Error fetching loans for stats:', e)
         }
 
-        // Fetch sync queue
-        const syncQueue = await getPendingQueue(user.cooperativeId)
+        // Weekly trend buckets from the same (possibly member-filtered)
+        // approved flows the cards above are built from — chart and card
+        // can never disagree.
+        const weekly = buildWeeklyActivity(remittances, entObjMap, CHART_WEEKS)
+        const weekLabels = weekly.buckets.map(b => b.label)
+        const weekFlow = (key) => weekly.buckets.map(b => b.sums[key] || 0)
+
+        // Weekly new-member joins (for the members card chart).
+        const weekJoins = weekly.buckets.map(() => 0)
+        members.forEach(m => {
+            if (!m.date_joined) return
+            const ms = new Date(m.date_joined).getTime()
+            if (isNaN(ms)) return
+            for (let i = weekly.buckets.length - 1; i >= 0; i--) {
+                if (ms >= weekly.buckets[i].start.getTime()) { weekJoins[i] += 1; break }
+            }
+        })
+
+        // ── Paint-skip: every displayed figure, canonicalized ──────────────
+        // Background refreshes recompute the same values 99% of the time. When
+        // the signature matches the last paint, return WITHOUT touching the
+        // DOM — no spinner (already skipped above), no innerHTML swap, charts
+        // and scroll position untouched. Money is rounded to display precision
+        // so float dust can never cause a repaint loop.
+        const _sig = JSON.stringify([
+            String(coopId), String(queryUser.memberId || queryUser.userId || user.username || ''),
+            isMember ? 1 : 0, maskBalances ? 1 : 0, showZeroBalances ? 1 : 0,
+            visibleBalance.map(b => [String(b.id), _sigMoney(b.sum_of_amount), b.isRestricted ? 1 : 0]),
+            [_sigMoney(visibleTotal), _sigMoney(totalSavingsLiabilities), _sigMoney(totalLoansOutstandingAssets),
+             _sigMoney(totalRevenueCollected), _sigMoney(totalBankCash), _sigMoney(organizationalRevenue),
+             _sigMoney(organizationalExpenses), _sigMoney(netPosition)],
+            [activeLoans, _sigMoney(activeLoansAmount), overdueLoans, _sigMoney(overdueLoansAmount)],
+            [members.length, newThisMonth, activeMembers, pendingRemittances, approvedThisMonth, syncQueue.length],
+            recentRemittances.map(r => [String(r.id), _sigMoney(r.amount), String(r.status || ''),
+                String(r.remittance_date || ''), String(r.description || ''), String(r.bank_name || ''), String(r.member_id || '')]),
+            (banks || []).filter(b => (b.is_visible ?? true) && b.id !== 'internal' && b.id !== 'internal_transfer'
+                && !String(b.bank_name || '').toLowerCase().includes('internal'))
+                .map(b => [String(b.id), String(b.bank_name || ''), String(b.account_name || ''),
+                    String(b.account_number || ''), String(b.branch_name || ''), String(b.swift_code || '')]),
+            weekly.buckets.map(b => [String(b.label), ...Object.keys(b.sums || {}).sort().map(k => _sigMoney(b.sums[k]))]),
+            weekJoins,
+        ])
+        if (!isFirstPaint && _sig === _lastDashboardSig) return
+        _lastDashboardSig = _sig
+
+        // Sync queue (pre-fetched in parallel above)
 
         const maskValue = (value) => {
             if (maskBalances) {
@@ -459,6 +554,44 @@ export async function renderAccountBalance(container, user) {
             .stat-card-issues {
                 color: var(--danger);
             }
+
+            [data-chart] { cursor: pointer; }
+            .tap-hint {
+                font-size: 0.68rem;
+                opacity: 0.8;
+                margin-top: 0.4rem;
+                font-weight: 600;
+            }
+            .chart-modal-overlay {
+                position: fixed;
+                top: 0; left: 0; right: 0; bottom: 0;
+                background: rgba(0,0,0,0.65);
+                backdrop-filter: blur(3px);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                z-index: 10000;
+                padding: 1.25rem;
+                overflow-y: auto;
+            }
+            .chart-modal {
+                background: var(--bg-card);
+                border: 1px solid var(--border-light);
+                border-radius: 1.25rem;
+                width: 100%;
+                max-width: 920px;
+                max-height: 92vh;
+                overflow-y: auto;
+                padding: 1.5rem 1.75rem;
+                box-shadow: var(--shadow-xl, 0 25px 60px rgba(0,0,0,0.45));
+            }
+            @media (max-width: 640px) {
+                .chart-modal-overlay { padding: 0.75rem; align-items: flex-end; }
+                .chart-modal { padding: 1.1rem 1rem; border-radius: 1rem 1rem 0 0; max-height: 94vh; }
+            }
+            .chart-change-up { color: #10b981; }
+            .chart-change-down { color: #ef4444; }
+            .chart-change-flat { color: var(--text-muted); }
             
             #balance-content.hide-zero-ents .enterprise-card[data-balance-raw="0"],
             #balance-content.hide-zero-ents .enterprise-card[data-balance-raw="0.00"] {
@@ -560,89 +693,106 @@ export async function renderAccountBalance(container, user) {
         </div>
         ${isMemberView ? `
         <div style="display: grid; grid-template-columns: 1fr; gap: 1rem; margin-bottom: 2rem;">
-          <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 1.5rem; padding: 1.5rem; color: white;">
+          <div data-chart="portfolio" title="Tap for weekly trend" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 1.5rem; padding: 1.5rem; color: white;">
             <div style="font-size: 0.875rem; opacity: 0.9; text-transform: uppercase; font-weight: 600;">MY NET PORTFOLIO</div>
             <div style="font-size: 2rem; font-weight: 800; margin-top: 0.5rem;" data-balance-value="${visibleTotal}">${maskValue(visibleTotal)}</div>
+            <div class="tap-hint">Tap for weekly trend ›</div>
           </div>
         </div>` : `
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-bottom: 2rem;">
-          <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 1.5rem; padding: 1.5rem; color: white;">
+          <div data-chart="savings" title="Tap for weekly trend" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 1.5rem; padding: 1.5rem; color: white;">
             <div style="font-size: 0.875rem; opacity: 0.9; text-transform: uppercase; font-weight: 600;">TOTAL MEMBER SAVINGS (LIABILITY)</div>
             <div style="font-size: 1.75rem; font-weight: 800; margin-top: 0.5rem;" data-balance-value="${totalSavingsLiabilities}">${maskValue(totalSavingsLiabilities)}</div>
+            <div class="tap-hint">Tap for weekly trend ›</div>
           </div>
-          <div style="background: linear-gradient(135deg, #f87171 0%, #ef4444 100%); border-radius: 1.5rem; padding: 1.5rem; color: white;">
+          <div data-chart="loans" title="Tap for weekly trend" style="background: linear-gradient(135deg, #f87171 0%, #ef4444 100%); border-radius: 1.5rem; padding: 1.5rem; color: white;">
             <div style="font-size: 0.875rem; opacity: 0.9; text-transform: uppercase; font-weight: 600;">TOTAL OUTSTANDING LOANS (ASSETS)</div>
             <div style="font-size: 1.75rem; font-weight: 800; margin-top: 0.5rem;" data-balance-value="${totalLoansOutstandingAssets}">${maskValue(totalLoansOutstandingAssets)}</div>
+            <div class="tap-hint">Tap for weekly trend ›</div>
           </div>
-          <div style="background: linear-gradient(135deg, #3b82f6 0%, #60a5fa 100%); border-radius: 1.5rem; padding: 1.5rem; color: white;">
+          <div data-chart="cash" title="Tap for weekly trend" style="background: linear-gradient(135deg, #3b82f6 0%, #60a5fa 100%); border-radius: 1.5rem; padding: 1.5rem; color: white;">
             <div style="font-size: 0.875rem; opacity: 0.9; text-transform: uppercase; font-weight: 600;">Cash + Bank Balance</div>
             <div style="font-size: 1.75rem; font-weight: 800; margin-top: 0.5rem;" data-balance-value="${totalBankCash}">${maskValue(totalBankCash)}</div>
+            <div class="tap-hint">Tap for weekly trend ›</div>
           </div>
-          <div style="background: linear-gradient(135deg, #10b981 0%, #34d399 100%); border-radius: 1.5rem; padding: 1.5rem; color: white;">
+          <div data-chart="revenue" title="Tap for weekly trend" style="background: linear-gradient(135deg, #10b981 0%, #34d399 100%); border-radius: 1.5rem; padding: 1.5rem; color: white;">
             <div style="font-size: 0.875rem; opacity: 0.9; text-transform: uppercase; font-weight: 600;">TOTAL REVENUE COLLECTED</div>
             <div style="font-size: 1.75rem; font-weight: 800; margin-top: 0.5rem;" data-balance-value="${totalRevenueCollected}">${maskValue(totalRevenueCollected)}</div>
+            <div class="tap-hint">Tap for weekly trend ›</div>
           </div>
         </div>
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-bottom: 2rem;">
-          <div style="background: linear-gradient(135deg, #11998e 0%, #34d399 100%); border-radius: 1.5rem; padding: 1.5rem; color: white;">
+          <div data-chart="tx" title="Tap for weekly trend" style="background: linear-gradient(135deg, #11998e 0%, #34d399 100%); border-radius: 1.5rem; padding: 1.5rem; color: white;">
             <div style="font-size: 0.875rem; opacity: 0.9; text-transform: uppercase; font-weight: 600;">TRANSACTIONS (THIS MONTH)</div>
             <div style="font-size: 1.75rem; font-weight: 800; margin-top: 0.5rem;">${approvedThisMonth}</div>
+            <div class="tap-hint">Tap for weekly trend ›</div>
           </div>
-          <div style="background: linear-gradient(135deg, #f59e0b 0%, #fbbf24 100%); border-radius: 1.5rem; padding: 1.5rem; color: white;">
+          <div data-chart="revM" title="Tap for weekly trend" style="background: linear-gradient(135deg, #f59e0b 0%, #fbbf24 100%); border-radius: 1.5rem; padding: 1.5rem; color: white;">
             <div style="font-size: 0.875rem; opacity: 0.9; text-transform: uppercase; font-weight: 600;">REVENUE (THIS MONTH)</div>
             <div style="font-size: 1.75rem; font-weight: 800; margin-top: 0.5rem;" data-balance-value="${organizationalRevenue}">${maskValue(organizationalRevenue)}</div>
+            <div class="tap-hint">Tap for weekly trend ›</div>
           </div>
-          <div style="background: linear-gradient(135deg, #ef4444 0%, #f87171 100%); border-radius: 1.5rem; padding: 1.5rem; color: white;">
+          <div data-chart="expM" title="Tap for weekly trend" style="background: linear-gradient(135deg, #ef4444 0%, #f87171 100%); border-radius: 1.5rem; padding: 1.5rem; color: white;">
             <div style="font-size: 0.875rem; opacity: 0.9; text-transform: uppercase; font-weight: 600;">EXPENSES (THIS MONTH)</div>
             <div style="font-size: 1.75rem; font-weight: 800; margin-top: 0.5rem;" data-balance-value="${organizationalExpenses}">${maskValue(organizationalExpenses)}</div>
+            <div class="tap-hint">Tap for weekly trend ›</div>
           </div>
-          <div style="background: linear-gradient(135deg, #8B5CF6 0%, #A78BFA 100%); border-radius: 1.5rem; padding: 1.5rem; color: white;">
+          <div data-chart="netM" title="Tap for weekly trend" style="background: linear-gradient(135deg, #8B5CF6 0%, #A78BFA 100%); border-radius: 1.5rem; padding: 1.5rem; color: white;">
             <div style="font-size: 0.875rem; opacity: 0.9; text-transform: uppercase; font-weight: 600;">NET POSITION (THIS MONTH)</div>
             <div style="font-size: 1.75rem; font-weight: 800; margin-top: 0.5rem;" data-balance-value="${netPosition}">${maskValue(netPosition)}</div>
+            <div class="tap-hint">Tap for weekly trend ›</div>
           </div>
         </div>`}
         
         ${isMemberView ? `
         <div class="dashboard-stats-grid">
-            <div class="dashboard-stat-card blue">
+            <div class="dashboard-stat-card blue" data-chart="aloans" title="Tap for weekly trend">
                 <div class="stat-card-label">ACTIVE LOANS</div>
                 <div class="stat-card-value">${activeLoans}</div>
                 <div class="stat-card-subvalue">
                     <span data-balance-value="${activeLoansAmount}">${maskValue(activeLoansAmount)}</span>
                 </div>
+                <div class="stat-card-subvalue tap-hint" style="color: var(--text-muted);">Tap for weekly trend ›</div>
             </div>
-            <div class="dashboard-stat-card red">
+            <div class="dashboard-stat-card red" data-chart="oloans" title="Tap for weekly trend">
                 <div class="stat-card-label">OVERDUE</div>
                 <div class="stat-card-value">${overdueLoans}</div>
                 <div class="stat-card-subvalue">
                     <span data-balance-value="${overdueLoansAmount}">${maskValue(overdueLoansAmount)}</span>
                 </div>
+                <div class="stat-card-subvalue tap-hint" style="color: var(--text-muted);">Tap for weekly trend ›</div>
             </div>
         </div>` : `
         <div class="dashboard-stats-grid">
-            <div class="dashboard-stat-card blue">
+            <div class="dashboard-stat-card blue" data-chart="members" title="Tap for weekly trend">
                 <div class="stat-card-label">TOTAL MEMBERS</div>
                 <div class="stat-card-value">${members.length}</div>
                 <div class="stat-card-subvalue">
                     <span class="stat-card-new">+${newThisMonth} new</span>
                     <span>• ${activeMembers} active</span>
                 </div>
+                <div class="stat-card-subvalue tap-hint" style="color: var(--text-muted);">Tap for weekly trend ›</div>
             </div>
             
-            <div class="dashboard-stat-card yellow">
+            <div class="dashboard-stat-card yellow" data-chart="pending" title="Tap for weekly trend">
                 <div class="stat-card-label">PENDING APPROVALS</div>
                 <div class="stat-card-value">${pendingRemittances}</div>
                 <div class="stat-card-subvalue">
                     <span>needs attention</span>
                 </div>
+                ${pendingRemittances > 0 ? `
+                <button type="button" id="review-pending-btn" class="ghost-button" style="margin-top: 0.6rem; font-size: 0.75rem; font-weight: 700; padding: 0.4rem 0.9rem; border-radius: 999px; border: 1px solid var(--warning, #d97706); color: var(--warning, #d97706); cursor: pointer; background: transparent;">Review pending →</button>
+                ` : ``}
+                <div class="stat-card-subvalue tap-hint" style="color: var(--text-muted);">Tap for weekly trend ›</div>
             </div>
             
-            <div class="dashboard-stat-card red">
+            <div class="dashboard-stat-card red" data-chart="aloans" title="Tap for weekly trend">
                 <div class="stat-card-label">ACTIVE LOANS</div>
                 <div class="stat-card-value">${activeLoans}</div>
                 <div class="stat-card-subvalue">
                     <span data-balance-value="${activeLoansAmount}">${maskValue(activeLoansAmount)}</span>
                 </div>
+                <div class="stat-card-subvalue tap-hint" style="color: var(--text-muted);">Tap for weekly trend ›</div>
             </div>
             
             <div class="dashboard-stat-card green">
@@ -700,7 +850,7 @@ export async function renderAccountBalance(container, user) {
             } else {
                 visibleBalance.forEach((ent) => {
                     contentHtml += `
-              <div class="enterprise-card" data-balance-raw="${ent.sum_of_amount || 0}">
+              <div class="enterprise-card" data-balance-raw="${ent.sum_of_amount || 0}" data-chart="ent:${escapeAttribute(String(ent.id || ''))}" title="Tap for weekly trend">
                 <div class="enterprise-name">${escapeHtml(ent.account_name)}</div>
                 <div class="enterprise-amt ${ent.sum_of_amount < 0 ? 'text-red' : ''}" data-balance-value="${ent.sum_of_amount || 0}">${maskValue(ent.sum_of_amount)}</div>
               </div>
@@ -712,6 +862,7 @@ export async function renderAccountBalance(container, user) {
         }
 
         contentHtml += `
+        <div id="card-chart-mount"></div>
         <div style="margin-bottom: 2rem;">
           <h3 style="color: var(--text-primary); margin-bottom: 1rem;">Recent Activity</h3>
           <div style="background: var(--bg-card); border-radius: 0.75rem; overflow: hidden; border: 1px solid var(--border-light);">
@@ -850,26 +1001,148 @@ export async function renderAccountBalance(container, user) {
         const bcEl = document.getElementById('balance-content')
         if (bcEl) bcEl.classList.toggle('hide-zero-ents', !showZeroBalances)
 
-        // FAB toggle
+        // ── Click-a-card weekly charts ─────────────────────────────
+        // Series reuse the exact buckets above, so chart and card agree.
+        const countFmt = (v) => String(Math.round(v || 0))
+        const revWeek = weekFlow('revM')
+        const expWeek = weekFlow('expM')
+        const chartDefs = {
+            savings: { title: 'Total Savings — weekly trend', color: '#8b5cf6', kind: 'balance', flows: weekFlow('savings'), current: totalSavingsLiabilities, fmt: compactCurr, note: 'Balance reconstructed from dated approved activity.' },
+            loans: { title: 'Outstanding Loans — weekly trend', color: '#ef4444', kind: 'balance', flows: weekFlow('loans'), current: totalLoansOutstandingAssets, fmt: compactCurr, note: 'Approximate: reconstructed from dated loan flows.' },
+            cash: { title: 'Cash + Bank — weekly trend', color: '#3b82f6', kind: 'balance', flows: weekFlow('cash'), current: totalBankCash, fmt: compactCurr, note: 'Balance reconstructed from dated approved activity.' },
+            revenue: { title: 'Revenue — weekly collections', color: '#10b981', kind: 'flow', flows: weekFlow('revenue'), current: totalRevenueCollected, fmt: compactCurr, note: 'Weekly collections; total is all-time.' },
+            tx: { title: 'Transactions — weekly count', color: '#14b8a6', kind: 'count', flows: weekFlow('tx'), current: approvedThisMonth, fmt: countFmt, note: 'Approved transactions per week; total is this month.' },
+            revM: { title: 'Revenue — weekly', color: '#f59e0b', kind: 'flow', flows: revWeek, current: organizationalRevenue, fmt: compactCurr, note: 'Weekly revenue; total is this month.' },
+            expM: { title: 'Expenses — weekly', color: '#ef4444', kind: 'flow', flows: expWeek, current: organizationalExpenses, fmt: compactCurr, note: 'Weekly expenses; total is this month.' },
+            netM: { title: 'Net position — weekly', color: '#8b5cf6', kind: 'flow', flows: revWeek.map((v, i) => v - expWeek[i]), current: netPosition, fmt: compactCurr, note: 'Weekly revenue minus expenses; total is this month.' },
+            members: { title: 'New members — weekly', color: '#3b82f6', kind: 'count', flows: weekJoins, current: members.length, fmt: countFmt, note: 'New joins per week; total is all members.' },
+            pending: { title: 'Submissions — weekly', color: '#f59e0b', kind: 'count', flows: weekFlow('submitted'), current: pendingRemittances, fmt: countFmt, note: 'Submitted remittances per week; total is currently pending.' },
+            aloans: { title: 'Loan activity — weekly', color: '#ef4444', kind: 'flow', flows: weekFlow('loans'), current: activeLoansAmount, fmt: compactCurr, note: 'Weekly loan flows; total is active outstanding.' },
+            oloans: { title: 'Overdue scope — weekly loan activity', color: '#ef4444', kind: 'flow', flows: weekFlow('loans'), current: overdueLoansAmount, fmt: compactCurr, note: 'Weekly loan flows; total is overdue outstanding.' },
+            portfolio: { title: 'My portfolio — weekly trend', color: '#667eea', kind: 'balance', flows: weekFlow('savings').map((v, i) => v + weekFlow('loans')[i] + weekFlow('cash')[i] + weekFlow('revenue')[i]), current: visibleTotal, fmt: compactCurr, note: 'Balance reconstructed from your dated activity.' },
+        }
+
+        const resolveChartDef = (key) => {
+            if (!key) return null
+            if (key.indexOf('ent:') === 0) {
+                const id = key.slice(4)
+                const ent = (visibleBalance || []).find(b => String(b.id) === id)
+                if (!ent || ent.isRestricted) return null
+                const flows = weekly.buckets.map(() => 0)
+                remittances.forEach((rem) => {
+                    if (rem.status !== 'Approved') return
+                    const ms = new Date(rem.remittance_date).getTime()
+                    if (isNaN(ms)) return
+                    for (let i = weekly.buckets.length - 1; i >= 0; i--) {
+                        if (ms >= weekly.buckets[i].start.getTime()) {
+                            ;(rem.details || []).forEach((d) => {
+                                if (String(d.enterprise_id) === id) flows[i] += parseFloat(d.amount || 0)
+                            })
+                            break
+                        }
+                    }
+                })
+                return { title: (ent.account_name || 'Enterprise') + ' — weekly trend', color: '#6366f1', kind: 'balance', flows: flows, current: (ent.sum_of_amount || 0), fmt: compactCurr, note: 'Balance reconstructed from dated approved activity.' }
+            }
+            return chartDefs[key] || null
+        }
+
+        const closeChartModal = () => { openChartKey = null; paintChartModal() }
+
+        const paintChartModal = () => {
+            const mount = document.getElementById('card-chart-mount')
+            if (!mount) return
+            if (!openChartKey) { mount.innerHTML = ''; return }
+            const def = resolveChartDef(openChartKey)
+            if (!def) { mount.innerHTML = ''; openChartKey = null; return }
+            let bodyHtml
+            if (maskBalances) {
+                bodyHtml = `
+                <div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
+                  <div style="font-size: 1.5rem;">🔒</div>
+                  <div style="flex: 1; min-width: 200px;">
+                    <div style="font-weight: 700; color: var(--text-primary);">${escapeHtml(def.title)}</div>
+                    <div style="font-size: 0.82rem; color: var(--text-muted);">Charts are hidden while balances are masked. Tap the eye icon above to unmask.</div>
+                  </div>
+                </div>`
+            } else {
+                const series = def.kind === 'balance' ? reconstructBalances(def.current, def.flows) : def.flows
+                const pct = weekPctChange(series)
+                const pctHtml = pct === null
+                    ? '<span class="chart-change-flat">— vs first week</span>'
+                    : (pct > 0
+                        ? `<span class="chart-change-up">▲ +${(pct * 100).toFixed(1)}% vs first week</span>`
+                        : (pct < 0
+                            ? `<span class="chart-change-down">▼ ${(pct * 100).toFixed(1)}% vs first week</span>`
+                            : '<span class="chart-change-flat">0% vs first week</span>'))
+                bodyHtml = `
+                <div style="font-size: 1.6rem; font-weight: 800; color: var(--text-primary); margin-top: 0.25rem;">${escapeHtml(def.fmt(def.current))}</div>
+                <div style="font-size: 0.8rem; margin-top: 0.15rem; margin-bottom: 0.75rem;">${pctHtml}</div>
+                <div style="color: var(--text-primary);">${areaChartSVG(series, weekLabels, { id: openChartKey, color: def.color, format: def.fmt })}</div>
+                <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 0.5rem;">Last ${weekLabels.length} weeks · ${escapeHtml(def.note)}</div>`
+            }
+            mount.innerHTML = `
+            <div class="chart-modal-overlay" data-chart-overlay>
+              <div class="chart-modal" role="dialog" aria-label="${escapeHtml(def.title)}">
+                <div style="display: flex; align-items: flex-start; gap: 1rem; margin-bottom: 0.5rem;">
+                  <div style="flex: 1; min-width: 0;">
+                    <div style="font-weight: 800; font-size: 1.15rem; color: var(--text-primary);">${escapeHtml(def.title)}</div>
+                  </div>
+                  <button data-chart-close style="border: 1px solid var(--border-medium); background: transparent; color: var(--text-muted); border-radius: 0.5rem; padding: 0.4rem 0.8rem; cursor: pointer; flex-shrink: 0;">Close ✕</button>
+                </div>
+                ${bodyHtml}
+              </div>
+            </div>`
+            mount.querySelector('[data-chart-close]')?.addEventListener('click', closeChartModal)
+            mount.querySelector('[data-chart-overlay]')?.addEventListener('click', (e) => {
+                if (e.target && e.target.hasAttribute && e.target.hasAttribute('data-chart-overlay')) closeChartModal()
+            })
+            if (!chartModalEscBound) {
+                chartModalEscBound = true
+                document.addEventListener('keydown', (e) => {
+                    if (e.key === 'Escape' && openChartKey) closeChartModal()
+                })
+            }
+        }
+
+        container.querySelectorAll('[data-chart]').forEach(el => {
+            el.addEventListener('click', () => {
+                const key = el.getAttribute('data-chart')
+                openChartKey = (openChartKey === key) ? null : key
+                paintChartModal()
+            })
+        })
+        if (openChartKey) paintChartModal()
+
+        // FAB toggle (element listeners die with innerHTML; the document-level
+        // outside-click handler is bound ONCE — per-render closures here used
+        // to pile up on every 60s auto-refresh + sync re-render and retain
+        // the whole dashboard dataset in long-lived Electron sessions).
         const fabTrigger = document.getElementById('fab-trigger');
         const fabMenu = document.getElementById('fab-menu');
-        let fabOpen = false;
+        const isFabOpen = () => !!fabMenu?.classList.contains('open');
         const toggleFab = (open) => {
-            fabOpen = open !== undefined ? open : !fabOpen;
-            fabTrigger.classList.toggle('open', fabOpen);
-            fabMenu.classList.toggle('open', fabOpen);
+            const next = open !== undefined ? open : !isFabOpen();
+            fabTrigger?.classList.toggle('open', next);
+            fabMenu?.classList.toggle('open', next);
         };
         fabTrigger?.addEventListener('click', (e) => {
             e.stopPropagation();
             toggleFab();
         });
         // Close FAB when clicking outside
-        document.addEventListener('click', (e) => {
-            const fab = document.querySelector('.fab-container');
-            if (fabOpen && fab && !fab.contains(e.target)) {
-                toggleFab(false);
-            }
-        });
+        if (!window._dashFabOutside) {
+            window._dashFabOutside = (e) => {
+                const fab = document.querySelector('.fab-container');
+                const menu = document.getElementById('fab-menu');
+                const trigger = document.getElementById('fab-trigger');
+                if (menu?.classList.contains('open') && fab && !fab.contains(e.target)) {
+                    menu.classList.remove('open');
+                    trigger?.classList.remove('open');
+                }
+            };
+            document.addEventListener('click', window._dashFabOutside);
+        }
         
         // Quick actions handlers
         document.querySelectorAll('[data-quick-action]').forEach(btn => {
@@ -895,6 +1168,18 @@ export async function renderAccountBalance(container, user) {
                 window.dispatchEvent(new Event('hashchange'))
             })
         })
+
+        // Pending-approvals shortcut: open the remittance page with the
+        // history table pre-filtered to Pending (button only renders when > 0).
+        // stopPropagation so the card's own chart-modal tap doesn't also fire.
+        // NOTE: no manual hashchange dispatch — assigning location.hash fires
+        // it natively, and a second mount would consume the one-shot status
+        // flag and reload the table unfiltered.
+        document.getElementById('review-pending-btn')?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            try { sessionStorage.setItem('cooplog-history-status', 'Pending'); } catch {}
+            window.location.hash = 'payments';
+        });
 
         const toggleMaskBtn = document.getElementById('toggle-mask-btn')
         if (toggleMaskBtn) {
@@ -933,6 +1218,8 @@ export async function renderAccountBalance(container, user) {
                       </svg>
                     `;
                 }
+                // Keep an open card chart in sync (masked lock vs live chart).
+                if (openChartKey) paintChartModal()
             })
         }
 
@@ -1001,7 +1288,13 @@ export async function renderAccountBalance(container, user) {
 
 
     } catch (err) {
-        container.innerHTML = headerHtml
-        document.getElementById('balance-content').innerHTML = `<div class="alert">Could not load dashboard: ${escapeHtml(err.message)}</div>`
+        // First paint: show the error (nothing else to display). Background
+        // update: keep the last painted figures — never wipe live values.
+        if (isFirstPaint) {
+            container.innerHTML = headerHtml
+            document.getElementById('balance-content').innerHTML = `<div class="alert">Could not load dashboard: ${escapeHtml(err.message)}</div>`
+        } else {
+            console.warn('[Dashboard] Background refresh failed, keeping last painted figures:', err?.message)
+        }
     }
 }

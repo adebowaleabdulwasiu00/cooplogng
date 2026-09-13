@@ -73,6 +73,89 @@ export function setupDbManagementListeners(user, cooperativeId, container) {
   const clearBtn = document.getElementById('clear-sync-logs-btn');
   const rebuildBtn = document.getElementById('rebuild-queue-btn');
 
+  // Recent-activity table state: default newest-first (Z-A on Time);
+  // every header toggles A-Z / Z-A on click. Preserved across refreshes.
+  let historyRows = [];
+  let historySig = '';
+  let historySortKey = 'created_at';
+  let historySortDir = -1;
+
+  const historyVal = (item, key) => {
+    if (key === 'created_at') return String(item.created_at || '');
+    if (key === 'entity') return String(item.entity || item.collection_name || '').toLowerCase();
+    if (key === 'operation_type') return String(item.operation_type || '').toLowerCase();
+    if (key === 'status') return String(item.status || '').toLowerCase();
+    return '';
+  };
+
+  const renderHistory = () => {
+    const scroller = historyContainer.querySelector('#sync-history-scroll');
+    const prevScrollTop = scroller ? scroller.scrollTop : 0;
+    if (historyRows.length === 0) {
+      historyContainer.innerHTML = '<p style="color: var(--text-muted); font-style: italic; font-size: 0.85rem;">No recent activity.</p>';
+      return;
+    }
+    const rows = [...historyRows].sort((a, b) => {
+      const va = historyVal(a, historySortKey);
+      const vb = historyVal(b, historySortKey);
+      const cmp = va < vb ? -1 : va > vb ? 1 : 0;
+      return cmp * historySortDir;
+    });
+    const arrow = (key) => historySortKey === key ? (historySortDir === 1 ? ' ▲' : ' ▼') : '';
+    const th = (key, label) => `<th data-sort="${key}" title="Sort" style="cursor: pointer; user-select: none; white-space: nowrap; position: sticky; top: 0; background: var(--bg-card); z-index: 1;">${label}${arrow(key)}</th>`;
+    historyContainer.innerHTML = `
+        <div id="sync-history-scroll" style="max-height: 320px; overflow-y: auto; border: 1px solid var(--border-light); border-radius: var(--radius-md);">
+          <table class="crud-table" style="font-size: 0.75rem; margin: 0;">
+            <thead>
+              <tr>
+                ${th('created_at', 'Time')}
+                ${th('entity', 'Entity')}
+                ${th('operation_type', 'Operation')}
+                ${th('status', 'Status')}
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.map(item => {
+                const when = item.created_at ? new Date(item.created_at) : null;
+                const timeText = when && !isNaN(when.getTime())
+                  ? when.toLocaleString([], { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                  : '—';
+                return `
+                <tr>
+                  <td style="color: var(--text-muted); white-space: nowrap;">${timeText}</td>
+                  <td><span style="text-transform: capitalize;">${item.entity || item.collection_name || '—'}</span></td>
+                  <td><span style="text-transform: uppercase; font-size: 0.7rem; font-weight: 600;">${item.operation_type || '—'}</span></td>
+                  <td>
+                    <span style="padding: 0.1rem 0.4rem; border-radius: 4px; font-weight: 600; font-size: 0.7rem;
+                      background: ${item.status === 'completed' ? 'var(--success-bg)' : (item.status === 'failed' ? 'var(--danger-bg)' : 'var(--bg-secondary)')};
+                      color: ${item.status === 'completed' ? 'var(--success)' : (item.status === 'failed' ? 'var(--danger)' : 'var(--text-muted)')};">
+                      ${item.status}
+                    </span>
+                  </td>
+                </tr>
+              `}).join('')}
+            </tbody>
+          </table>
+        </div>
+      `;
+    const restored = historyContainer.querySelector('#sync-history-scroll');
+    if (restored) restored.scrollTop = prevScrollTop;
+  };
+
+  // Delegated header clicks (bound once — innerHTML is replaced on refresh).
+  historyContainer.addEventListener('click', (e) => {
+    const header = e.target.closest('th[data-sort]');
+    if (!header) return;
+    const key = header.dataset.sort;
+    if (historySortKey === key) {
+      historySortDir = historySortDir === 1 ? -1 : 1;
+    } else {
+      historySortKey = key;
+      historySortDir = key === 'created_at' ? -1 : 1;
+    }
+    renderHistory();
+  });
+
   const refreshStatus = async () => {
     try {
       const dbExists = await checkDbExists();
@@ -130,38 +213,16 @@ export function setupDbManagementListeners(user, cooperativeId, container) {
           </div>
         `;
 
-      const history = await getSyncQueueDetails(10);
-      if (history.length === 0) {
-        historyContainer.innerHTML = '<p style="color: var(--text-muted); font-style: italic; font-size: 0.85rem;">No recent activity.</p>';
-      } else {
-        historyContainer.innerHTML = `
-            <table class="crud-table" style="font-size: 0.75rem;">
-              <thead>
-                <tr>
-                  <th>Time</th>
-                  <th>Entity</th>
-                  <th>Operation</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${history.map(item => `
-                  <tr>
-                    <td style="color: var(--text-muted);">${new Date(item.created_at).toLocaleTimeString()}</td>
-                    <td><span style="text-transform: capitalize;">${item.entity}</span></td>
-                    <td><span style="text-transform: uppercase; font-size: 0.7rem; font-weight: 600;">${item.operation_type}</span></td>
-                    <td>
-                      <span style="padding: 0.1rem 0.4rem; border-radius: 4px; font-weight: 600; font-size: 0.7rem;
-                        background: ${item.status === 'completed' ? 'var(--success-bg)' : (item.status === 'failed' ? 'var(--danger-bg)' : 'var(--bg-secondary)')};
-                        color: ${item.status === 'completed' ? 'var(--success)' : (item.status === 'failed' ? 'var(--danger)' : 'var(--text-muted)')};">
-                        ${item.status}
-                      </span>
-                    </td>
-                  </tr>
-                `).join('')}
-              </tbody>
-            </table>
-          `;
+      // Load the FULL queue history (no cap). Skip the DOM rebuild when
+      // nothing changed so large tables don't jank the 5s auto-refresh.
+      const freshRows = await getSyncQueueDetails();
+      const freshSig = freshRows.length + '|' + freshRows.map(q => `${q.id}:${q.status}:${q.attempt_count || 0}:${q.operation_type || ''}`).join(',');
+      if (freshSig !== historySig) {
+        historyRows = freshRows;
+        historySig = freshSig;
+        renderHistory();
+      } else if (historyRows.length === 0) {
+        renderHistory();
       }
     } catch (err) {
       console.error('Failed to refresh sync status:', err);
@@ -171,8 +232,8 @@ export function setupDbManagementListeners(user, cooperativeId, container) {
   exportBtn?.addEventListener('click', async () => {
     try {
       exportBtn.disabled = true; exportBtn.innerText = 'Exporting...';
-      const data = await exportDatabase();
-      const blob = new Blob([data], { type: 'application/x-sqlite3' });
+      const result = await exportDatabase();
+      const blob = new Blob([result.buffer], { type: 'application/x-sqlite3' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16);
@@ -180,6 +241,12 @@ export function setupDbManagementListeners(user, cooperativeId, container) {
       a.download = `cooperative_backup_${ts}.db`;
       a.click();
       URL.revokeObjectURL(url);
+      const totalRows = (result.exported || []).reduce((s, t) => s + (t.rows || 0), 0);
+      if (result.skipped && result.skipped.length > 0) {
+        showToast(`Exported ${(result.exported || []).length} tables (${totalRows} rows). Skipped not-initialized: ${result.skipped.join(', ')}. Reload the app to repair, then export again for a complete backup.`, 'warning');
+      } else {
+        showToast(`Database exported (${(result.exported || []).length} tables, ${totalRows} rows).`, 'success');
+      }
     } catch (err) {
       showToast('Export failed: ' + err.message, 'error');
     } finally {

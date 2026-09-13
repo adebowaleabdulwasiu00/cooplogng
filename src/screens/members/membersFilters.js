@@ -1,6 +1,6 @@
 import {
     searchTerm, statusFilter, managerFilter,
-    setSearchTerm, setStatusFilter, setManagerFilter,
+    setSearchTerm, setStatusFilter, setManagerFilter, setSortExplicit,
     getAllMembers, getFilteredMembers, applyFilters,
     isSelectionMode, selectedIds, setSelectionMode, deselectAll, usersList
 } from './membersState.js'
@@ -9,7 +9,7 @@ import { renderMembersStats } from './membersStats.js'
 import { hasPermission } from '../../services/permissionService.js'
 import { deleteMember, updateMember } from '../../services/dataService.js'
 import { checkMemberHasRemittances } from '../../services/sqliteService.js'
-import { escapeHtml } from '../../utils/formatters.js'
+import { escapeHtml, getInitials, getAvatarColor } from '../../utils/formatters.js'
 import { showToast } from '../../services/toastService.js'
 
 let searchTimeout = null
@@ -22,7 +22,11 @@ function updateFilteredViews(container) {
     
     // Update Stats
     const statsContainer = container.querySelector('#members-stats-mount')
-    if (statsContainer) statsContainer.innerHTML = renderMembersStats(getFilteredMembers())
+    if (statsContainer) {
+        statsContainer.innerHTML = renderMembersStats(getFilteredMembers())
+        // Re-attach progressive listeners (no-op until Phase 4)
+        import('./membersStats.js').then(m => m.attachStatsListeners?.(container)).catch(() => {})
+    }
     
     // Update Table
     renderMembersTable(container)
@@ -31,6 +35,15 @@ function updateFilteredViews(container) {
     const resetBtn = container.querySelector('#search-reset-btn')
     if (resetBtn) {
         resetBtn.style.display = searchTerm ? 'flex' : 'none'
+    }
+
+    // Toggle the Clear-filters button when any filter is active
+    const clearBtn = container.querySelector('#clear-filters-btn')
+    if (clearBtn) {
+        const active = Boolean(searchTerm)
+            || (typeof statusFilter === 'string' && statusFilter !== 'All Status')
+            || (typeof managerFilter === 'string' && managerFilter !== 'All Managers')
+        clearBtn.style.display = active ? 'flex' : 'none'
     }
 
     // Update selection bar
@@ -260,13 +273,17 @@ export function renderMembersFilters(container, user) {
     container.dataset.coopId = user.cooperativeId
     container.dataset.userPermissions = user.permissions
 
-    // Extract unique managers with safety check
+    // Extract unique managers with safety check (sorted A–Z for scanability)
     const allMembers = getAllMembers()
     const managers = [...new Set(allMembers
         .map(m => String(m.account_manager || ''))
         .filter(Boolean)
         .flatMap(m => m.split(',').map(s => s.trim()))
-    )]
+        .filter(Boolean)
+    )].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+    const filtersActive = searchTerm
+        || (typeof statusFilter === 'string' && statusFilter !== 'All Status')
+        || (typeof managerFilter === 'string' && managerFilter !== 'All Managers')
     
     return `
       <div id="members-selection-bar" class="selection-bar-wrap" style="display: none;"></div>
@@ -274,7 +291,7 @@ export function renderMembersFilters(container, user) {
           <div class="search-and-selectors">
               <div class="search-input-wrap">
                   <svg class="search-icon" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-width="2.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
-                  <input type="text" id="member-search-input" placeholder="Search..." value="${escapeHtml(searchTerm)}">
+                  <input type="text" id="member-search-input" placeholder="Search name, mobile, Reg No…" value="${escapeHtml(searchTerm)}">
                   <button id="search-reset-btn" style="display: ${searchTerm ? 'flex' : 'none'};">×</button>
               </div>
               
@@ -284,6 +301,7 @@ export function renderMembersFilters(container, user) {
                       <option value="Active" ${statusFilter === 'Active' ? 'selected' : ''}>Active</option>
                       <option value="Inactive" ${statusFilter === 'Inactive' ? 'selected' : ''}>Inactive</option>
                       <option value="Suspended" ${statusFilter === 'Suspended' ? 'selected' : ''}>Suspended</option>
+                      <option value="Issues" ${statusFilter === 'Issues' ? 'selected' : ''}>Issues (Inact + Susp)</option>
                   </select>
 
                   <select id="manager-filter" class="adaptive-select">
@@ -292,20 +310,23 @@ export function renderMembersFilters(container, user) {
                   </select>
 
                   <div class="action-buttons-group">
+                      <button class="action-btn" id="clear-filters-btn" title="Clear search and filters" style="display: ${filtersActive ? 'flex' : 'none'};">Clear</button>
                       <button class="action-btn ${isSelectionMode ? 'active' : ''}" id="toggle-selection-btn" title="Bulk Selection">
                           <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path></svg>
                           <span class="btn-text">Select</span>
                       </button>
-                      <button class="action-btn" id="export-members-btn" title="Export — Upgrade in Progress" style="opacity: 0.55; cursor: not-allowed; position: relative;">
+                      <button class="action-btn" id="export-members-btn" title="Export filtered members to Excel">
                           <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-width="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-                          <svg width="12" height="12" fill="currentColor" viewBox="0 0 24 24" style="margin-left: -4px; color: var(--warning);"><path d="M12 1C8.676 1 6 3.676 6 7v1H4v14h16V8h-2V7c0-3.324-2.676-6-6-6zm0 2c2.276 0 4 1.724 4 4v1H8V7c0-2.276 1.724-4 4-4zm0 9a2 2 0 110 4 2 2 0 010-4z"/></svg>
                           <span class="btn-text">Export</span>
                       </button>
                       ${canUpdate ? `
-                      <button class="action-btn" id="import-members-btn" title="Import — Upgrade in Progress" style="opacity: 0.55; cursor: not-allowed; position: relative;">
+                      <button class="action-btn" id="import-members-btn" title="Bulk import members from Excel template">
                           <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-width="2" d="M12 15v-6m0 0l-3 3m3-3l3 3M5 20h14a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0014.586 3H5a2 2 0 00-2 2v13a2 2 0 002 2z"/><path stroke-width="2" d="M17 8H7"/></svg>
-                          <svg width="12" height="12" fill="currentColor" viewBox="0 0 24 24" style="margin-left: -4px; color: var(--warning);"><path d="M12 1C8.676 1 6 3.676 6 7v1H4v14h16V8h-2V7c0-3.324-2.676-6-6-6zm0 2c2.276 0 4 1.724 4 4v1H8V7c0-2.276 1.724-4 4-4zm0 9a2 2 0 110 4 2 2 0 010-4z"/></svg>
                           <span class="btn-text">Import</span>
+                      </button>
+                      <button class="action-btn" id="duplicates-btn" title="Review possible duplicate members (same mobile / special ID)">
+                          <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-width="2" d="M8 7h13M8 12h13M8 17h13M3 7h.01M3 12h.01M3 17h.01"></path></svg>
+                          <span class="btn-text">Duplicates</span>
                       </button>
                       ` : ''}
                   </div>
@@ -534,6 +555,46 @@ export function attachFiltersListeners(container, user) {
         })
     }
 
+    const clearAllFilters = () => {
+        setSearchTerm('')
+        setStatusFilter('All Status')
+        setManagerFilter('All Managers')
+        const si = container.querySelector('#member-search-input')
+        if (si) si.value = ''
+        const mi = document.getElementById('member-search-input-mobile')
+        if (mi) mi.value = ''
+        const sf = container.querySelector('#status-filter')
+        if (sf) sf.value = 'All Status'
+        const mf = container.querySelector('#manager-filter')
+        if (mf) mf.value = 'All Managers'
+        updateFilteredViews(container)
+    }
+    container.querySelector('#clear-filters-btn')?.addEventListener('click', clearAllFilters)
+
+    // Empty-state CTA in the table dispatches this (registered once globally
+    // so full re-renders don't stack duplicate window listeners).
+    if (!window._membersClearFiltersAttached) {
+        window._membersClearFiltersAttached = true
+        window.addEventListener('members-clear-filters', () => {
+            const root = document.querySelector('#members-table-container')?.closest('div')
+            const scope = document.querySelector('.members-page') || root || document
+            try {
+                setSearchTerm('')
+                setStatusFilter('All Status')
+                setManagerFilter('All Managers')
+                scope.querySelector?.('#member-search-input') && (scope.querySelector('#member-search-input').value = '')
+                const mi2 = document.getElementById('member-search-input-mobile')
+                if (mi2) mi2.value = ''
+                const sf2 = scope.querySelector?.('#status-filter')
+                if (sf2) sf2.value = 'All Status'
+                const mf2 = scope.querySelector?.('#manager-filter')
+                if (mf2) mf2.value = 'All Managers'
+                const page = document.querySelector('.members-page')
+                if (page) updateFilteredViews(page)
+            } catch {}
+        })
+    }
+
     // Dropdowns
     container.querySelector('#status-filter')?.addEventListener('change', (e) => {
         setStatusFilter(e.target.value === 'All Status' ? 'All Status' : e.target.value)
@@ -553,16 +614,285 @@ export function attachFiltersListeners(container, user) {
         if (btn) btn.classList.toggle('active', isSelectionMode)
     })
 
-    // Listen for selection changes from table
-    window.addEventListener('members-selection-changed', () => {
+    // Replaced (not stacked): this setup re-runs on every members render and
+    // the old closure retained the dead container + full member list.
+    if (window._membersSelChanged) {
+        window.removeEventListener('members-selection-changed', window._membersSelChanged)
+    }
+    window._membersSelChanged = () => {
         updateSelectionBar(container)
-    })
+    }
+    window.addEventListener('members-selection-changed', window._membersSelChanged)
 
-    // Excel Actions
-    container.querySelector('#export-members-btn')?.addEventListener('click', () => {
-        showToast('⚙️ Upgrade in Progress — Export will be available in a future update.', 'warning')
+    // Stat-card shortcuts (dispatched by membersStats; registered once globally)
+    if (!window._membersStatFilterAttached) {
+        window._membersStatFilterAttached = true
+        window.addEventListener('members-stat-filter', (e) => {
+            const page = document.querySelector('.members-page')
+            if (!page) return
+            const stat = e.detail?.stat
+            try {
+                let nextStatus = null
+                if (stat === 'total') {
+                    nextStatus = 'All Status'
+                } else if (stat === 'active') {
+                    nextStatus = 'Active'
+                } else if (stat === 'issues') {
+                    nextStatus = 'Issues'
+                } else if (stat === 'new') {
+                    setSortExplicit('created', 'desc')
+                    showToast('Sorted by newest first.', 'success')
+                } else {
+                    return
+                }
+                if (nextStatus) {
+                    setStatusFilter(nextStatus)
+                    const sf = page.querySelector('#status-filter')
+                    if (sf) sf.value = nextStatus
+                }
+                updateFilteredViews(page)
+            } catch (err) {
+                console.warn('[Members] Stat filter failed:', err?.message)
+            }
+        })
+    }
+
+    // Excel Actions — lazy import keeps dashboard bundle light (ExcelJS ~900KB)
+    container.querySelector('#export-members-btn')?.addEventListener('click', async () => {
+        try {
+            const { showExportModal } = await import('./membersImportExport.js')
+            const user = {
+                cooperativeId: container.dataset.coopId,
+                username: container.dataset.username,
+                permissions: container.dataset.userPermissions
+            }
+            await showExportModal(user)
+        } catch (err) {
+            showToast('Export failed to open: ' + (err?.message || err), 'error')
+        }
     })
-    container.querySelector('#import-members-btn')?.addEventListener('click', () => {
-        showToast('⚙️ Upgrade in Progress — Import will be available in a future update.', 'warning')
+    container.querySelector('#import-members-btn')?.addEventListener('click', async () => {
+        try {
+            const { showImportModal } = await import('./membersImportExport.js')
+            const user = {
+                cooperativeId: container.dataset.coopId,
+                username: container.dataset.username,
+                permissions: container.dataset.userPermissions
+            }
+            await showImportModal(user)
+        } catch (err) {
+            showToast('Import failed to open: ' + (err?.message || err), 'error')
+        }
     })
+    container.querySelector('#duplicates-btn')?.addEventListener('click', () => {
+        showDuplicateReviewModal(container, user)
+    })
+}
+
+// Avatar colors shared with table/modal via utils/formatters.js
+function dupAvatarColor(name) { return getAvatarColor(name) }
+
+async function showDuplicateReviewModal(container, user) {
+    document.getElementById('duplicates-modal')?.remove()
+    document.getElementById('dup-modal-style')?.remove()
+    const style = document.createElement('style')
+    style.id = 'dup-modal-style'
+    style.textContent = `
+        #duplicates-modal .dup-modal { width: min(100%, 720px); max-height: 88vh; display: flex; flex-direction: column; }
+        #duplicates-modal .dup-toolbar { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; padding: 0.75rem 1.25rem; border-bottom: 1px solid var(--border-light); background: var(--bg-card); position: sticky; top: 0; z-index: 2; }
+        #duplicates-modal .dup-search { flex: 1; min-width: 180px; padding: 0.5rem 0.75rem; border-radius: var(--radius-md); border: 1px solid var(--border-medium); background: var(--bg-input); color: var(--text-primary); font-size: 0.82rem; outline: none; }
+        #duplicates-modal .dup-pill { border: 1px solid var(--border-medium); background: var(--bg-card); color: var(--text-muted); border-radius: 999px; padding: 0.35rem 0.8rem; font-size: 0.75rem; font-weight: 700; cursor: pointer; }
+        #duplicates-modal .dup-pill.active { background: var(--accent-soft); border-color: var(--accent-primary); color: var(--accent-primary); }
+        #duplicates-modal .dup-count-badge { background: var(--danger-bg); color: var(--danger); border-radius: 999px; font-size: 0.72rem; font-weight: 800; padding: 0.15rem 0.6rem; }
+        #duplicates-modal .dup-body { padding: 1rem 1.25rem; overflow-y: auto; }
+        #duplicates-modal .dup-card { border: 1px solid var(--border-light); border-radius: var(--radius-lg); margin-bottom: 0.9rem; overflow: hidden; background: var(--bg-card); }
+        #duplicates-modal .dup-card-head { display: flex; align-items: center; gap: 0.5rem; padding: 0.6rem 0.85rem; background: var(--bg-secondary); flex-wrap: wrap; }
+        #duplicates-modal .dup-type { font-size: 0.68rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; border-radius: 999px; padding: 0.15rem 0.55rem; }
+        #duplicates-modal .dup-type.mobile { background: #fef3c7; color: #92400e; }
+        #duplicates-modal .dup-type.special { background: #e0e7ff; color: #3730a3; }
+        #duplicates-modal .dup-key { font-family: monospace; font-weight: 700; font-size: 0.82rem; }
+        #duplicates-modal .dup-row { display: flex; gap: 0.7rem; align-items: center; padding: 0.65rem 0.85rem; border-top: 1px solid var(--border-light); cursor: pointer; transition: background 0.15s; }
+        #duplicates-modal .dup-row:hover { background: var(--bg-secondary); }
+        #duplicates-modal .dup-row.selected { background: var(--accent-soft); }
+        #duplicates-modal .dup-avatar { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-weight: 800; font-size: 0.78rem; flex-shrink: 0; }
+        #duplicates-modal .dup-name { font-weight: 700; font-size: 0.86rem; color: var(--text-primary); }
+        #duplicates-modal .dup-meta { font-size: 0.74rem; color: var(--text-muted); margin-top: 1px; }
+        #duplicates-modal .dup-chips { display: flex; gap: 0.3rem; flex-wrap: wrap; margin-top: 0.3rem; }
+        #duplicates-modal .dup-chip { font-size: 0.68rem; background: var(--bg-secondary); border: 1px solid var(--border-light); border-radius: 999px; padding: 0.1rem 0.5rem; color: var(--text-muted); }
+        #duplicates-modal .dup-radio { width: 18px; height: 18px; accent-color: var(--accent-primary); flex-shrink: 0; }
+        #duplicates-modal .dup-card-foot { display: flex; justify-content: space-between; align-items: center; gap: 0.6rem; padding: 0.6rem 0.85rem; border-top: 1px solid var(--border-light); background: var(--bg-card); flex-wrap: wrap; }
+        #duplicates-modal .dup-hint { font-size: 0.72rem; color: var(--text-muted); }
+        #duplicates-modal .dup-merge-btn { background: var(--accent-primary); color: #fff; border: none; border-radius: 999px; padding: 0.45rem 1.1rem; font-size: 0.78rem; font-weight: 700; cursor: pointer; }
+        #duplicates-modal .dup-merge-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+        #duplicates-modal .dup-merge-btn.confirm { background: var(--danger); }
+        #duplicates-modal .dup-skel { border: 1px solid var(--border-light); border-radius: var(--radius-lg); padding: 0.85rem; margin-bottom: 0.75rem; background: linear-gradient(90deg, var(--bg-secondary) 25%, var(--bg-card) 50%, var(--bg-secondary) 75%); background-size: 200% 100%; animation: dupShimmer 1.2s infinite; height: 74px; }
+        @keyframes dupShimmer { to { background-position: -200% 0; } }
+        #duplicates-modal .dup-empty { text-align: center; padding: 2.5rem 1rem; }
+        #duplicates-modal .dup-empty-icon { width: 56px; height: 56px; border-radius: 50%; background: #dcfce7; color: #15803d; display: grid; place-items: center; margin: 0 auto 0.75rem; font-size: 1.5rem; font-weight: 800; }
+        @media (max-width: 640px) { #duplicates-modal .dup-modal { width: 100%; max-height: 94vh; } }
+    `
+    document.head.appendChild(style)
+
+    const overlay = document.createElement('div')
+    overlay.id = 'duplicates-modal'
+    overlay.className = 'modal-overlay open'
+    overlay.innerHTML = `
+      <div class="modal-content dup-modal">
+        <div class="modal-header">
+            <div>
+                <div style="display:flex; align-items:center; gap:0.5rem;">
+                    <h3 style="margin:0; color:var(--text-primary); font-size:1.05rem;">Possible duplicates</h3>
+                    <span class="dup-count-badge" id="dup-count" style="display:none;"></span>
+                </div>
+                <p style="font-size:0.78rem; color:var(--text-muted); margin:0.2rem 0 0;">Same mobile or Special ID in this cooperative. Pick one to keep — the rest are archived, never deleted with history.</p>
+            </div>
+            <button class="modal-close" id="dup-close" aria-label="Close">✕</button>
+        </div>
+        <div class="dup-toolbar">
+            <input class="dup-search" id="dup-search" placeholder="Search name, reg no, mobile…">
+            <button class="dup-pill active" data-f="all">All</button>
+            <button class="dup-pill" data-f="mobile">Mobile</button>
+            <button class="dup-pill" data-f="special_id">Special ID</button>
+        </div>
+        <div class="modal-body dup-body" id="dup-body"></div>
+      </div>`
+    document.body.appendChild(overlay)
+    const close = () => { overlay.remove(); style.remove(); document.removeEventListener('keydown', onKey) }
+    const onKey = (e) => { if (e.key === 'Escape') close() }
+    document.addEventListener('keydown', onKey)
+    overlay.querySelector('#dup-close')?.addEventListener('click', close)
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close() })
+
+    const body = overlay.querySelector('#dup-body')
+    const countBadge = overlay.querySelector('#dup-count')
+    const searchInput = overlay.querySelector('#dup-search')
+    let groups = []
+    let filter = 'all'
+    let term = ''
+    const selections = new Map() // gi -> survivorId
+
+    body.innerHTML = `<div class="dup-skel"></div><div class="dup-skel"></div><div class="dup-skel"></div>`
+
+    const defaultSurvivor = (members) => [...members].sort((a, b) =>
+        String(a.created_at || '').localeCompare(String(b.created_at || '')))[0]
+
+    function render() {
+        const visible = groups.map((g, gi) => ({ g, gi })).filter(({ g }) => {
+            if (filter !== 'all' && g.type !== filter) return false
+            if (!term) return true
+            const hay = g.members.map(m => `${m.first_name || ''} ${m.last_name || ''} ${m.registration_no || ''} ${m.mobile || ''} ${m.special_id || ''}`.toLowerCase()).join(' ')
+            return term.split(/\s+/).every(t => hay.includes(t))
+        })
+        const totalDupes = visible.reduce((n, { g }) => n + g.members.length, 0)
+        countBadge.style.display = groups.length ? '' : 'none'
+        countBadge.textContent = groups.length ? `${groups.length} groups • ${totalDupes} records` : ''
+        if (!visible.length) {
+            body.innerHTML = groups.length
+                ? `<div class="dup-empty"><div class="dup-empty-icon">∅</div><div style="font-weight:700;">No matches for this filter</div><div class="dup-hint">Try a different search or tab.</div></div>`
+                : `<div class="dup-empty"><div class="dup-empty-icon">✓</div><div style="font-weight:700;">All clear — no duplicates</div><div class="dup-hint">Mobile and Special IDs are unique in this cooperative.</div></div>`
+            return
+        }
+        body.innerHTML = visible.map(({ g, gi }) => {
+            const survivor = selections.get(gi) || defaultSurvivor(g.members)?.id
+            if (!selections.has(gi) && survivor) selections.set(gi, String(survivor))
+            const sel = selections.get(gi)
+            return `
+            <div class="dup-card" data-gi="${gi}">
+                <div class="dup-card-head">
+                    <span class="dup-type ${g.type === 'mobile' ? 'mobile' : 'special'}">${g.type === 'mobile' ? 'Mobile' : 'Special ID'}</span>
+                    <span class="dup-key">${escapeHtml(g.key)}</span>
+                    <span class="dup-hint">${g.members.length} records — tap one to keep</span>
+                </div>
+                ${g.members.map(m => {
+                    const name = `${m.first_name || ''} ${m.last_name || ''}`.trim() || 'Unnamed'
+                    const isSel = String(m.id) === String(sel)
+                    return `
+                    <label class="dup-row ${isSel ? 'selected' : ''}" data-pick="${escapeHtml(String(m.id))}" data-gi="${gi}">
+                        <input type="radio" class="dup-radio" name="dup-${gi}" ${isSel ? 'checked' : ''}>
+                        <span class="dup-avatar" style="background:${dupAvatarColor(name)}">${escapeHtml(getInitials(name))}</span>
+                        <span style="flex:1; min-width:0;">
+                            <span class="dup-name">${escapeHtml(name)}</span>
+                            <span class="dup-meta">Reg ${escapeHtml(String(m.registration_no ?? '—'))} • ${escapeHtml(m.mobile || '—')} • ${escapeHtml(m.special_id || '—')}</span>
+                            <span class="dup-chips">
+                                <span class="dup-chip">${escapeHtml(m.status || 'Active')}</span>
+                                ${m.created_at ? `<span class="dup-chip">Joined ${escapeHtml(String(m.created_at).slice(0, 10))}</span>` : ''}
+                                ${m.created_by ? `<span class="dup-chip">by ${escapeHtml(String(m.created_by))}</span>` : ''}
+                            </span>
+                        </span>
+                    </label>`
+                }).join('')}
+                <div class="dup-card-foot">
+                    <span class="dup-hint">Archived records keep audit trail and sync to cloud.</span>
+                    <button class="dup-merge-btn" data-merge="${gi}">Archive ${g.members.length - 1} duplicate${g.members.length - 1 > 1 ? 's' : ''}</button>
+                </div>
+            </div>`
+        }).join('')
+
+        body.querySelectorAll('[data-pick]').forEach(row => {
+            row.addEventListener('click', (e) => {
+                e.preventDefault()
+                selections.set(Number(row.dataset.gi), String(row.dataset.pick))
+                render()
+            })
+        })
+        body.querySelectorAll('[data-merge]').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const gi = Number(btn.dataset.merge)
+                const group = groups[gi]
+                const survivorId = selections.get(gi)
+                if (!group || !survivorId) return
+                if (!btn.classList.contains('confirm')) {
+                    btn.classList.add('confirm')
+                    btn.textContent = `Tap again to confirm`
+                    setTimeout(() => { btn.classList.remove('confirm'); btn.textContent = `Archive ${group.members.length - 1} duplicate${group.members.length - 1 > 1 ? 's' : ''}` }, 3500)
+                    return
+                }
+                btn.disabled = true
+                btn.textContent = 'Archiving…'
+                try {
+                    const { mergeDuplicateMembers } = await import('../../services/dataService.js')
+                    for (const m of group.members) {
+                        if (String(m.id) === String(survivorId)) continue
+                        await mergeDuplicateMembers(survivorId, m.id, user.username)
+                    }
+                    showToast('Duplicate archived.', 'success')
+                    const { findDuplicateMembers } = await import('../../services/dataService.js')
+                    groups = await findDuplicateMembers(user.cooperativeId)
+                    selections.clear()
+                    render()
+                    const { loadMembersData } = await import('./membersState.js')
+                    await loadMembersData(user)
+                    updateFilteredViews(container)
+                    if (!groups.length) setTimeout(close, 900)
+                } catch (err) {
+                    showToast('Merge blocked: ' + err.message, 'error')
+                    btn.disabled = false
+                    btn.classList.remove('confirm')
+                    btn.textContent = 'Try again'
+                }
+            })
+        })
+    }
+
+    overlay.querySelectorAll('.dup-pill').forEach(p => {
+        p.addEventListener('click', () => {
+            overlay.querySelectorAll('.dup-pill').forEach(x => x.classList.remove('active'))
+            p.classList.add('active')
+            filter = p.dataset.f
+            render()
+        })
+    })
+    searchInput?.addEventListener('input', (e) => {
+        term = String(e.target.value || '').trim().toLowerCase()
+        render()
+    })
+    setTimeout(() => searchInput?.focus(), 100)
+
+    try {
+        const { findDuplicateMembers } = await import('../../services/dataService.js')
+        groups = await findDuplicateMembers(user.cooperativeId)
+        render()
+    } catch (err) {
+        body.innerHTML = `<div style="color:var(--danger); padding:1rem;">Scan failed: ${escapeHtml(err.message)}</div>`
+    }
 }

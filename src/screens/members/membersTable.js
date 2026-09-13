@@ -1,25 +1,15 @@
-import { escapeHtml, getInitials, formatDateTime } from '../../utils/formatters.js';
+import { escapeHtml, getInitials, getAvatarColor, formatDateTime } from '../../utils/formatters.js';
 import {
     getFilteredMembers, visibleLimit, increaseVisibleLimit,
-    isSelectionMode, selectedIds, toggleSelection, selectAllFiltered, deselectAll
+    isSelectionMode, selectedIds, toggleSelection, selectAllFiltered, deselectAll,
+    setSort, applyFilters, sortKey, sortDir
 } from './membersState.js'
 
-// Gmail-style colors for fallback initials
-const AVATAR_COLORS = [
-    '#f44336', '#e91e63', '#9c27b0', '#673ab7',
-    '#3f51b5', '#2196f3', '#03a9f4', '#00bcd4',
-    '#009688', '#4caf50', '#8bc34a', '#cddc39',
-    '#ffeb3b', '#ffc107', '#ff9800', '#ff5722'
-]
-
-function getAvatarColor(name) {
-    if (!name) return '#999'
-    let hash = 0
-    for (let i = 0; i < name.length; i++) {
-        hash = name.charCodeAt(i) + ((hash << 5) - hash)
-    }
-    const index = Math.abs(hash) % AVATAR_COLORS.length
-    return AVATAR_COLORS[index]
+// Avatar colors now shared via utils/formatters.js:getAvatarColor
+function mobileCellHtml(m) {
+    const raw = String(m.mobile || '').trim()
+    if (!raw) return ''
+    return `<a href="tel:${escapeHtml(raw.replace(/\s+/g, ''))}" class="col-mobile-link" data-tel>${escapeHtml(raw)}</a>`
 }
 
 function getProfileHtml(m) {
@@ -35,76 +25,55 @@ function getProfileHtml(m) {
             </div>`
 }
 
+function hideAvatarPreview() {
+    document.getElementById('avatar-preview-overlay')?.remove()
+}
+
+function showAvatarPreview(src, name) {
+    hideAvatarPreview()
+    const overlay = document.createElement('div')
+    overlay.className = 'avatar-preview-overlay'
+    overlay.id = 'avatar-preview-overlay'
+    const initials = getInitials(name)
+    const color = getAvatarColor(name)
+    overlay.innerHTML = src
+        ? `<div class="avatar-preview-image-wrap">
+               <img src="${src}" alt="${escapeHtml(name)}" draggable="false">
+               <div class="avatar-preview-meta">
+                   <div class="avatar-preview-initials-sm" style="background:${color}">${escapeHtml(initials)}</div>
+                   <div class="avatar-preview-name">${escapeHtml(name)}</div>
+               </div>
+           </div>`
+        : `<div class="avatar-preview-initials-wrap">
+               <div class="avatar-preview-initials-circle" style="background-color: ${color};">${escapeHtml(initials)}</div>
+               <div class="avatar-preview-name">${escapeHtml(name)}</div>
+           </div>`
+    overlay.addEventListener('click', hideAvatarPreview)
+    document.body.appendChild(overlay)
+    document.addEventListener('keydown', function onKey(e) {
+        if (e.key === 'Escape') {
+            hideAvatarPreview()
+            document.removeEventListener('keydown', onKey)
+        }
+    })
+}
+
+// Single click/press on an avatar opens a sticky photo preview
+// (closes on click outside or Escape). The flag tells the row click
+// handler to skip opening the member modal for this press.
 function attachAvatarPreviewListeners(element, src, name) {
     if (!name) return;
     if (element.dataset.previewAttached) return;
     element.dataset.previewAttached = 'true';
+    element.style.cursor = 'pointer';
+    element.title = 'View photo';
 
-    let pressTimer = null;
-    let previewEl = null;
-    let isShowing = false;
-
-    const showPreview = () => {
-        if (isShowing) return;
-        isShowing = true;
-        previewEl = document.createElement('div');
-        previewEl.className = 'avatar-preview-overlay';
-        const initials = getInitials(name);
-        const color = getAvatarColor(name);
-        if (src) {
-            previewEl.innerHTML = `
-                <div class="avatar-preview-image-wrap">
-                    <img src="${src}" alt="${escapeHtml(name)}" draggable="false">
-                    <div class="avatar-preview-meta">
-                        <div class="avatar-preview-initials-sm" style="background:${color}">${escapeHtml(initials)}</div>
-                        <div class="avatar-preview-name">${escapeHtml(name)}</div>
-                    </div>
-                </div>`;
-        } else {
-            previewEl.innerHTML = `
-                <div class="avatar-preview-initials-wrap">
-                    <div class="avatar-preview-initials-circle" style="background-color: ${color};">${escapeHtml(initials)}</div>
-                    <div class="avatar-preview-name">${escapeHtml(name)}</div>
-                </div>`;
-        }
-        document.body.appendChild(previewEl);
-        // Mark so the row click handler can skip modal open
-        element.dataset.justPreviewed = 'true';
-    };
-
-    const hidePreview = () => {
-        if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
-        if (isShowing && previewEl) {
-            previewEl.remove();
-            previewEl = null;
-            isShowing = false;
-            setTimeout(() => { element.dataset.justPreviewed = 'false'; }, 150);
-        }
-    };
-
-    // Release listener attached to document so moving off the avatar
-    // while holding does NOT cancel the preview prematurely
-    const onGlobalRelease = (e) => {
-        if (isShowing || pressTimer) {
-            hidePreview();
-        }
-    };
-
-    const startPress = (e) => {
-        if (e.type === 'touchstart') { e.preventDefault(); }
-        // Cancel any stale timer
-        if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
-        // Stop the click from immediately propagating to the row
+    element.addEventListener('click', (e) => {
         e.stopPropagation();
-        pressTimer = setTimeout(() => { showPreview(); }, 350);
-        // Attach a one-shot global release watcher
-        document.addEventListener('mouseup', onGlobalRelease, { once: true });
-        document.addEventListener('touchend', onGlobalRelease, { once: true });
-        document.addEventListener('touchcancel', onGlobalRelease, { once: true });
-    };
-
-    element.addEventListener('mousedown', startPress);
-    element.addEventListener('touchstart', startPress, { passive: false });
+        element.dataset.justPreviewed = 'true';
+        setTimeout(() => { element.dataset.justPreviewed = 'false'; }, 300);
+        showAvatarPreview(src, name);
+    });
 }
 
 
@@ -135,9 +104,13 @@ function updateRow(row, m) {
         if (chkTd) chkTd.remove()
     }
 
-    // Update name and identifier
+    // Update name and identifier (textContent = raw text, no double-escaping)
     const nameEl = row.querySelector('.member-row-name')
-    if (nameEl) nameEl.innerText = escapeHtml(m.name)
+    if (nameEl) nameEl.textContent = m.name || ''
+
+    // Update Special ID cell
+    const specialEl = row.querySelector('.col-special')
+    if (specialEl) specialEl.textContent = m.special_id || '—'
 
     const padRegNo = (val) => String(val || '').padStart(3, '0')
     let identifierEl = row.querySelector('.member-row-identifier')
@@ -147,9 +120,9 @@ function updateRow(row, m) {
             : `<div class="member-row-mobile-reg-no">Reg No: ${padRegNo(m.registration_no || m.reg_no)}</div>`;
     }
 
-    // Update mobile cell
+    // Update mobile cell (tel: link; plain text fallback handled by render)
     const mobileEl = row.querySelector('.col-mobile')
-    if (mobileEl) mobileEl.innerText = escapeHtml(m.mobile || '')
+    if (mobileEl) mobileEl.innerHTML = mobileCellHtml(m)
 
     // Update combined created cell
     let createdEl = row.querySelector('.col-created')
@@ -209,6 +182,26 @@ export function renderMembersTable(container) {
         } else if (existingCheckbox) {
             existingCheckbox.remove()
         }
+
+        // Clickable column headers: sort A-Z / Z-A (attached once per thead).
+        const thead = tableContainer.querySelector('thead')
+        if (thead && !thead.dataset.sortAttached) {
+            thead.dataset.sortAttached = 'true'
+            thead.addEventListener('click', (e) => {
+                const th = e.target.closest('th[data-sort]')
+                if (!th) return
+                setSort(th.dataset.sort)
+                applyFilters()
+                renderMembersTable(container)
+            })
+        }
+
+        // Arrow indicator on the active sort column.
+        tableContainer.querySelectorAll('th[data-sort]').forEach(th => {
+            const arrow = th.querySelector('.sort-arrow')
+            if (!arrow) return
+            arrow.textContent = th.dataset.sort === sortKey ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''
+        })
     }
 
     const currentFiltered = getFilteredMembers()
@@ -244,11 +237,12 @@ export function renderMembersTable(container) {
             newRow.innerHTML = `
                 <td class="col-profile"></td>
                 <td class="col-reg-no">${padRegNo(m.registration_no || m.reg_no)}</td>
+                <td class="col-special desktop-only">${escapeHtml(m.special_id || '—')}</td>
                 <td class="col-name">
                     <div class="member-row-name">${escapeHtml(m.name)}</div>
                     <div class="member-row-identifier">${specialIdHtml}</div>
                 </td>
-                <td class="col-mobile">${escapeHtml(m.mobile || '')}</td>
+                <td class="col-mobile">${mobileCellHtml(m)}</td>
                 <td class="col-status"><div class="status-badge status-${escapeHtml(m.status)}">${escapeHtml(m.status)}</div></td>
                 <td class="col-created">
                     <div class="modified-by-name">${escapeHtml(m.created_by || '—')}</div>
@@ -284,6 +278,50 @@ export function renderMembersTable(container) {
 
     // Remove rows that are no longer visible
     rowMap.forEach(row => row.remove())
+
+    // Result count (additive; filters own the filter state)
+    const countEl = container.querySelector('#members-count')
+    if (countEl) {
+        const total = getFilteredMembers().length
+        const shown = Math.min(visibleMembers.length, total)
+        countEl.textContent = total === 0
+            ? 'No members match the current filters'
+            : `Showing ${shown} of ${total} member${total === 1 ? '' : 's'}`
+    }
+
+    // Empty state with clear-filters CTA (event handled by membersFilters)
+    let emptyRow = tbody.querySelector('.members-empty-row')
+    if (currentFiltered.length === 0) {
+        if (!emptyRow) {
+            emptyRow = document.createElement('tr')
+            emptyRow.className = 'members-empty-row'
+            tbody.appendChild(emptyRow)
+        }
+        emptyRow.innerHTML = `
+            <td colspan="8" style="text-align:center; padding: 2.5rem 1rem;">
+                <div style="font-size:2rem; margin-bottom:0.5rem;">🔍</div>
+                <div style="font-weight:700; color:var(--text-primary); margin-bottom:0.25rem;">No members found</div>
+                <div style="font-size:0.82rem; color:var(--text-muted); margin-bottom:1rem;">Try a different search term or clear the filters.</div>
+                <button type="button" id="clear-filters-empty" class="action-btn" style="margin:0 auto;">Clear filters</button>
+            </td>`
+        emptyRow.querySelector('#clear-filters-empty')?.addEventListener('click', () => {
+            window.dispatchEvent(new CustomEvent('members-clear-filters'))
+        }, { once: true })
+    } else if (emptyRow) {
+        emptyRow.remove()
+    }
+
+    // Back-to-top button (created once, toggled on scroll)
+    if (tableContainer && !tableContainer.querySelector('#members-back-to-top')) {
+        const btn = document.createElement('button')
+        btn.type = 'button'
+        btn.id = 'members-back-to-top'
+        btn.title = 'Back to top'
+        btn.setAttribute('aria-label', 'Back to top')
+        btn.innerHTML = `<svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 15l7-7 7 7"></path></svg>`
+        btn.addEventListener('click', () => tableContainer.scrollTo({ top: 0, behavior: 'smooth' }))
+        tableContainer.appendChild(btn)
+    }
 
     attachRowListeners(container)
 
@@ -330,11 +368,12 @@ function handleScroll(e) {
                         tr.innerHTML = `
                             <td class="col-profile">${getProfileHtml(m)}</td>
                             <td class="col-reg-no">${padRegNo(m.registration_no || m.reg_no)}</td>
+                            <td class="col-special desktop-only">${escapeHtml(m.special_id || '—')}</td>
                             <td class="col-name">
                                 <div class="member-row-name">${escapeHtml(m.name)}</div>
                                 <div class="member-row-identifier">${specialIdHtml}</div>
                             </td>
-                            <td class="col-mobile">${escapeHtml(m.mobile || '')}</td>
+                            <td class="col-mobile">${mobileCellHtml(m)}</td>
                             <td class="col-status"><div class="status-badge status-${escapeHtml(m.status)}">${escapeHtml(m.status)}</div></td>
                             <td class="col-created">
                                 <div class="modified-by-name">${escapeHtml(m.created_by || '—')}</div>
@@ -356,8 +395,21 @@ function handleScroll(e) {
                     const hasMore = visibleLimit < getFilteredMembers().length;
                     indicator.style.display = hasMore ? 'block' : 'none';
                 }
+
+                // Keep the "Showing X of Y" count in sync after appending
+                const countEl = document.getElementById('members-count');
+                if (countEl) {
+                    const total = getFilteredMembers().length;
+                    const shown = Math.min(visibleLimit, total);
+                    countEl.textContent = `Showing ${shown} of ${total} member${total === 1 ? '' : 's'}`;
+                }
             }
         }
+
+        // Back-to-top visibility (independent of infinite-scroll threshold)
+        const backBtn = el.querySelector?.('#members-back-to-top');
+        if (backBtn) backBtn.classList.toggle('show', el.scrollTop > 400);
+
         scrollTimeout = null;
     }, 150);
 }
@@ -374,8 +426,10 @@ function attachRowListeners(container) {
         const row = e.target.closest('.member-row')
         if (!row) return
 
-        // Prevent opening modal if they clicked the checkbox, or if they just previewed the image
+        // Prevent opening modal if they clicked the checkbox, a tel: link,
+        // or if they just previewed the image
         if (e.target.closest('.member-chk')) return
+        if (e.target.closest('a[data-tel]')) return
         if (e.target.closest('.avatar-container[data-just-previewed="true"]')) return
 
         const id = row.dataset.id
@@ -402,6 +456,12 @@ export function getTableStyles() {
       <style>
         @media (max-width: 768px) {
           .desktop-only { display: none !important; }
+        }
+
+        /* IDs live in their own columns on desktop; the stacked line under
+           the name is mobile-only (the Special ID column hides there). */
+        @media (min-width: 769px) {
+          .member-row-identifier { display: none !important; }
         }
 
         .styled-table {
@@ -578,6 +638,31 @@ export function getTableStyles() {
             letter-spacing: 0.03em;
         }
 
+        /* ── Special ID cell ── */
+        .col-special {
+            font-weight: 600;
+            color: var(--accent-primary);
+            font-size: 0.85rem;
+            font-variant-numeric: tabular-nums;
+            letter-spacing: 0.01em;
+            white-space: nowrap;
+        }
+
+        /* ── Sortable headers ── */
+        .styled-table th[data-sort] {
+            cursor: pointer;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        .styled-table th[data-sort]:hover {
+            color: var(--text-primary) !important;
+        }
+        .sort-arrow {
+            font-size: 0.65rem;
+            margin-left: 0.25rem;
+            color: var(--accent-primary);
+        }
+
         /* ── Name cell ── */
         .col-name { min-width: 160px; }
         .member-row-name {
@@ -601,6 +686,17 @@ export function getTableStyles() {
             font-size: 0.875rem;
             font-variant-numeric: tabular-nums;
         }
+        .col-mobile-link {
+            color: inherit;
+            text-decoration: none;
+            border-bottom: 1px dotted var(--border-medium);
+        }
+        .col-mobile-link:hover {
+            color: var(--accent-primary);
+            border-bottom-color: var(--accent-primary);
+        }
+        .members-empty-row td { background: transparent !important; }
+        .members-empty-row .action-btn { display: inline-flex; }
 
         /* ── Status cell ── */
         .col-status { white-space: nowrap; }

@@ -1,3 +1,4 @@
+import { generateId } from '../../utils/formatters.js'
 import { queryRows, queryOne, saveDoc, enqueueWrite, loadDoc } from '../sqliteService.js'
 
 export async function getReconciliationTotals(bankName, periodMonth, cooperativeId) {
@@ -37,7 +38,7 @@ export async function saveReconciliationSummary(data, remittanceIds, createdBy) 
         WHERE cooperative_id = ? AND bank_name = ? AND period_month = ? AND is_deleted = 0
     `, [cooperativeId, data.bank_name, data.period_month])
     if (existing) throw new Error('This period and bank combination has already been reconciled.')
-    const id = `recon_${Date.now()}_${Math.floor(Math.random() * 1000)}`
+    const id = generateId(cooperativeId)
     const doc = {
         ...data,
         id,

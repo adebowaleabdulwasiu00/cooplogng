@@ -14,7 +14,7 @@ export function renderLoginHTML(renderAlertFn, renderGlobalModalFn) {
   const detectInputType = (val) => {
     const s = String(val || '');
     if (!s) return '';
-    if (/^\d+$/.test(s)) return s.length >= 10 ? '📱 Mobile' : '🔢 Registration No';
+    if (/^\d+$/.test(s)) return s.length >= 10 ? '📱 Mobile' : s.length === 6 ? '🔢 PIN' : '🔢 Registration No';
     if (/^[A-Z0-9]{2,}$/i.test(s) && s.length >= 3) return '🆔 Special ID';
     if (s.includes('@')) return '✉️ Email';
     return '👤 Username';
@@ -41,9 +41,6 @@ export function renderLoginHTML(renderAlertFn, renderGlobalModalFn) {
             <span>${networkIndicatorLabel()}</span>
           </div>
         </div>
-        <button type="button" class="ghost-button" data-action="hard-reset" style="position: absolute; top: 1rem; right: 1rem; width: 2.5rem; height: 2.5rem; padding: 0; border-radius: 50%; display: flex; align-items: center; justify-content: center;" title="Hard Reset App">
-          <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 0A1 1 0 0012 3m0 0v12m0-12L7.054 7.054A7 7 0 005 12v4 12a7 7 0 0014 0 7 7 0 00-.054-.946"></path></svg>
-        </button>
         <div class="brand">COOPERATIVE LOG APP</div>
         <h1 style="font-weight: 800; font-size: 1.75rem; color: var(--text-primary); margin-top: 0; text-align: center;">${titles[state.stage]}</h1>
         <div style="margin-bottom: 2rem;"></div>
@@ -100,23 +97,26 @@ export function renderLoginHTML(renderAlertFn, renderGlobalModalFn) {
           </label>
 
           <label class="field ${state.stage !== 3 ? 'field-hidden' : ''}">
-            <span>Password</span>
+            <span>6-Digit PIN</span>
             <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.75rem; padding: 0.5rem 0.75rem; background: var(--bg-secondary); border-radius: 0.5rem; line-height: 1.5;">
               Logging in as <strong style="color: var(--text-primary);">${escapeHtml(state.username)}</strong>
               ${state.selectedCooperativeId ? `→ <strong style="color: var(--text-primary);">${escapeHtml(state.cooperatives.find(c => c.id === state.selectedCooperativeId)?.name || '')}</strong>` : ''}
             </div>
-            <div class="password-wrap">
-              <input
-                name="password"
-                type="${state.showPassword ? 'text' : 'password'}"
-                placeholder="********"
-                value="${escapeAttribute(state.password)}"
-                ${state.stage !== 3 ? 'disabled' : ''}
-              />
-              <button type="button" class="ghost-button" data-action="toggle-password">
-                ${state.showPassword ? 'Hide' : 'Show'}
-              </button>
+            <div class="pin-wrap" style="display: flex; gap: 0.5rem; justify-content: center; margin-bottom: 1rem;">
+              ${[0,1,2,3,4,5].map(i => `
+                <input
+                  type="text"
+                  name="pin-${i}"
+                  maxlength="1"
+                  pattern="[0-9]"
+                  inputmode="numeric"
+                  style="width: 3rem; height: 3rem; font-size: 1.5rem; text-align: center; border: 2px solid var(--border-medium); border-radius: 0.5rem; background: var(--bg-primary); color: var(--text-primary);"
+                  ${state.stage !== 3 ? 'disabled' : ''}
+                  aria-label="PIN digit ${i+1}"
+                />
+              `).join('')}
             </div>
+            <input type="hidden" name="password" value="${escapeAttribute(state.password)}" />
           </label>
 
           <div class="actions">
@@ -167,8 +167,30 @@ export function setupLoginPostRender() {
       input.setSelectionRange(len, len);
     }
   } else if (state.stage === 3) {
-    const input = document.querySelector('input[name="password"]');
-    if (input && !state.isSubmitting) input.focus();
+    const firstPinInput = document.querySelector('input[name="pin-0"]');
+    if (firstPinInput && !state.isSubmitting) firstPinInput.focus();
+    
+    // Setup PIN input auto-focus and combine into hidden password field
+    const pinInputs = Array.from({length: 6}, (_, i) => document.querySelector(`input[name="pin-${i}"]`));
+    const hiddenPasswordInput = document.querySelector('input[name="password"]');
+    
+    pinInputs.forEach((input, idx, arr) => {
+      if (!input) return;
+      input.addEventListener('input', (e) => {
+        if (e.target.value.length === 1 && idx < arr.length - 1) {
+          arr[idx + 1]?.focus();
+        }
+        // Update hidden password field
+        if (hiddenPasswordInput) {
+          hiddenPasswordInput.value = arr.map(i => i?.value || '').join('');
+        }
+      });
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Backspace' && !e.target.value && idx > 0) {
+          arr[idx - 1]?.focus();
+        }
+      });
+    });
   }
 
   // If a modal with complex listeners is open, re-attach them
@@ -199,24 +221,14 @@ export function setupLoginPostRender() {
 
 export function classifyLoginError(err) {
   const msg = (err && (err.message || err.toString() || '' )).toLowerCase()
-  if (!msg) return { type: 'unknown', message: 'Unable to sign in. Please try again or contact your administrator if the problem persists.' }
-  if (msg.includes('network') || msg.includes('fetch') || msg.includes('timeout') || msg.includes('abort')) {
+  if (!msg) return { type: 'unknown', message: 'Unable to sign in. Please try again.' }
+  // Keep network/timeout errors specific
+  if (msg.includes('network') || msg.includes('fetch') || msg.includes('timeout') || msg.includes('abort') || msg.includes('internet') || msg.includes('connection')) {
     if (msg.includes('timeout')) return { type: 'timeout', message: 'The server is not responding. Please check your connection and try again.' }
-    return { type: 'network', message: 'A network error occurred. Please check your internet connection and try again.' }
+    return { type: 'network', message: 'No internet connection. Please check your network and try again.' }
   }
-  if (msg.includes('database') || msg.includes('sqlite')) {
-    return { type: 'database', message: 'Failed to access local data. Please close other instances and refresh the page.' }
-  }
-  if (msg.includes('sync') || msg.includes('server')) {
-    return { type: 'server', message: 'The server is experiencing issues. Please try again later or contact your administrator.' }
-  }
-  if (msg.includes('subscription') || msg.includes('inactive')) {
-    return { type: 'subscription', message: 'Your account is inactive. Please contact your administrator.' }
-  }
-  if (msg.includes('unauthorized') || msg.includes('forbidden') || msg.includes('invalid username') || msg.includes('invalid password')) {
-    return { type: 'auth', message: 'Invalid username or password.' }
-  }
-  return { type: 'unknown', message: 'An unexpected error occurred during login. Please try again or contact your administrator if the problem persists.' }
+  // Generic auth error for everything else (database, sync, subscription, unauthorized, etc.)
+  return { type: 'auth', message: 'Invalid username or PIN. Please try again.' }
 }
 
 export async function handleNext() {
@@ -420,11 +432,22 @@ export async function handleCooperativeStage() {
 
 export async function handlePasswordStage() {
   const username = state.username.trim()
-  const password = state.password
   const cooperativeId = state.selectedCooperativeId
 
-  if (!password) {
-    state.errorMessage = 'Please enter password.'
+  // Read PIN from 6 individual inputs
+  let pin = '';
+  for (let i = 0; i < 6; i++) {
+    const input = document.querySelector(`input[name="pin-${i}"]`);
+    if (input) pin += input.value;
+  }
+  const password = pin;
+
+  // NOTE: do NOT require 6 digits here. Members on legacy short passwords
+  // (e.g. cloud still holds "1234") must be able to submit so auth can
+  // verify them and route them to the force-change modal. New PINs are
+  // still enforced as 6 digits inside that modal.
+  if (password.length < 1) {
+    state.errorMessage = 'Please enter your PIN.'
     window.__render()
     return
   }
@@ -465,7 +488,14 @@ export async function handlePasswordStage() {
         console.log(`[Login] [${Date.now()}] No internet connection.`);
       }
     } catch (onlineErr) {
-      loginError = classifyLoginError(onlineErr)
+      // Check if it's a network/timeout error - keep those specific
+      const msg = (onlineErr && (onlineErr.message || onlineErr.toString() || '')).toLowerCase()
+      if (msg.includes('network') || msg.includes('fetch') || msg.includes('timeout') || msg.includes('abort') || msg.includes('internet')) {
+        loginError = classifyLoginError(onlineErr)
+      } else {
+        // Generic auth error for everything else
+        loginError = { type: 'auth', message: 'Invalid username or PIN. Please try again.' }
+      }
       console.warn(`[Login] [${Date.now()}] Online authentication failed:`, onlineErr.message)
     }
 
@@ -477,14 +507,19 @@ export async function handlePasswordStage() {
         if (session) loginError = null
         console.log(`[Login] [${Date.now()}] Offline authentication result: ${!!session}`);
       } catch (offlineErr) {
-        if (!loginError) loginError = classifyLoginError(offlineErr)
+        const msg = (offlineErr && (offlineErr.message || offlineErr.toString() || '')).toLowerCase()
+        if (msg.includes('network') || msg.includes('fetch') || msg.includes('timeout') || msg.includes('abort') || msg.includes('internet')) {
+          if (!loginError) loginError = classifyLoginError(offlineErr)
+        } else {
+          if (!loginError) loginError = { type: 'auth', message: 'Invalid username or PIN. Please try again.' }
+        }
         console.warn(`[Login] [${Date.now()}] Offline authentication failed:`, offlineErr.message)
       }
     }
 
     // No session — show specific error
     if (!session) {
-      const errorMsg = loginError?.message || 'Invalid username or password.'
+      const errorMsg = loginError?.message || 'Invalid username or PIN. Please try again.'
       console.log(`[Login] [${Date.now()}] No session returned. Error: "${errorMsg}"`);
       state.errorMessage = errorMsg
       state.isSubmitting = false
@@ -632,45 +667,51 @@ export async function handlePasswordStage() {
 }
 
 export async function showForcePasswordChangeModal(userDoc, collectionName) {
-  state.modal.title = "Secure Your Account";
+  state.modal.title = "Set Your 6-Digit PIN";
   state.modal.type = "force-password";
   state.modal.data = { userDoc, collectionName };
   state.modal.isOpen = true;
   state.modal.content = `
         <div style="padding: 1rem 0;">
             <p style="color: #64748b; font-size: 0.9rem; margin-bottom: 1.5rem;">
-                Your account is currently using a default or temporary password. For your security, please set a new strong password to continue.
+                Your account is currently using a default or temporary password. For your security, please set a new 6-digit PIN to continue.
             </p>
             
             <form id="force-pwd-form" style="display: flex; flex-direction: column; gap: 1.25rem;">
                 <div class="field">
-                    <span>New Password</span>
-                    <div class="password-wrap" style="position: relative;">
-                        <input type="password" id="new-pwd" placeholder="••••••••" required style="width: 100%;" />
-                        <button type="button" class="ghost-button toggle-pwd-btn" style="position: absolute; right: 0.5rem; top: 50%; transform: translateY(-50%); font-size: 0.7rem;">Show</button>
+                    <span>New 6-Digit PIN</span>
+                    <div class="pin-wrap" style="display: flex; gap: 0.5rem; justify-content: center; margin-bottom: 1rem;">
+                      ${[0,1,2,3,4,5].map(i => `
+                        <input
+                          type="text"
+                          name="new-pin-${i}"
+                          maxlength="1"
+                          pattern="[0-9]"
+                          inputmode="numeric"
+                          style="width: 3rem; height: 3rem; font-size: 1.5rem; text-align: center; border: 2px solid var(--border-medium); border-radius: 0.5rem; background: var(--bg-primary); color: var(--text-primary);"
+                          aria-label="New PIN digit ${i+1}"
+                        />
+                      `).join('')}
                     </div>
                 </div>
                 <div class="field">
-                    <span>Confirm New Password</span>
-                    <div class="password-wrap" style="position: relative;">
-                        <input type="password" id="confirm-pwd" placeholder="••••••••" required style="width: 100%;" />
-                        <button type="button" class="ghost-button toggle-pwd-btn" style="position: absolute; right: 0.5rem; top: 50%; transform: translateY(-50%); font-size: 0.7rem;">Show</button>
+                    <span>Confirm 6-Digit PIN</span>
+                    <div class="pin-wrap" style="display: flex; gap: 0.5rem; justify-content: center; margin-bottom: 1rem;">
+                      ${[0,1,2,3,4,5].map(i => `
+                        <input
+                          type="text"
+                          name="confirm-pin-${i}"
+                          maxlength="1"
+                          pattern="[0-9]"
+                          inputmode="numeric"
+                          style="width: 3rem; height: 3rem; font-size: 1.5rem; text-align: center; border: 2px solid var(--border-medium); border-radius: 0.5rem; background: var(--bg-primary); color: var(--text-primary);"
+                          aria-label="Confirm PIN digit ${i+1}"
+                        />
+                      `).join('')}
                     </div>
                 </div>
 
-                <div id="pwd-requirements" style="background: var(--bg-secondary); padding: 1rem; border-radius: 0.75rem; border: 1px solid var(--border-medium);">
-                    <div style="font-size: 0.75rem; font-weight: 700; color: var(--text-primary); margin-bottom: 0.75rem; text-transform: uppercase;">Requirements</div>
-                    <ul style="list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; font-size: 0.8rem;">
-                        <li id="req-length" style="color: var(--text-muted); display: flex; align-items: center; gap: 0.4rem;">○ Min 6 characters</li>
-                        <li id="req-num" style="color: var(--text-muted); display: flex; align-items: center; gap: 0.4rem;">○ Include a number</li>
-                        <li id="req-spec" style="color: var(--text-muted); display: flex; align-items: center; gap: 0.4rem;">○ Special character</li>
-                        <li id="req-upper" style="color: var(--text-muted); display: flex; align-items: center; gap: 0.4rem;">○ Uppercase letter</li>
-                        <li id="req-lower" style="color: var(--text-muted); display: flex; align-items: center; gap: 0.4rem;">○ Lowercase letter</li>
-                        <li id="req-match" style="color: var(--text-muted); display: flex; align-items: center; gap: 0.4rem;">○ Passwords match</li>
-                    </ul>
-                </div>
-
-                <button type="submit" id="submit-new-pwd" class="primary-button" style="width: 100%; margin-top: 1rem;" disabled>Update & Login</button>
+                <button type="submit" id="submit-new-pwd" class="primary-button" style="width: 100%; margin-top: 1rem;" disabled>Set PIN & Login</button>
             </form>
         </div>
     `;
@@ -686,48 +727,43 @@ export function setupForcePwdListeners() {
   const collectionName = state.modal.data?.collectionName;
   if (!userDoc) return;
 
-  const newPwdInput = body.querySelector('#new-pwd');
-  const confirmPwdInput = body.querySelector('#confirm-pwd');
+  const newPinInputs = Array.from({length: 6}, (_, i) => body.querySelector(`input[name="new-pin-${i}"]`));
+  const confirmPinInputs = Array.from({length: 6}, (_, i) => body.querySelector(`input[name="confirm-pin-${i}"]`));
   const submitBtn = body.querySelector('#submit-new-pwd');
   const form = body.querySelector('#force-pwd-form');
 
+  const getPinValue = (inputs) => inputs.map(i => i?.value || '').join('');
+
   const validate = () => {
-    const val = newPwdInput.value;
-    const confirm = confirmPwdInput.value;
+    const newPin = getPinValue(newPinInputs);
+    const confirmPin = getPinValue(confirmPinInputs);
 
     const checks = {
-      length: val.length >= 6,
-      num: /[0-9]/.test(val),
-      spec: /[!@#$%^&*(),.?":{}|<>]/.test(val),
-      upper: /[A-Z]/.test(val),
-      lower: /[a-z]/.test(val),
-      match: val.length > 0 && val === confirm
+      length: newPin.length === 6 && /^\d{6}$/.test(newPin),
+      match: newPin.length === 6 && newPin === confirmPin
     };
 
-    Object.keys(checks).forEach(id => {
-      const el = body.querySelector(`#req-${id}`);
-      if (!el) return;
-      if (checks[id]) {
-        el.style.color = '#10b981';
-        el.innerText = '● ' + el.innerText.substring(2);
-      } else {
-        el.style.color = '#94a3b8';
-        el.innerText = '○ ' + el.innerText.substring(2);
-      }
-    });
+    const reqLength = body.querySelector('#req-length');
+    const reqMatch = body.querySelector('#req-match');
+    // Remove old requirement elements if they exist
+    [reqLength, reqMatch].forEach(el => { if (el) el.remove(); });
 
     submitBtn.disabled = !Object.values(checks).every(v => v === true);
   };
 
-  newPwdInput?.addEventListener('input', validate);
-  confirmPwdInput?.addEventListener('input', validate);
-
-  body.querySelectorAll('.toggle-pwd-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const input = btn.previousElementSibling;
-      const type = input.type === 'password' ? 'text' : 'password';
-      input.type = type;
-      btn.innerText = type === 'password' ? 'Show' : 'Hide';
+  // Auto-focus next input on digit entry
+  [...newPinInputs, ...confirmPinInputs].forEach((input, idx, arr) => {
+    if (!input) return;
+    input.addEventListener('input', (e) => {
+      if (e.target.value.length === 1 && idx < arr.length - 1) {
+        arr[idx + 1]?.focus();
+      }
+      validate();
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Backspace' && !e.target.value && idx > 0) {
+        arr[idx - 1]?.focus();
+      }
     });
   });
 
@@ -735,44 +771,76 @@ export function setupForcePwdListeners() {
     e.preventDefault();
     try {
       submitBtn.disabled = true;
-      submitBtn.innerText = "Updating...";
+      submitBtn.innerText = "Setting PIN...";
 
-      const newPwd = newPwdInput.value;
-      const hashed = await hashPassword(newPwd);
-      console.log('[PasswordChange] Generated new hash:', {
+      const newPin = getPinValue(newPinInputs);
+      const confirmPin = getPinValue(confirmPinInputs);
+      if (newPin !== confirmPin) {
+        showToast('PINs do not match.', 'warning');
+        submitBtn.disabled = false;
+        submitBtn.innerText = "Set PIN & Login";
+        return;
+      }
+      if (!/^\d{6}$/.test(newPin)) {
+        showToast('PIN must be exactly 6 digits (numbers only).', 'warning');
+        submitBtn.disabled = false;
+        submitBtn.innerText = "Set PIN & Login";
+        return;
+      }
+
+      // Forced PIN change is online-only: cloud must succeed before local login.
+      if (!navigator.onLine) {
+        showToast('Internet connection required to set PIN. Please connect and try again.', 'error');
+        submitBtn.disabled = false;
+        submitBtn.innerText = "Set PIN & Login";
+        return;
+      }
+
+      const hashed = await hashPassword(newPin);
+      console.log('[PasswordChange] Generated new PIN hash:', {
         length: hashed.length,
         isHash: /^[a-f0-9]{64}$/i.test(hashed)
       });
 
+      const nowIso = new Date().toISOString();
       const minimalPayload = {
+        cooperative_id: String(userDoc.cooperative_id),
         password_hash: hashed,
         force_password_change: false,
-        modified_at: new Date().toISOString(),
-        modified_by: 'system-security'
+        modified_at: nowIso,
+        modified_by: 'system-security',
+        sync_at: nowIso
       };
 
-      // 1. Write directly to Firestore (immediate, bypasses sync queue)
-      if (navigator.onLine) {
-        try {
-          const { getDb, doc: fsDoc, updateDoc } = await import('../../firebase.js');
-          const db = getDb();
-          await updateDoc(fsDoc(db, collectionName, userDoc.id), minimalPayload);
-          console.log('[PasswordChange] Firestore write successful');
-        } catch (fsErr) {
-          console.warn('[PasswordChange] Firestore direct write failed (will rely on sync queue):', fsErr.message);
+      // 1. Push directly to Firestore first — must succeed before login.
+      try {
+        const { getDb, doc: fsDoc, updateDoc } = await import('../../firebase.js');
+        const db = getDb();
+        await updateDoc(fsDoc(db, collectionName, userDoc.id), minimalPayload);
+        console.log('[PasswordChange] Firestore write successful');
+      } catch (fsErr) {
+        console.error('[PasswordChange] Firestore write failed, aborting login:', fsErr.message);
+        showToast('Failed to update PIN online: ' + (fsErr.message || 'network error'), 'error');
+        submitBtn.disabled = false;
+        submitBtn.innerText = "Set PIN & Login";
+        return;
+      }
+
+      // 2. Mirror locally. updateMember/updateUser hash internally,
+      // so pass the PLAINTEXT PIN (not `hashed`) to avoid double-hashing.
+      try {
+        const localPayload = { ...userDoc, password_hash: newPin, force_password_change: false, modified_at: nowIso, modified_by: 'system-security' };
+        const { updateMember, updateUser } = await import('../../services/dataService.js');
+        if (collectionName === 'members') {
+          await updateMember(userDoc.id, localPayload, 'system-security');
+        } else {
+          await updateUser(userDoc.id, localPayload, 'system-security');
         }
+      } catch (localErr) {
+        console.warn('[PasswordChange] Local mirror failed (cloud already updated):', localErr.message);
       }
 
-      // 2. Update SQLite locally and enqueue for sync (offline resilience)
-      const fullPayload = { ...userDoc, ...minimalPayload };
-      const { updateMember, updateUser } = await import('../../services/dataService.js');
-      if (collectionName === 'members') {
-        await updateMember(userDoc.id, fullPayload, 'system-security');
-      } else {
-        await updateUser(userDoc.id, fullPayload, 'system-security');
-      }
-
-      showToast("Password updated successfully! Welcome to your dashboard.", "success");
+      showToast("PIN updated successfully! Welcome to your dashboard.", "success");
 
       // 3. Reset ALL modal and login state completely
       state.modal.isOpen = false;
@@ -807,11 +875,11 @@ export function setupForcePwdListeners() {
       state.welcomeUser = welcomeUser;
 
       // Save session synchronously to sessionStorage first
-      await saveSession(state.welcomeUser, newPwd);
+      await saveSession(state.welcomeUser, newPin);
 
-      // 5. Navigate to dashboard
-      state.activeTab = 'history';
-      window.history.replaceState(null, '', '#history');
+      // 5. Navigate to the default landing tab (dashboard for members)
+      state.activeTab = 'dashboard';
+      window.history.replaceState(null, '', '#dashboard');
 
       // 6. Trigger background sync to push any remaining queue items
       setTimeout(async () => {
@@ -833,9 +901,9 @@ export function setupForcePwdListeners() {
 
       window.__render();
     } catch (err) {
-      showToast("Failed to update password: " + err.message, "error");
+      showToast("Failed to update PIN: " + err.message, "error");
       submitBtn.disabled = false;
-      submitBtn.innerText = "Update & Login";
+      submitBtn.innerText = "Set PIN & Login";
     }
   });
 }

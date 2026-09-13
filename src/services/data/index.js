@@ -2,13 +2,13 @@ export { clearMemberCache, isNotDeleted } from './utils.js'
 export {
     fetchAllMembers, fetchMembersBySearch, fetchMemberDoc,
     fetchMemberPaymentAdvise, addMember, updateMember, deleteMember,
-    updateMemberPaymentAdvice
+    updateMemberPaymentAdvice, findDuplicateMembers, mergeDuplicateMembers
 } from './members.js'
 export { fetchEnterprises, addEnterprise, updateEnterprise, deleteEnterprise } from './enterprises.js'
 export { fetchBanks, addBank, updateBank, deleteBank } from './banks.js'
 export { fetchCooperativeUsers, addUser, updateUser, deleteUser, changePassword } from './users.js'
 export {
-    fetchRemittances, fetchRemittancesPage, getNextRemittanceRid,
+    fetchRemittances, fetchRemittancesPage,
     fetchTransactionTypes, addRemittance, updateRemittance, deleteRemittance,
     approveRemittance, declineRemittance, fetchLoanById, fetchMemberLoans
 } from './remittances.js'

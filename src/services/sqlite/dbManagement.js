@@ -1,15 +1,36 @@
-import initSqlJs from 'sql.js';
-import sqlWasmUrl from 'sql.js/dist/sql-wasm.wasm?url';
-import { getAllItems, clearAllStores, initIndexedDb } from '../indexedDbService.js'
+import { getAllItems, clearAllStores, initIndexedDb, listStores } from '../indexedDbService.js'
 import { TABLES, TABLE_COLUMNS } from './constants.js'
 import { colType, safeVal } from './helpers.js'
 import { upsertMany } from './mutationEngine.js'
+// NOTE: sql.js (and its .wasm URL below) is intentionally NOT statically
+// imported. The static import pulled the ~1MB SQL engine into the startup
+// bundle even though the running app uses IndexedDB — it is only needed for
+// backup export/import. It is dynamically imported on first use instead.
+import sqlWasmUrl from 'sql.js/dist/sql-wasm.wasm?url';
 
 export async function exportDatabase() {
     const SQL = await getSqlJs();
     const db = new SQL.Database();
 
+    // Skip stores missing from stale on-device databases instead of aborting
+    // the whole backup with "object store not found". The v6 schema upgrade
+    // recreates them on next load; the skip list tells the user about it.
+    let available = [];
+    try {
+        available = await listStores();
+    } catch (e) {
+        console.warn('[exportDatabase] Could not list stores, trying all tables:', e && e.message);
+        available = TABLES.slice();
+    }
+    const present = new Set(available);
+    const exported = [];
+    const skipped = [];
+
     for (const table of TABLES) {
+        if (!present.has(table)) {
+            skipped.push(table);
+            continue;
+        }
         const rows = await getAllItems(table);
         const cols = TABLE_COLUMNS[table];
         if (!cols || cols.length === 0) continue;
@@ -17,7 +38,7 @@ export async function exportDatabase() {
         const colDefs = cols.map(c => `"${c}" TEXT`);
         db.run(`CREATE TABLE IF NOT EXISTS "${table}" (${colDefs.join(', ')})`);
 
-        if (rows.length === 0) continue;
+        if (rows.length === 0) { exported.push({ table, rows: 0 }); continue; }
 
         const placeholders = cols.map(() => '?').join(', ');
         const stmt = db.prepare(`INSERT INTO "${table}" VALUES (${placeholders})`);
@@ -27,11 +48,12 @@ export async function exportDatabase() {
             stmt.run(values);
         }
         stmt.free();
+        exported.push({ table, rows: rows.length });
     }
 
     const uint8 = db.export();
     db.close();
-    return uint8.buffer;
+    return { buffer: uint8.buffer, exported, skipped };
 }
 
 const FORCE_STRING_COLS = new Set([
@@ -125,11 +147,12 @@ export async function initDb() {
 }
 
 let _sqlJsReady = null;
-function getSqlJs() {
+async function getSqlJs() {
     if (!_sqlJsReady) {
-        _sqlJsReady = initSqlJs({
-            locateFile: file => sqlWasmUrl
-        });
+        // Dynamic import keeps sql.js out of the startup bundle (see note above).
+        _sqlJsReady = import('sql.js').then(({ default: initSqlJs }) =>
+            initSqlJs({ locateFile: file => sqlWasmUrl })
+        );
     }
     return _sqlJsReady;
 }

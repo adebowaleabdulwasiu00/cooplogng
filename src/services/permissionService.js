@@ -12,6 +12,7 @@ const HIERARCHY = {
   "update_remittance": ["create_remittance", "read_remittance", "approve_remittance"],
   "approve_remittance": ["read_remittance"],
   "create_remittance": ["read_remittance"],
+  "reverse_remittance": ["read_remittance"],
   
   "delete_enterprise": ["update_enterprise", "read_enterprise"],
   "update_enterprise": ["create_enterprise", "read_enterprise"],
@@ -79,7 +80,7 @@ export function getAllPermissions() {
   return [
     "dashboard_view",
     "read_member", "create_member", "update_member", "delete_member",
-    "read_remittance", "create_remittance", "update_remittance", "delete_remittance", "approve_remittance",
+    "read_remittance", "create_remittance", "update_remittance", "delete_remittance", "approve_remittance", "reverse_remittance",
     "read_ledger", "read_coop_ledger",
     "read_report",
     "read_reconcile", "create_reconcile",

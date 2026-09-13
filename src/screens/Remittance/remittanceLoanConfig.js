@@ -446,11 +446,16 @@ export function showLoanConfigModal(enterpriseId, isReadOnly = false, deps) {
               showSuggestions(list);
             }, 200);
           });
-          document.addEventListener('click', (e) => {
-            if (!input.contains(e.target) && !suggestionsDiv.contains(e.target)) {
-              suggestionsDiv.style.display = 'none';
-            }
-          });
+          // Bound once per input: guarantor rows re-render often and the old
+          // anonymous handler stacked a document listener per setup.
+          if (!input.dataset.outsideBound) {
+            input.dataset.outsideBound = '1';
+            document.addEventListener('click', (e) => {
+              if (!input.contains(e.target) && !suggestionsDiv.contains(e.target)) {
+                suggestionsDiv.style.display = 'none';
+              }
+            });
+          }
         }
         
         if (!isReadOnly) {

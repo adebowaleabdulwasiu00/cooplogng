@@ -5,11 +5,12 @@ import { escapeHtml } from '../../utils/formatters.js';
 
 export function renderBankSection(area) {
   area.innerHTML = `
-      <h3>Bank List</h3>
-      <p class="section-desc">Manage the list of banks and payment methods available for remittances.</p>
-      <div id="bank-form-container"></div>
-      <div style="margin-bottom: 1rem; text-align: right;">
-        <button id="show-add-bank-btn" class="primary-button" style="padding: 0.5rem 1.25rem; font-size: 0.85rem; width: ${window.innerWidth <= 768 ? '100%' : 'auto'};">+ Add Bank</button>
+      <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.5rem;">
+        <div>
+          <h3 style="margin:0;">Bank List</h3>
+          <p class="section-desc" style="margin: 0.35rem 0 0 0;">Manage the list of banks and payment methods available for remittances.</p>
+        </div>
+        <button id="show-add-bank-btn" class="primary-button" style="padding: 0.6rem 1.5rem; font-size: 0.85rem; border-radius: var(--radius-md); width: ${window.innerWidth <= 768 ? '100%' : 'auto'};">+ Add Bank</button>
       </div>
       <div id="bank-table-container" class="table-responsive"><p style="color: var(--text-muted); font-style: italic;">Loading banks...</p></div>
     `;
@@ -21,58 +22,86 @@ export function setupBankListeners(user, cooperativeId) {
 
   const showBankForm = async (bank = null) => {
     editingBank = bank;
-    const fc = document.getElementById('bank-form-container');
-    if (!fc) return;
-
     // Check if bank is in use
     let isInUse = false;
     if (bank) {
       isInUse = usedBankNames.has(bank.bank_name);
     }
 
-    fc.innerHTML = `
-        <div class="inline-form" style="display:flex; flex-direction:column; gap:1.25rem;">
-          <div class="field">
-            <label>${bank ? 'Edit' : 'New'} Bank Name</label>
-            <input type="text" id="bank-name-input" value="${escapeHtml(bank?.bank_name || '')}" placeholder="Enter bank name" required ${isInUse && bank?.bank_name ? 'disabled style="opacity:0.6; cursor:not-allowed;"' : ''}>
+    const overlay = document.createElement('div');
+    overlay.className = 'settings-modal-overlay';
+    overlay.innerHTML = `
+        <div class="settings-modal-content">
+          <div class="modal-header">
+            <div>
+              <h3>${bank ? 'Edit Bank' : 'Add New Bank'}</h3>
+              <p class="modal-sub">${bank ? `Update details for <strong>${escapeHtml(bank.bank_name || '')}</strong>.` : 'Add a bank account members can pay into.'}</p>
+            </div>
+            <button id="close-bank-modal-x" style="background:var(--bg-secondary); border:1px solid var(--border-light); color:var(--text-muted); font-size:1.1rem; cursor:pointer; width:32px; height:32px; border-radius:50%; flex-shrink:0; line-height:1;">&times;</button>
           </div>
-          <div class="field">
-            <label>Account Name</label>
-            <input type="text" id="bank-account-name-input" value="${escapeHtml(bank?.account_name || '')}" placeholder="Enter account name" ${isInUse && bank?.account_name ? 'disabled style="opacity:0.6; cursor:not-allowed;"' : ''}>
+          <div class="modal-body">
+            ${isInUse ? '<div class="stg-notice muted" style="margin-bottom: 1.5rem;">This bank is in use in remittances. Only visibility and blank fields can be changed.</div>' : ''}
+            <div class="stg-section">
+              <div class="stg-section-title">Bank Identity</div>
+              <div class="stg-grid">
+                <div class="stg-field">
+                  <span>Bank Name *</span>
+                  <input type="text" id="bank-name-input" value="${escapeHtml(bank?.bank_name || '')}" placeholder="e.g. First Bank" required ${isInUse && bank?.bank_name ? 'disabled' : ''}>
+                </div>
+                <div class="stg-field">
+                  <span>Branch Name</span>
+                  <input type="text" id="bank-branch-name-input" value="${escapeHtml(bank?.branch_name || '')}" placeholder="e.g. Main Branch" ${isInUse && bank?.branch_name ? 'disabled' : ''}>
+                </div>
+              </div>
+            </div>
+            <div class="stg-section">
+              <div class="stg-section-title">Account Details</div>
+              <div class="stg-grid">
+                <div class="stg-field">
+                  <span>Account Name</span>
+                  <input type="text" id="bank-account-name-input" value="${escapeHtml(bank?.account_name || '')}" placeholder="e.g. Cooperative Savings" ${isInUse && bank?.account_name ? 'disabled' : ''}>
+                </div>
+                <div class="stg-field">
+                  <span>Account Number</span>
+                  <input type="text" id="bank-account-number-input" value="${escapeHtml(bank?.account_number || '')}" placeholder="e.g. 0123456789" inputmode="numeric" ${isInUse && bank?.account_number ? 'disabled' : ''}>
+                </div>
+                <div class="stg-field">
+                  <span>SWIFT Code</span>
+                  <input type="text" id="bank-swift-code-input" value="${escapeHtml(bank?.swift_code || '')}" placeholder="Optional" ${isInUse && bank?.swift_code ? 'disabled' : ''}>
+                </div>
+              </div>
+            </div>
+            <div class="stg-section">
+              <div class="stg-section-title">Visibility</div>
+              <label class="stg-check-card">
+                <input type="checkbox" id="bank-visible-input" ${(bank?.is_visible ?? true) ? 'checked' : ''}>
+                <div><div class="stg-check-title">Show on Dashboard</div><div class="stg-check-desc">Members will see this bank as a payment option.</div></div>
+              </label>
+            </div>
           </div>
-          <div class="field">
-            <label>Account Number</label>
-            <input type="text" id="bank-account-number-input" value="${escapeHtml(bank?.account_number || '')}" placeholder="Enter account number" ${isInUse && bank?.account_number ? 'disabled style="opacity:0.6; cursor:not-allowed;"' : ''}>
-          </div>
-          <div class="field">
-            <label>Branch Name</label>
-            <input type="text" id="bank-branch-name-input" value="${escapeHtml(bank?.branch_name || '')}" placeholder="Enter branch name" ${isInUse && bank?.branch_name ? 'disabled style="opacity:0.6; cursor:not-allowed;"' : ''}>
-          </div>
-          <div class="field">
-            <label>SWIFT Code</label>
-            <input type="text" id="bank-swift-code-input" value="${escapeHtml(bank?.swift_code || '')}" placeholder="Enter SWIFT code" ${isInUse && bank?.swift_code ? 'disabled style="opacity:0.6; cursor:not-allowed;"' : ''}>
-          </div>
-          <div class="field" style="display:flex; align-items:center; gap:0.75rem;">
-            <input type="checkbox" id="bank-visible-input" ${(bank?.is_visible ?? true) ? 'checked' : ''}>
-            <label for="bank-visible-input" style="margin:0;">Show on Dashboard</label>
-          </div>
-          ${isInUse ? '<p style="font-size:0.8rem; color:var(--text-muted);">This bank is in use. Only visibility and blank fields can be changed.</p>' : ''}
-          <div style="display:flex; gap:0.5rem;">
-            <button id="save-bank-btn" class="primary-button" style="padding: 0.6rem 1.5rem; font-size: 0.85rem; height: fit-content;">${bank ? 'Update' : 'Add'}</button>
-            <button id="cancel-bank-btn" class="secondary-button" style="padding: 0.6rem 1rem; font-size: 0.85rem; height: fit-content; border: 1px solid var(--border-medium); background: transparent; color: var(--text-primary);">Cancel</button>
+          <div class="modal-footer">
+            <button id="cancel-bank-btn" class="secondary-button" style="padding: 0.7rem 1.5rem; border-radius: var(--radius-md);">Cancel</button>
+            <button id="save-bank-btn" class="primary-button" style="padding: 0.7rem 2rem; border-radius: var(--radius-md);">${bank ? 'Update Bank' : 'Add Bank'}</button>
           </div>
         </div>
       `;
-    document.getElementById('cancel-bank-btn')?.addEventListener('click', () => { editingBank = null; fc.innerHTML = '' });
-    document.getElementById('save-bank-btn')?.addEventListener('click', async () => {
-      const name = document.getElementById('bank-name-input').value.trim();
-      const accountName = document.getElementById('bank-account-name-input').value.trim();
-      const accountNumber = document.getElementById('bank-account-number-input').value.trim();
-      const branchName = document.getElementById('bank-branch-name-input').value.trim();
-      const swiftCode = document.getElementById('bank-swift-code-input').value.trim();
-      const isVisible = document.getElementById('bank-visible-input')?.checked ?? true;
+    document.body.appendChild(overlay);
+
+    const closeModal = () => { overlay.remove(); editingBank = null; };
+    overlay.querySelector('#close-bank-modal-x').onclick = closeModal;
+    overlay.querySelector('#cancel-bank-btn')?.addEventListener('click', closeModal);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
+    overlay.querySelector('#save-bank-btn')?.addEventListener('click', async () => {
+      const name = overlay.querySelector('#bank-name-input').value.trim();
+      const accountName = overlay.querySelector('#bank-account-name-input').value.trim();
+      const accountNumber = overlay.querySelector('#bank-account-number-input').value.trim();
+      const branchName = overlay.querySelector('#bank-branch-name-input').value.trim();
+      const swiftCode = overlay.querySelector('#bank-swift-code-input').value.trim();
+      const isVisible = overlay.querySelector('#bank-visible-input')?.checked ?? true;
       if (!name) { showToast('Bank name is required.', 'warning'); return; }
+      const saveBtn = overlay.querySelector('#save-bank-btn');
       try {
+        saveBtn.disabled = true; saveBtn.innerText = 'Saving...';
         let bankData = {};
         if (isInUse) {
           // For in-use banks: allow updating visibility AND any blank fields that were just filled in
@@ -112,9 +141,9 @@ export function setupBankListeners(user, cooperativeId) {
         } else {
           await addBank({ cooperative_id: cooperativeId, ...bankData }, user.username);
         }
-        editingBank = null; fc.innerHTML = '';
+        closeModal();
         loadBanks();
-      } catch (err) { showToast('Error: ' + err.message, 'error'); }
+      } catch (err) { showToast('Error: ' + err.message, 'error'); saveBtn.disabled = false; saveBtn.innerText = editingBank ? 'Update Bank' : 'Add Bank'; }
     });
   };
 

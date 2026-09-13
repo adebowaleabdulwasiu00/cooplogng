@@ -608,11 +608,10 @@ export async function setupLoanRequestListeners() {
 export async function finalizeLoanRequest() {
   // First, determine enterprise type
   const { 
-    fetchEnterprises, 
-    fetchAllMembers, 
-    addRemittance, 
-    getNextRemittanceRid, 
-    updateMemberBankInfo 
+    fetchEnterprises,
+    fetchAllMembers,
+    addRemittance,
+    updateMemberBankInfo
   } = await import('../services/dataService.js');
   const { showToast } = await import('../services/toastService.js');
   const { generateId } = await import('../utils/formatters.js');
@@ -638,7 +637,6 @@ export async function finalizeLoanRequest() {
   let transactionType = isSavingsEnterprise ? 'Savings Withdrawal' : 'Member Loan';
   let amount = isSavingsEnterprise ? -Math.abs(state.loanRequest.amount) : -Math.abs(state.loanRequest.amount);
 
-  const nextRid = await getNextRemittanceRid(state.welcomeUser.cooperativeId);
   const status = 'Pending'; // As per instruction
   const description = isSavingsEnterprise ? 'Savings Withdrawal Request' : 'Loan Request';
 
@@ -650,7 +648,6 @@ export async function finalizeLoanRequest() {
     description: description,
     remittance_date: new Date().toISOString().split('T')[0],
     bank_name: state.loanRequest.bankDetails.bankName || '',
-    r_id: nextRid,
     cooperative_id: state.welcomeUser.cooperativeId,
     user_role: state.welcomeUser.role || 'member',
     user_roles: [state.welcomeUser.role || 'member'],

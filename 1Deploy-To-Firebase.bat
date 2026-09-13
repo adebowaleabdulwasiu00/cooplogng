@@ -36,7 +36,10 @@ if %ERRORLEVEL% neq 0 (
 
 :: 4. Deploy
 echo [4/4] Deploying to Firebase...
+echo   - Site "cooplogng" : web app (dist/)
+echo   ^(Desktop auto-updates now come from GitHub Releases, not Firebase.^)
 echo Checking for Firebase CLI...
+echo NOTE: the old "cooplogng-updates" hosting site is retired.
 
 :: Try global firebase first, then npx
 firebase --version >nul 2>&1

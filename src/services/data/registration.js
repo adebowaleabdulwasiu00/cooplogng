@@ -14,7 +14,7 @@ export async function registerCooperative(coopData) {
     const now = new Date().toISOString()
     const cooperativeId = generateId().substring(0, 10)
     const adminId = generateId()
-    const adminPwd = '1234'
+    const adminPwd = '123456'
     const adminPasswordHash = await hashPassword(adminPwd)
     const subKey = `${generateRandomChars(3)}-${generateRandomChars(3)}-${generateRandomChars(3)}`
     const expiryDate = new Date()
@@ -42,7 +42,9 @@ export async function registerCooperative(coopData) {
     const adminUser = {
         id: adminId,
         username: 'admin',
+        username_lower: 'admin',
         password_hash: adminPasswordHash,
+        force_password_change: true,
         cooperative_id: cooperativeId,
         role: 'admin',
         permissions: 'admin',

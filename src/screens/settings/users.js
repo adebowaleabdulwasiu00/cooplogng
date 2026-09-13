@@ -1,20 +1,19 @@
 import { fetchCooperativeUsers, addUser, updateUser, deleteUser } from '../../services/dataService.js';
 import { getAllPermissions } from '../../services/permissionService.js';
 import { fetchEnterprises } from '../../services/dataService.js';
-import { generateRandom4Digit, escapeHtml } from '../../utils/formatters.js';
+import { generateRandom6Digit, isSixDigitPin, escapeHtml } from '../../utils/formatters.js';
 import { showToast } from '../../services/toastService.js';
 
 export async function renderUserManagementSection(area) {
   area.innerHTML = `
-      <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem;">
+      <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.5rem;">
         <div>
-          <h3>User Management</h3>
-          <p class="section-desc">Manage staff access, permissions, and enterprise rights.</p>
+          <h3 style="margin:0;">User Management</h3>
+          <p class="section-desc" style="margin: 0.35rem 0 0 0;">Manage staff access, permissions, and enterprise rights.</p>
         </div>
-        <button id="show-add-user-btn" class="primary-button" style="padding: 0.5rem 1.25rem; font-size: 0.85rem; width: ${window.innerWidth <= 768 ? '100%' : 'auto'};">+ Add User</button>
+        <button id="show-add-user-btn" class="primary-button" style="padding: 0.6rem 1.5rem; font-size: 0.85rem; border-radius: var(--radius-md); width: ${window.innerWidth <= 768 ? '100%' : 'auto'};">+ Add User</button>
       </div>
-      <div id="user-form-container"></div>
-      <div id="user-table-container" class="table-responsive" style="margin-top: 1rem;"><p style="color: var(--text-muted); font-style: italic;">Loading users...</p></div>
+      <div id="user-table-container" class="table-responsive" style="margin-top: 0;"><p style="color: var(--text-muted); font-style: italic;">Loading users...</p></div>
     `;
 }
 
@@ -39,28 +38,28 @@ export async function setupUserManagementListeners(user, cooperativeId) {
 
     const render = () => {
       dropdown.innerHTML = `
-          <div style="font-size: 0.7rem; font-weight: 700; color: var(--text-muted); margin-bottom: 0.75rem; text-transform: uppercase;">
+          <div style="font-size: 0.72rem; font-weight: 800; color: var(--accent-primary); margin-bottom: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">
             Select ${type === 'perms' ? 'Permissions' : 'Enterprises'}
           </div>
           <div style="margin-bottom: 0.75rem;">
             <input type="text" class="dropdown-search" placeholder="Search..."
-              style="width: 100%; padding: 0.4rem; border-radius: 4px; border: 1px solid var(--border-medium); font-size: 0.8rem; background: var(--bg-input); color: var(--text-primary);">
+              style="width: 100%; box-sizing: border-box; padding: 0.6rem 0.75rem; border-radius: var(--radius-md); border: 1px solid var(--border-medium); font-size: 0.85rem; background: var(--bg-input); color: var(--text-primary);">
           </div>
-          <div class="items-list" style="max-height: 200px; overflow-y: auto; margin-bottom: 0.75rem;">
-            <label class="field-option" data-key="${type === 'perms' ? 'admin' : 'all'}">
+          <div class="items-list" style="max-height: 220px; overflow-y: auto; margin-bottom: 1rem; display: flex; flex-direction: column; gap: 0.15rem;">
+            <label class="stg-field-option" data-key="${type === 'perms' ? 'admin' : 'all'}">
               <input type="checkbox" class="all-chk" ${isAllSelected() ? 'checked' : ''}>
               <span style="font-weight: 700;">${type === 'perms' ? '* ALL (Admin)' : '* ALL Enterprises'}</span>
             </label>
             ${items.map(item => `
-              <label class="field-option item-row" data-key="${item.id}" data-search="${item.label.toLowerCase()}">
+              <label class="stg-field-option item-row" data-key="${item.id}" data-search="${item.label.toLowerCase()}">
                 <input type="checkbox" class="item-chk" value="${item.id}" ${pending.includes(item.id) ? 'checked' : ''}>
                 <span>${escapeHtml(item.label)}</span>
               </label>
             `).join('')}
           </div>
-          <div style="display: flex; gap: 0.5rem;">
-            <button type="button" class="primary-button apply-btn" style="flex: 1; height: 1.85rem; font-size: 0.7rem; border-radius: 999px;">Apply</button>
-            <button type="button" class="secondary-button cancel-btn" style="flex: 1; height: 1.85rem; font-size: 0.7rem; border-radius: 999px; background: white; color: black;">Cancel</button>
+          <div style="display: flex; gap: 0.6rem;">
+            <button type="button" class="primary-button apply-btn" style="flex: 1; padding: 0.55rem; font-size: 0.8rem; border-radius: 999px;">Apply</button>
+            <button type="button" class="secondary-button cancel-btn" style="flex: 1; padding: 0.55rem; font-size: 0.8rem; border-radius: 999px; background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-medium);">Cancel</button>
           </div>
         `;
 
@@ -126,58 +125,77 @@ export async function setupUserManagementListeners(user, cooperativeId) {
     overlay.innerHTML = `
         <div class="settings-modal-content">
           <div class="modal-header">
-            <h3 style="margin:0;">${u ? 'Edit User' : 'Add New User'}</h3>
-            <button id="close-user-modal-x" style="background:transparent; border:none; color:var(--text-muted); font-size:1.5rem; cursor:pointer;">&times;</button>
+            <div>
+              <h3>${u ? 'Edit User' : 'Add New User'}</h3>
+              <p class="modal-sub">${u ? `Update access and rights for <strong>${escapeHtml(u.username || '')}</strong>.` : 'Create staff login, assign a role and access rights.'}</p>
+            </div>
+            <button id="close-user-modal-x" style="background:var(--bg-secondary); border:1px solid var(--border-light); color:var(--text-muted); font-size:1.1rem; cursor:pointer; width:32px; height:32px; border-radius:50%; flex-shrink:0; line-height:1;">&times;</button>
           </div>
           <div class="modal-body">
-            <div class="inline-form" style="display:flex; flex-direction:column; gap:1.25rem;">
-                <div class="field">
-                  <label>👤 Username *</label>
-                  <input type="text" id="user-username-input" value="${escapeHtml(u?.username || '')}" placeholder="e.g. jdoe" ${u ? 'readonly style="background:var(--bg-secondary);"' : ''} required>
+            <div class="stg-section">
+              <div class="stg-section-title">Account Details</div>
+              <div class="stg-grid">
+                <div class="stg-field">
+                  <span>Username *</span>
+                  <input type="text" id="user-username-input" value="${escapeHtml(u?.username || '')}" placeholder="e.g. jdoe" ${u ? 'readonly' : ''} required>
+                  <div class="stg-helper">${u ? 'Username cannot be changed after creation.' : 'Staff will log in with this username.'}</div>
                 </div>
-                ${u && (u.password_hash?.length < 6) ? `
-                  <div style="background: var(--warning-bg); border: 1px solid var(--warning); padding: 0.75rem; border-radius: var(--radius-md); color: var(--warning); font-size: 0.85rem;">
-                    User is using default password: <strong>${u.password_hash}</strong>
-                  </div>
-                ` : ''}
-                ${!u ? `
-                <div class="field">
-                  <label>🔑 Initial Password (Leave blank for random)</label>
-                  <input type="password" id="user-password-input" placeholder="••••••••">
-                </div>
-                ` : ''}
-                <div class="field">
-                  <label>🛡️ Role</label>
+                <div class="stg-field">
+                  <span>Role</span>
                   <select id="user-role-input">
                     <option value="staff" ${u?.role === 'staff' ? 'selected' : ''}>Staff</option>
                     <option value="admin" ${u?.role === 'admin' ? 'selected' : ''}>Admin</option>
                   </select>
+                  <div class="stg-helper">Admins bypass granular permission checks.</div>
                 </div>
-                <div class="field">
-                  <label>⚙️ Permissions</label>
+              </div>
+            </div>
+            ${u && (u.password_hash?.length < 6) ? `
+              <div class="stg-notice warn" style="margin-bottom: 1.5rem;">
+                <span>This user is on the default PIN: <strong>${escapeHtml(u.password_hash)}</strong>. Ask them to change it on next login.</span>
+              </div>
+            ` : ''}
+            ${!u ? `
+            <div class="stg-section">
+              <div class="stg-section-title">Security</div>
+              <div class="stg-field">
+                <span>Initial 6-Digit PIN</span>
+                <input type="password" id="user-password-input" placeholder="Leave blank for auto-generated PIN" inputmode="numeric" maxlength="6">
+                <div class="stg-helper">Exactly 6 numbers, or leave blank to auto-generate one.</div>
+              </div>
+            </div>
+            ` : ''}
+            <div class="stg-section">
+              <div class="stg-section-title">Access Control</div>
+              <div style="display:flex; flex-direction:column; gap:1rem;">
+                <div class="stg-field">
+                  <span>Permissions</span>
                   <div style="position: relative;">
-                    <button type="button" class="dropdown-btn" id="perms-dropdown-trigger">
+                    <button type="button" class="stg-dropdown-btn" id="perms-dropdown-trigger">
                       <span id="perms-trigger-text">${selectedPermissions.length > 0 ? `${selectedPermissions.length} Selected` : 'Select Permissions...'}</span>
-                      <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"></path></svg>
+                      <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7"></path></svg>
                     </button>
-                    <div id="perms-dropdown" class="dropdown-menu hidden"></div>
+                    <div id="perms-dropdown" class="stg-dropdown-menu hidden"></div>
                   </div>
+                  <div class="stg-helper">Choose what this user can do. Select * ALL for full admin rights.</div>
                 </div>
-                <div class="field">
-                  <label>🏢 Enterprise Access</label>
+                <div class="stg-field">
+                  <span>Enterprise Access</span>
                   <div style="position: relative;">
-                    <button type="button" class="dropdown-btn" id="ents-dropdown-trigger">
+                    <button type="button" class="stg-dropdown-btn" id="ents-dropdown-trigger">
                       <span id="ents-trigger-text">${selectedEnts.length > 0 ? `${selectedEnts.length} Selected` : 'Select Enterprises...'}</span>
-                      <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"></path></svg>
+                      <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7"></path></svg>
                     </button>
-                    <div id="ents-dropdown" class="dropdown-menu hidden"></div>
+                    <div id="ents-dropdown" class="stg-dropdown-menu hidden"></div>
                   </div>
+                  <div class="stg-helper">Limit which enterprise accounts this user can see and post to.</div>
                 </div>
+              </div>
             </div>
           </div>
           <div class="modal-footer">
-            <button id="cancel-user-btn" class="secondary-button" style="padding:0.6rem 1.2rem;">Cancel</button>
-            <button id="save-user-btn" class="primary-button" style="padding:0.6rem 2rem;">${u ? 'Update User' : 'Create User'}</button>
+            <button id="cancel-user-btn" class="secondary-button" style="padding:0.7rem 1.5rem; border-radius:var(--radius-md);">Cancel</button>
+            <button id="save-user-btn" class="primary-button" style="padding:0.7rem 2rem; border-radius:var(--radius-md);">${u ? 'Update User' : 'Create User'}</button>
           </div>
         </div>
       `;
@@ -214,19 +232,22 @@ export async function setupUserManagementListeners(user, cooperativeId) {
       }
     };
 
-    // Close on outside click
-    document.addEventListener('click', (e) => {
+    // Close on outside click (removed with the modal — anonymous per-open
+    // handlers used to leak a document listener + full modal closure each time)
+    const userModalOutside = (e) => {
       if (!permsTrigger.parentElement.contains(e.target)) permsDropdown.classList.add('hidden');
       if (!entsTrigger.parentElement.contains(e.target)) entsDropdown.classList.add('hidden');
-    });
+    };
+    document.addEventListener('click', userModalOutside);
 
-    const closeModal = () => { overlay.remove(); editingUser = null; };
-    document.getElementById('close-user-modal-x').onclick = closeModal;
-    document.getElementById('cancel-user-btn').onclick = closeModal;
+    const closeModal = () => { document.removeEventListener('click', userModalOutside); overlay.remove(); editingUser = null; };
+    overlay.querySelector('#close-user-modal-x').onclick = closeModal;
+    overlay.querySelector('#cancel-user-btn').onclick = closeModal;
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
 
-    document.getElementById('save-user-btn')?.addEventListener('click', async () => {
-      const usernameInput = document.getElementById('user-username-input').value.trim();
-      const role = document.getElementById('user-role-input').value;
+    overlay.querySelector('#save-user-btn')?.addEventListener('click', async () => {
+      const usernameInput = overlay.querySelector('#user-username-input').value.trim();
+      const role = overlay.querySelector('#user-role-input').value;
       const permissions = selectedPermissions.join(',');
       const enterprise_rights = selectedEnts.join(',');
 
@@ -234,12 +255,17 @@ export async function setupUserManagementListeners(user, cooperativeId) {
       const payload = { username: usernameInput, role, permissions, enterprise_rights, cooperative_id: cooperativeId };
 
       try {
-        const btn = document.getElementById('save-user-btn');
+        const btn = overlay.querySelector('#save-user-btn');
         btn.disabled = true; btn.innerText = 'Saving...';
         if (editingUser) {
           await updateUser(editingUser.id, payload, user.username);
         } else {
-          const pwd = document.getElementById('user-password-input').value;
+          const pwd = (overlay.querySelector('#user-password-input')?.value || '').trim();
+          if (pwd && !isSixDigitPin(pwd)) {
+            showToast('Initial PIN must be exactly 6 digits (numbers only) — or leave blank for random.', 'warning');
+            btn.disabled = false; btn.innerText = 'Create User';
+            return;
+          }
           if (pwd) payload.password_hash = pwd;
           const res = await addUser(payload, user.username);
           if (res.generatedPassword) showToast(`User created! Initial password: ${res.generatedPassword}`, 'success');
@@ -313,12 +339,12 @@ export async function setupUserManagementListeners(user, cooperativeId) {
       });
       tc.querySelectorAll('.crud-action-btn.reset-pwd').forEach(btn => {
         btn.addEventListener('click', async () => {
-          const newPwd = generateRandom4Digit();
-          if (confirm(`Reset password for "${btn.dataset.name}" to a new random 4-digit number?`)) {
+          const newPwd = generateRandom6Digit();
+          if (confirm(`Reset PIN for "${btn.dataset.name}" to a new random 6-digit number?`)) {
             try {
               const u = usersList.find(x => x.id === btn.dataset.id);
-              await updateUser(btn.dataset.id, { ...u, password_hash: newPwd }, user.username);
-              showToast(`Password reset to: ${newPwd}\nPlease provide this to the user.`, 'success');
+              await updateUser(btn.dataset.id, { ...u, password_hash: newPwd, force_password_change: true }, user.username);
+              showToast(`PIN reset to: ${newPwd}\nUser will set a new PIN on next login.`, 'success');
               loadUsers();
             } catch (err) { showToast(err.message, 'error'); }
           }

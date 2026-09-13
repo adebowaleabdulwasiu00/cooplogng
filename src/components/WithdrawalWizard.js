@@ -3,12 +3,11 @@ import { escapeHtml, generateId, formatCurrency } from '../utils/formatters.js'
 import { showToast } from '../services/toastService.js'
 
 export async function showWithdrawalWizard() {
-  const { 
-    fetchEnterprises, 
-    fetchAllMembers, 
-    addRemittance, 
-    getNextRemittanceRid,
-    buildAccountBalance 
+  const {
+    fetchEnterprises,
+    fetchAllMembers,
+    addRemittance,
+    buildAccountBalance
   } = await import('../services/dataService.js');
   const { showToast } = await import('../services/toastService.js');
   const { generateId, formatCurrency, escapeHtml } = await import('../utils/formatters.js');
@@ -597,8 +596,6 @@ export async function showWithdrawalWizard() {
           const selectedMember = allMembers.find(m => m.id === selectedMemberId);
           const transactionType = selectedEnterprise.type === 'loan' ? 'Member Loan' : 'Savings Withdrawal';
           const amount = -Math.abs(withdrawalAmount);
-          const nextRid = await getNextRemittanceRid(state.welcomeUser.cooperativeId);
-          
           const details = [
             {
               id: generateId(state.welcomeUser.cooperativeId),
@@ -636,7 +633,6 @@ export async function showWithdrawalWizard() {
             details: details,
             isLoanRequest: selectedEnterprise.type === 'loan',
             isWithdrawalRequest: true,
-            r_id: nextRid,
             cooperative_id: state.welcomeUser.cooperativeId,
             user_role: state.welcomeUser.role || 'member',
             user_roles: [state.welcomeUser.role || 'member'],

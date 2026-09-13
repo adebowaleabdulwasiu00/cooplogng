@@ -6,7 +6,7 @@
  */
 
 const DB_NAME = 'CoopLogIDB_v3';
-const DB_VERSION = 4; // Bumped to add cooperative_id indexes on remaining stores
+const DB_VERSION = 6; // v6: self-heal — recreate any missing store/index (stale devices)
 
 // Object stores mapped to application tables
 const STORES = {
@@ -25,6 +25,7 @@ const STORES = {
     notifications: { keyPath: 'id' },
     payment_advise: { keyPath: 'id' },
     bank_reconciliation_summary: { keyPath: 'id' },
+    feedback: { keyPath: 'id' },
     app_settings: { keyPath: 'key' }
 };
 
@@ -182,6 +183,82 @@ export function initIndexedDb() {
           }
         }
       }
+
+      // ── Version 5: feedback store + sync_queue.cooperative_id index ─────
+      if (oldVersion < 5) {
+        const tx = e.target.transaction;
+        if (!db.objectStoreNames.contains('feedback')) {
+          const fb = db.createObjectStore('feedback', { keyPath: 'id' });
+          fb.createIndex('cooperative_id', 'cooperative_id', { unique: false });
+          console.log('[IndexedDB] Created feedback store');
+        } else {
+          try {
+            const fb = tx.objectStore('feedback');
+            if (!fb.indexNames.contains('cooperative_id')) {
+              fb.createIndex('cooperative_id', 'cooperative_id', { unique: false });
+            }
+          } catch {}
+        }
+        if (db.objectStoreNames.contains('sync_queue')) {
+          try {
+            const sq = tx.objectStore('sync_queue');
+            if (!sq.indexNames.contains('cooperative_id')) {
+              sq.createIndex('cooperative_id', 'cooperative_id', { unique: false });
+              console.log('[IndexedDB] Added sync_queue.cooperative_id index');
+            }
+          } catch {}
+        }
+      }
+
+      // ── Version 6: self-heal any store/index missing on stale devices ──
+      // Devices whose DB was created before a store existed (and no earlier
+      // upgrade block created it) would otherwise crash every transaction
+      // touching it (e.g. database export). Recreate what's missing.
+      if (oldVersion < 6) {
+        const tx = e.target.transaction;
+        const INDEXES = {
+          members: ['cooperative_id'],
+          remittance: ['cooperative_id', 'member_id', 'loan_id'],
+          loans: ['cooperative_id', 'member_id', 'remittance_id'],
+          remittance_detail: ['remittance_id'],
+          sync_queue: ['status', 'cooperative_id'],
+          loan_guarantors: ['loan_id', 'cooperative_id'],
+          payment_advise: ['member_id', 'cooperative_id'],
+          notifications: ['cooperative_id'],
+          users: ['cooperative_id'],
+          bank: ['cooperative_id'],
+          enterprise: ['cooperative_id'],
+          transaction_types: ['cooperative_id'],
+          bank_reconciliation_summary: ['cooperative_id'],
+          feedback: ['cooperative_id'],
+        };
+        for (const [storeName, config] of Object.entries(STORES)) {
+          try {
+            let store = null;
+            if (!db.objectStoreNames.contains(storeName)) {
+              store = db.createObjectStore(storeName, {
+                keyPath: config.keyPath,
+                autoIncrement: config.autoIncrement || false
+              });
+              console.log(`[IndexedDB] v6 healed missing store: ${storeName}`);
+            } else {
+              store = tx.objectStore(storeName);
+            }
+            for (const idx of (INDEXES[storeName] || [])) {
+              if (!store.indexNames.contains(idx)) {
+                store.createIndex(idx, idx, { unique: false });
+                console.log(`[IndexedDB] v6 healed missing index: ${storeName}.${idx}`);
+              }
+            }
+            if (storeName === 'sync_queue' && !store.indexNames.contains('collection_document')) {
+              store.createIndex('collection_document', ['collection_name', 'document_id'], { unique: false });
+              console.log('[IndexedDB] v6 healed missing index: sync_queue.collection_document');
+            }
+          } catch (err) {
+            console.warn(`[IndexedDB] v6 heal skipped ${storeName}:`, err && err.message);
+          }
+        }
+      }
     };
 
     req.onsuccess = (e) => {
@@ -221,6 +298,15 @@ export function initIndexedDb() {
   });
 
   return initPromise;
+}
+
+/**
+ * Lists the object stores actually present in this device's database.
+ * Lets callers skip (instead of crashing on) stores missing from stale DBs.
+ */
+export async function listStores() {
+    const db = await initIndexedDb();
+    return Array.from(db.objectStoreNames);
 }
 
 /**

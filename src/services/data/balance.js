@@ -1,11 +1,34 @@
 import { getRemittances, queryRows } from '../sqliteService.js'
 
-export async function buildAccountBalance(cooperativeId, user = null, limitRid = null) {
-    const remittances = await getRemittances(cooperativeId, user)
-    const enterpriseRows = await queryRows(
-        'SELECT * FROM enterprise WHERE cooperative_id = ? AND is_deleted = 0',
-        [String(cooperativeId)]
-    )
+// Cutoff key for "balance up to this entry" previews. Cutoffs use creation
+// order: { ts, id }.
+function normalizeCutoff(limit) {
+    if (!limit || typeof limit !== 'object') return null
+    return { ts: String(limit.ts || ''), id: String(limit.id || '') }
+}
+// true when rem is at/after the cutoff (caller decides inclusive/exclusive
+// via the `strict` flag: balance preview excludes the entry itself).
+function pastCutoff(rem, key, strict) {
+    if (!key) return false
+    const ts = String(rem.created_at || '')
+    const c = ts.localeCompare(key.ts)
+    if (c !== 0) return strict ? c > 0 : c >= 0
+    const ic = String(rem.id).localeCompare(key.id)
+    return strict ? ic > 0 : ic >= 0
+}
+
+export async function buildAccountBalance(cooperativeId, user = null, limitRid = null, preloaded = null) {
+    // Optional preloaded rows (same content as a fresh fetch) so callers that
+    // already loaded remittances/enterprises don't pay for them twice.
+    const remittances = (preloaded && preloaded.remittances !== undefined)
+        ? preloaded.remittances
+        : await getRemittances(cooperativeId, user)
+    const enterpriseRows = (preloaded && preloaded.enterprises !== undefined)
+        ? preloaded.enterprises
+        : await queryRows(
+            'SELECT * FROM enterprise WHERE cooperative_id = ? AND is_deleted = 0',
+            [String(cooperativeId)]
+        )
     const entMap = {}
     const entRevenueMap = {}
     for (const ent of enterpriseRows) {
@@ -14,10 +37,11 @@ export async function buildAccountBalance(cooperativeId, user = null, limitRid =
     }
     const balances = {}
     const isMemberQuery = user && user.memberId && user.memberId !== '0000000000'
+    const cutoff = normalizeCutoff(limitRid)
     for (const rem of remittances) {
         if (rem.status !== 'Approved') continue
         if (isMemberQuery && rem.member_id !== user.memberId) continue
-        if (limitRid !== null && (rem.r_id || 0) >= limitRid) continue
+        if (pastCutoff(rem, cutoff, false)) continue
         const details = rem.details || []
         for (const d of details) {
             const eid = d.enterprise_id || d.item || ''
@@ -49,8 +73,9 @@ export async function buildMemberLedger(cooperativeId, memberId, user = null, li
     const memberRemits = remittances.filter(r => r.member_id === memberId && r.status === 'Approved')
     let runningTotal = 0
     const ledgerEntries = []
+    const cutoff = normalizeCutoff(limitRid)
     for (const rem of memberRemits) {
-        if (limitRid !== null && (rem.r_id || 0) > limitRid) continue
+        if (pastCutoff(rem, cutoff, true)) continue
         const details = rem.details || []
         for (const d of details) {
             const eid = d.enterprise_id || d.item || ''

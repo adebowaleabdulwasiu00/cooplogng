@@ -1,6 +1,18 @@
 import { showToast } from '../../services/toastService.js';
+import { escapeHtml } from '../../utils/formatters.js';
+import { BUILD_ID, BUILD_TIME } from '../../buildInfo.js';
 
 export function renderAboutSection(area) {
+  let platform = 'Web';
+  try {
+    if (typeof window !== 'undefined' && window.cooplog) platform = 'Desktop (Windows)';
+    else if (typeof window !== 'undefined' && window.Capacitor) platform = 'Android';
+  } catch { /* default to Web */ }
+  let builtLabel = BUILD_TIME;
+  try {
+    const d = new Date(BUILD_TIME);
+    if (!isNaN(d)) builtLabel = d.toLocaleString() + ' (UTC ' + d.toISOString().slice(11, 23) + ')';
+  } catch { /* keep raw stamp */ }
   area.innerHTML = `
       <h3>About App</h3>
       <p class="section-desc">Technical details and system version.</p>
@@ -9,7 +21,8 @@ export function renderAboutSection(area) {
           <div style="width: 72px; height: 72px; background: var(--accent-primary); border-radius: 16px; display: flex; align-items: center; justify-content: center; color: white; font-size: 1.75rem; font-weight: 800; box-shadow: var(--shadow-md);">CL</div>
           <div>
             <h4 style="margin: 0; font-size: 1.4rem; color: var(--text-primary);">Cooperative Log App</h4>
-            <p style="margin: 4px 0 0 0; font-size: 0.9rem; color: var(--text-muted); font-weight: 500;">Version 2.4.5 (Enterprise Web)</p>
+            <p style="margin: 4px 0 0 0; font-size: 0.9rem; color: var(--text-muted); font-weight: 500;">Version ${escapeHtml(BUILD_ID)} (${escapeHtml(platform)})</p>
+            <p style="margin: 4px 0 0 0; font-size: 0.75rem; color: var(--text-muted);">Built ${escapeHtml(builtLabel)}</p>
           </div>
         </div>
         <div style="font-size: 0.95rem; line-height: 1.7; color: var(--text-primary); margin-bottom: 2rem;">

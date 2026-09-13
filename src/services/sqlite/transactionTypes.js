@@ -1,4 +1,5 @@
 import { DEFAULT_TRANSACTION_TYPES } from '../../utils/constants.js'
+import { generateId } from '../../utils/formatters.js'
 import { getAllItems, getAllByIndex, putItemsBatch, putItem } from '../indexedDbService.js'
 import { getDocById } from './dataAccess.js'
 import { saveDoc } from './mutationEngine.js'
@@ -23,7 +24,7 @@ export async function initializeDefaultTransactionTypes(cooperativeId, userId = 
     if (missingTypes.length === 0) return { created: 0 }
     const newDocs = []
     for (const tt of missingTypes) {
-        const id = `tt_${cooperativeId}_${tt.name.toLowerCase().replace(/\s+/g, '_')}`
+        const id = generateId(String(cooperativeId))
         const doc = {
             id,
             cooperative_id: cooperativeId,
@@ -198,7 +199,7 @@ export async function migrateTransactionClassifications() {
                         await putItem('transaction_types', existing)
                     }
                 } else {
-                    const id = `tt_${coop.id}_${typeName.toLowerCase().replace(/\s+/g, '_')}_migrated`
+                    const id = generateId(String(coop.id))
                     const doc = {
                         id,
                         cooperative_id: coop.id,
@@ -245,7 +246,7 @@ export async function migrateTransactionClassifications() {
 }
 
 export async function createTransactionType(cooperativeId, name, classification, userId = 'system') {
-    const id = `tt_${cooperativeId}_${Date.now()}_${Math.random().toString(36).slice(2)}`
+    const id = generateId(String(cooperativeId))
     const now = new Date().toISOString()
     const doc = {
         id,

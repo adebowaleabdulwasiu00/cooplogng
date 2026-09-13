@@ -1,0 +1,64 @@
+COOPLOG SOFTWARE LICENCE AGREEMENT
+Copyright (c) Imradex Global. All rights reserved.
+
+PLEASE READ THIS LICENCE AGREEMENT CAREFULLY BEFORE INSTALLING OR USING
+COOPLOG. BY CLICKING "I ACCEPT" AND INSTALLING THE SOFTWARE, YOU AGREE TO
+BE BOUND BY THE TERMS BELOW. IF YOU DO NOT AGREE, CLICK "CANCEL" AND DO
+NOT INSTALL OR USE THE SOFTWARE.
+
+1. LICENCE GRANT
+   Imradex Global grants you a non-exclusive, non-transferable licence to
+   install and use CoopLog ("the Software") on computers owned or
+   controlled by your cooperative society or organisation, for the purpose
+   of managing cooperative membership, savings, loans, remittances and
+   related records.
+
+2. PERMITTED USE
+   (a) You may install the Software on as many computers as your
+       organisation reasonably requires.
+   (b) You may make backup copies of your own data using the export
+       feature. Export your database regularly.
+   (c) You may not rent, lease, lend, resell, sublicense or redistribute
+       the Software, nor remove or obscure any copyright notices.
+
+3. YOUR DATA
+   (a) CoopLog works offline-first: your records are stored on your own
+       computer. Cloud synchronisation, where enabled, transmits your
+       records to your organisation's cloud database so that authorised
+       devices can share them.
+   (b) You are responsible for the accuracy of records entered, for
+       controlling who holds login credentials, and for keeping backups.
+   (c) Imradex Global does not access, sell or disclose your data. Cloud
+       hosting, where used, is governed by the hosting provider's terms.
+
+4. ACCEPTABLE USE
+   You agree not to use the Software for any unlawful purpose, to gain
+   unauthorised access to other organisations' data, or to attempt to
+   reverse-engineer, decompile or tamper with the Software or its updates.
+
+5. UPDATES
+   The Software may check for and install updates that improve
+   reliability, security and features. Updates remain governed by this
+   agreement unless accompanied by new terms.
+
+6. NO WARRANTY AND LIMITATION OF LIABILITY
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+   EXPRESS OR IMPLIED. IMRADEX GLOBAL SHALL NOT BE LIABLE FOR ANY LOSS
+   OF DATA, LOSS OF PROFITS, OR ANY INDIRECT OR CONSEQUENTIAL DAMAGES
+   ARISING FROM THE USE OF OR INABILITY TO USE THE SOFTWARE. ALWAYS
+   MAINTAIN INDEPENDENT BACKUPS OF CRITICAL FINANCIAL RECORDS.
+
+7. TERMINATION
+   This licence remains in effect until terminated. It terminates
+   automatically if you breach its terms. On termination you must
+   uninstall the Software; your exported data files remain yours.
+
+8. GOVERNING LAW
+   This agreement is governed by the laws of the Federal Republic of
+   Nigeria. Any dispute shall first be referred to good-faith negotiation
+   with Imradex Global.
+
+9. CONTACT
+   Imradex Global
+   Email: imradexgloballtd@gmail.com
+   Phone: +2347034517983

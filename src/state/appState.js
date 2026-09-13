@@ -1,18 +1,33 @@
 import { hasPermission } from '../services/permissionService.js'
 import { loadSavedSession, restoreSessionFromIndexedDB } from '../services/offlineAuthService.js'
+import { loadRememberedIdentity } from '../services/rememberMeService.js'
 
 function getDefaultTab(user) {
   if (!user) return 'dashboard';
-  if (user.role === 'member' || hasPermission(user.permissions, 'dashboard_view')) return 'dashboard';
-  if (user.role !== 'member' && hasPermission(user.permissions, 'read_member')) return 'members';
-  if (user.role === 'member' || hasPermission(user.permissions, 'read_remittance')) return 'payments';
-  if (user.role === 'member' || hasPermission(user.permissions, 'read_ledger') || hasPermission(user.permissions, 'read_coop_ledger')) return 'ledger';
-  if (hasPermission(user.permissions, 'read_reconcile')) return 'reconciliation';
-  if (user.role === 'member' || hasPermission(user.permissions, 'settings_manage')) return 'settings';
+  const order = ['dashboard', 'ledger', 'payments', 'members', 'reports', 'reconciliation', 'settings'];
+  const isMember = user.role === 'member';
+  const can = (tab) => {
+    switch (tab) {
+      case 'dashboard': return isMember || hasPermission(user.permissions, 'dashboard_view');
+      case 'ledger': return isMember || hasPermission(user.permissions, 'read_ledger') || hasPermission(user.permissions, 'read_coop_ledger');
+      case 'payments': return hasPermission(user.permissions, 'read_remittance');
+      case 'members': return !isMember && hasPermission(user.permissions, 'read_member');
+      case 'reports': return !isMember && hasPermission(user.permissions, 'read_member');
+      case 'reconciliation': return hasPermission(user.permissions, 'read_reconcile');
+      case 'settings': return isMember || hasPermission(user.permissions, 'settings_manage');
+      default: return false;
+    }
+  };
+  for (const tab of order) {
+    if (can(tab)) return tab;
+  }
   return 'dashboard';
 }
 
 const savedSession = loadSavedSession();
+
+// Global "Remember me": pre-fill the last remembered username on cold start.
+const rememberedIdentity = loadRememberedIdentity();
 
 // If sessionStorage was cleared (e.g. after Chrome crash), try IndexedDB async
 if (!savedSession) {
@@ -27,7 +42,8 @@ if (!savedSession) {
 const state = {
   isOnline: navigator.onLine,
   stage: 1,
-  username: '',
+  username: rememberedIdentity?.username || '',
+  rememberMe: !!rememberedIdentity,
   password: '',
   selectedCooperativeId: '',
   cooperatives: [],

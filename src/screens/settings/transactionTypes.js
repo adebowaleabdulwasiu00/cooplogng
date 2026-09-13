@@ -28,11 +28,12 @@ function renderClassificationBadge(classification) {
 
 export function renderTransactionTypesSection(area) {
   area.innerHTML = `
-      <h3>Transaction Types</h3>
-      <p class="section-desc">Manage transaction types for remittances and financial tracking.</p>
-      <div id="transaction-type-form-container"></div>
-      <div style="margin-bottom: 1rem; text-align: right;">
-        <button id="show-add-transaction-type-btn" class="primary-button" style="padding: 0.5rem 1.25rem; font-size: 0.85rem; width: ${window.innerWidth <= 768 ? '100%' : 'auto'};">+ Add Transaction Type</button>
+      <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.5rem;">
+        <div>
+          <h3 style="margin:0;">Transaction Types</h3>
+          <p class="section-desc" style="margin: 0.35rem 0 0 0;">Manage transaction types for remittances and financial tracking.</p>
+        </div>
+        <button id="show-add-transaction-type-btn" class="primary-button" style="padding: 0.6rem 1.5rem; font-size: 0.85rem; border-radius: var(--radius-md); width: ${window.innerWidth <= 768 ? '100%' : 'auto'};">+ Add Transaction Type</button>
       </div>
       <div id="transaction-type-table-container" class="table-responsive"><p style="color: var(--text-muted); font-style: italic;">Loading transaction types...</p></div>
     `;
@@ -44,8 +45,6 @@ export async function setupTransactionTypesListeners(user, cooperativeId) {
 
   const showTransactionTypeForm = async (transactionType = null) => {
     editingTransactionType = transactionType;
-    const fc = document.getElementById('transaction-type-form-container');
-    if (!fc) return;
 
     let isInUse = false;
     let isSystemDefault = false;
@@ -53,40 +52,68 @@ export async function setupTransactionTypesListeners(user, cooperativeId) {
       isSystemDefault = transactionType.is_system_default === 1 || transactionType.is_system_default === true;
       isInUse = await isTransactionTypeUsed(cooperativeId, transactionType.id);
     }
+    const locked = isInUse || isSystemDefault;
 
-    fc.innerHTML = `
-        <div class="inline-form" style="display:flex; flex-direction:column; gap:1.25rem;">
-          <div class="field">
-            <label>${transactionType ? 'Edit' : 'New'} Transaction Type Name</label>
-            <input type="text" id="transaction-type-name-input" value="${escapeHtml(transactionType?.transaction_type || '')}" placeholder="Enter transaction type name" required ${(isInUse || isSystemDefault) ? 'disabled style="opacity:0.6; cursor:not-allowed;"' : ''}>
+    const overlay = document.createElement('div');
+    overlay.className = 'settings-modal-overlay';
+    overlay.innerHTML = `
+        <div class="settings-modal-content" style="max-width: 560px;">
+          <div class="modal-header">
+            <div>
+              <h3>${transactionType ? 'Edit Transaction Type' : 'Add Transaction Type'}</h3>
+              <p class="modal-sub">${transactionType ? `Update <strong>${escapeHtml(transactionType.transaction_type || '')}</strong>.` : 'Define a new type used across remittances and ledgers.'}</p>
+            </div>
+            <button id="close-tt-modal-x" style="background:var(--bg-secondary); border:1px solid var(--border-light); color:var(--text-muted); font-size:1.1rem; cursor:pointer; width:32px; height:32px; border-radius:50%; flex-shrink:0; line-height:1;">&times;</button>
           </div>
-          <div class="field">
-            <label>Classification</label>
-            <select id="transaction-type-classification-input" ${(isInUse || isSystemDefault) ? 'disabled style="opacity:0.6; cursor:not-allowed;"' : ''}>
-              ${CLASSIFICATION_OPTIONS.map(c => `<option value="${c}" ${transactionType?.classification === c ? 'selected' : ''}>${c}</option>`).join('')}
-            </select>
+          <div class="modal-body">
+            ${isSystemDefault ? '<div class="stg-notice muted" style="margin-bottom: 1.25rem;">This is a system default type. Only Active status can be changed.</div>' : ''}
+            ${(!isSystemDefault && isInUse) ? '<div class="stg-notice muted" style="margin-bottom: 1.25rem;">This type is already used in remittances. Only Active status can be changed.</div>' : ''}
+            <div class="stg-section">
+              <div class="stg-section-title">Type Details</div>
+              <div style="display:flex; flex-direction:column; gap:1rem;">
+                <div class="stg-field">
+                  <span>Transaction Type Name *</span>
+                  <input type="text" id="transaction-type-name-input" value="${escapeHtml(transactionType?.transaction_type || '')}" placeholder="e.g. Monthly Dues" required ${locked ? 'disabled' : ''}>
+                </div>
+                <div class="stg-field">
+                  <span>Classification</span>
+                  <select id="transaction-type-classification-input" ${locked ? 'disabled' : ''}>
+                    ${CLASSIFICATION_OPTIONS.map(c => `<option value="${c}" ${transactionType?.classification === c ? 'selected' : ''}>${c}</option>`).join('')}
+                  </select>
+                  <div class="stg-helper">Determines how this type appears in financial reports.</div>
+                </div>
+              </div>
+            </div>
+            <div class="stg-section">
+              <div class="stg-section-title">Status</div>
+              <label class="stg-check-card">
+                <input type="checkbox" id="transaction-type-active-input" ${(transactionType?.is_active ?? true) ? 'checked' : ''}>
+                <div><div class="stg-check-title">Active</div><div class="stg-check-desc">Inactive types are hidden from new remittances.</div></div>
+              </label>
+            </div>
           </div>
-          <div class="field" style="display:flex; align-items:center; gap:0.75rem;">
-            <input type="checkbox" id="transaction-type-active-input" ${(transactionType?.is_active ?? true) ? 'checked' : ''}>
-            <label for="transaction-type-active-input" style="margin:0;">Active</label>
-          </div>
-          ${isSystemDefault ? '<p style="font-size:0.8rem; color:var(--text-muted);">This is a system default transaction type and cannot be modified.</p>' : ''}
-          ${isInUse ? '<p style="font-size:0.8rem; color:var(--text-muted);">This transaction type is already in use and cannot be modified.</p>' : ''}
-          <div style="display:flex; gap:0.5rem;">
-            <button id="save-transaction-type-btn" class="primary-button" style="padding: 0.6rem 1.5rem; font-size: 0.85rem; height: fit-content;">${transactionType ? 'Update' : 'Add'}</button>
-            <button id="cancel-transaction-type-btn" class="secondary-button" style="padding: 0.6rem 1rem; font-size: 0.85rem; height: fit-content; border: 1px solid var(--border-medium); background: transparent; color: var(--text-primary);">Cancel</button>
+          <div class="modal-footer">
+            <button id="cancel-transaction-type-btn" class="secondary-button" style="padding: 0.7rem 1.5rem; border-radius: var(--radius-md);">Cancel</button>
+            <button id="save-transaction-type-btn" class="primary-button" style="padding: 0.7rem 2rem; border-radius: var(--radius-md);">${transactionType ? 'Update' : 'Add Type'}</button>
           </div>
         </div>
       `;
-    document.getElementById('cancel-transaction-type-btn')?.addEventListener('click', () => { editingTransactionType = null; fc.innerHTML = ''; });
-    document.getElementById('save-transaction-type-btn')?.addEventListener('click', async () => {
-      const name = document.getElementById('transaction-type-name-input').value.trim();
-      const classification = document.getElementById('transaction-type-classification-input').value;
-      const isActive = document.getElementById('transaction-type-active-input')?.checked ?? true;
+    document.body.appendChild(overlay);
+
+    const closeModal = () => { overlay.remove(); editingTransactionType = null; };
+    overlay.querySelector('#close-tt-modal-x').onclick = closeModal;
+    overlay.querySelector('#cancel-transaction-type-btn')?.addEventListener('click', closeModal);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
+    overlay.querySelector('#save-transaction-type-btn')?.addEventListener('click', async () => {
+      const name = overlay.querySelector('#transaction-type-name-input').value.trim();
+      const classification = overlay.querySelector('#transaction-type-classification-input').value;
+      const isActive = overlay.querySelector('#transaction-type-active-input')?.checked ?? true;
 
       if (!name) { showToast('Transaction type name is required.', 'warning'); return; }
+      const saveBtn = overlay.querySelector('#save-transaction-type-btn');
 
       try {
+        saveBtn.disabled = true; saveBtn.innerText = 'Saving...';
         if (editingTransactionType) {
           if (isSystemDefault || isInUse) {
             // Only allow changing is_active if system default or in use
@@ -97,9 +124,9 @@ export async function setupTransactionTypesListeners(user, cooperativeId) {
         } else {
           await createTransactionType(cooperativeId, name, classification, user.username);
         }
-        editingTransactionType = null; fc.innerHTML = '';
+        closeModal();
         loadTransactionTypes();
-      } catch (err) { showToast('Error: ' + err.message, 'error'); }
+      } catch (err) { showToast('Error: ' + err.message, 'error'); saveBtn.disabled = false; saveBtn.innerText = editingTransactionType ? 'Update' : 'Add Type'; }
     });
   };
 

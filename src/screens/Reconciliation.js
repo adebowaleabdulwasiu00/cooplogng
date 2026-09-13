@@ -2,6 +2,7 @@ import { getReconciliationTotals, saveReconciliationSummary, fetchBanks, getReco
 import { hasPermission } from '../services/permissionService.js'
 import { formatCurrency, escapeHtml } from '../utils/formatters.js'
 import { showToast } from '../services/toastService.js'
+import { showWorkspaceSpinner } from '../components/workspaceSpinner.js'
 
 export async function renderReconciliation(state, container) {
   const user = state.welcomeUser
@@ -31,7 +32,8 @@ export async function renderReconciliation(state, container) {
     d.setMonth(d.getMonth() - 1)
   }
 
-  // Fetch Banks
+  // Fetch Banks (spinner first — same workspace loader as other pages)
+  showWorkspaceSpinner(container);
   let banks = []
   try {
     banks = await fetchBanks(state.welcomeUser.cooperativeId)

@@ -1,4 +1,5 @@
-import { escapeHtml, formatDate, getInitials } from '../../utils/formatters.js'
+import { escapeHtml, formatDate, formatDateTime, getInitials, getAvatarColor } from '../../utils/formatters.js'
+import { enterpriseList } from './membersState.js'
 import { deleteMember } from '../../services/dataService.js'
 import { hasPermission } from '../../services/permissionService.js'
 import { getRemittances, checkMemberHasRemittances } from '../../services/sqliteService.js'
@@ -8,24 +9,7 @@ import { showToast } from '../../services/toastService.js'
 
 const EMPTY_VALUES = new Set(['', 'n/a', 'null', 'undefined', 'not available', 'none', '-'])
 
-// Gmail-style colors for fallback initials (same as membersTable)
-const AVATAR_COLORS = [
-    '#f44336', '#e91e63', '#9c27b0', '#673ab7',
-    '#3f51b5', '#2196f3', '#03a9f4', '#00bcd4',
-    '#009688', '#4caf50', '#8bc34a', '#cddc39',
-    '#ffeb3b', '#ffc107', '#ff9800', '#ff5722'
-]
-
-function getAvatarColor(name) {
-    if (!name) return '#999'
-    let hash = 0
-    for (let i = 0; i < name.length; i++) {
-        hash = name.charCodeAt(i) + ((hash << 5) - hash)
-    }
-    const index = Math.abs(hash) % AVATAR_COLORS.length
-    return AVATAR_COLORS[index]
-}
-
+// Avatar colors shared via utils/formatters.js:getAvatarColor
 function isMeaningful(val) {
     if (val === null || val === undefined) return false
     const s = String(val).trim()
@@ -138,6 +122,47 @@ export async function renderMemberModal(m, user) {
         fieldRow('Account No',   m.account_number),
         fieldRow('Account Name', m.account_name),
     ].join('')
+
+    // ── Managers (chips; CSS .md-manager-chips/.md-chip already existed) ──
+    const managers = String(m.account_manager || '').split(',').map(s => s.trim()).filter(Boolean)
+    const managersHtml = managers.length
+        ? `<div class="md-field full"><div class="md-label">Managers</div><div class="md-manager-chips">${managers.map(x => `<span class="md-chip">${escapeHtml(x)}</span>`).join('')}</div></div>`
+        : ''
+
+    // ── Payment advice summary (enterprise names resolved when available) ──
+    const entName = (id) => {
+        const found = (enterpriseList || []).find(e => String(e.id) === String(id))
+        return found ? (found.account_name || found.name || String(id)) : String(id)
+    }
+    const advices = Array.isArray(m.payment_advise) ? m.payment_advise.filter(a => parseFloat(a.amount || 0) > 0) : []
+    const adviceTotal = advices.reduce((s, a) => s + (parseFloat(a.amount || 0) || 0), 0)
+    const adviceHtml = advices.length
+        ? `<div class="md-field full"><div class="md-label">Monthly Advice • Total ₦${adviceTotal.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div><div class="md-manager-chips">${advices.map(a => `<span class="md-chip">${escapeHtml(entName(a.enterprise_id))}: ₦${Number(a.amount || 0).toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>`).join('')}</div></div>`
+        : ''
+
+    // ── Signature on file (inline thumb; tap to enlarge in its own view) ──
+    const signatureHtml = isMeaningful(m.signature_path)
+        ? `<div class="md-field full"><div class="md-label">Signature</div><div class="md-value"><img id="md-signature-thumb" src="${m.signature_path}" alt="Signature" title="Tap to enlarge" style="max-height: 3rem; max-width: 220px; object-fit: contain; background: #fff; border: 1px solid var(--border-light); border-radius: 6px; padding: 2px 6px; cursor: zoom-in;"></div></div>`
+        : ''
+
+    // ── Audit trail ──
+    const auditFields = [
+        fieldRow('Created By', m.created_by),
+        fieldRow('Created At', m.created_at ? formatDateTime(m.created_at) : null),
+        fieldRow('Modified By', m.modified_by || m.created_by),
+        fieldRow('Modified At', (m.modified_at || m.created_at) ? formatDateTime(m.modified_at || m.created_at) : null),
+    ].join('')
+
+    // ── Quick-contact actions ──
+    const digitsOnly = String(m.mobile || '').replace(/\D/g, '')
+    const waNumber = digitsOnly.length > 10 ? digitsOnly : (digitsOnly ? `234${digitsOnly.slice(-10).replace(/^0/, '')}` : '')
+    const quickActionsHtml = `
+        <div class="md-quick-actions">
+            ${digitsOnly ? `<a class="md-qa" href="tel:${escapeHtml(digitsOnly)}">Call</a>` : ''}
+            ${waNumber ? `<a class="md-qa" href="https://wa.me/${escapeHtml(waNumber)}" target="_blank" rel="noopener">WhatsApp</a>` : ''}
+            ${digitsOnly ? `<button type="button" class="md-qa" id="md-copy-mobile">Copy number</button>` : ''}
+        </div>
+    `
 
     // ── Footer buttons ────────────────────────────────────────────────────────
     const editBtn       = canEditThis
@@ -283,6 +308,19 @@ export async function renderMemberModal(m, user) {
         /* ── Full-width field (address etc.) ── */
         .md-field.full { grid-column: 1 / -1; }
 
+        /* ── Quick actions under hero ── */
+        .md-quick-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: center; margin-top: 0.9rem; }
+        .md-qa {
+            display: inline-flex; align-items: center;
+            padding: 0.4rem 0.9rem; border-radius: 999px;
+            font-size: 0.76rem; font-weight: 700;
+            background: var(--bg-secondary); color: var(--text-primary);
+            border: 1px solid var(--border-medium);
+            text-decoration: none; cursor: pointer; font-family: inherit;
+            transition: background 0.15s ease;
+        }
+        .md-qa:hover { background: var(--accent-soft); border-color: var(--accent-primary); color: var(--accent-primary); }
+
         /* ── Manager chips ── */
         .md-manager-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; }
         .md-chip {
@@ -394,6 +432,7 @@ export async function renderMemberModal(m, user) {
                 <span class="md-badge">Reg No: ${padRegNo}</span>
                 ${isMeaningful(m.special_id) ? `<span class="md-badge">ID: ${escapeHtml(m.special_id)}</span>` : ''}
               </div>
+              ${quickActionsHtml}
             </div>
 
             ${section('Personal Information', ICONS.personal, personalFields)}
@@ -413,6 +452,8 @@ export async function renderMemberModal(m, user) {
             ${section('Employment Information', ICONS.employment, employmentFields)}
             ${section('Next of Kin', ICONS.nok, nokFields)}
             ${section('Bank Details', ICONS.bank, bankFields)}
+            ${section('Managers & Advice', ICONS.membership, [managersHtml, adviceHtml, signatureHtml].join(''))}
+            ${section('Record History', ICONS.membership, auditFields)}
 
           </div>
 
@@ -431,68 +472,85 @@ export async function renderMemberModal(m, user) {
     
     const modal = document.getElementById('member-details-modal')
 
-    // ── Close button ──────────────────────────────────────────────────────────
-    modal.querySelector('#md-close-btn').addEventListener('click', () => modal.remove())
-    modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove() })
+    // ── Close button / overlay / Escape ───────────────────────────────────────
+    const closeModal = () => { hideOverlay(); modal.remove() }
+    modal.querySelector('#md-close-btn').addEventListener('click', closeModal)
+    modal.addEventListener('click', (e) => { if (e.target === modal) closeModal() })
+    const onEsc = (e) => { if (e.key === 'Escape') closeModal() }
+    document.addEventListener('keydown', onEsc, { once: true })
+    modal.querySelector('#md-close-btn')?.focus?.()
 
-    // ── Press-and-hold image preview ─────────────────────────────────────────
+    // ── Copy mobile number ──────────────────────────────────────────────────
+    modal.querySelector('#md-copy-mobile')?.addEventListener('click', async () => {
+        const num = String(m.mobile || '')
+        if (!num) return
+        try {
+            await navigator.clipboard.writeText(num)
+            showToast('Number copied.', 'success')
+        } catch {
+            const ta = document.createElement('textarea')
+            ta.value = num
+            document.body.appendChild(ta)
+            ta.select()
+            try { document.execCommand('copy') } catch {}
+            ta.remove()
+            showToast('Number copied.', 'success')
+        }
+    })
+
+    // ── Single-click image preview (photo only) + tap-to-enlarge signature ──
+    // Each opens its own overlay: photo viewer shows just the photo,
+    // signature viewer shows just the signature. Click outside or Escape closes.
+    const showOverlay = (innerHtml) => {
+        hideOverlay()
+        const overlay = document.createElement('div')
+        overlay.id = 'md-img-preview'
+        overlay.innerHTML = innerHtml
+        overlay.addEventListener('click', hideOverlay)
+        document.body.appendChild(overlay)
+        document.addEventListener('keydown', function onKey(e) {
+            if (e.key === 'Escape') {
+                hideOverlay()
+                document.removeEventListener('keydown', onKey)
+            }
+        })
+    }
+    const hideOverlay = () => {
+        document.getElementById('md-img-preview')?.remove()
+    }
+
     const avatarWrap = modal.querySelector('#md-avatar-wrap')
     if (avatarWrap) {
-        let previewEl = null
-        let pressTimer = null
-
-        const showPreview = () => {
-            if (previewEl) return
-            previewEl = document.createElement('div')
-            previewEl.id = 'md-img-preview'
+        avatarWrap.title = 'View photo'
+        avatarWrap.addEventListener('click', (e) => {
+            e.stopPropagation()
             const initials = getInitials(m.name)
             const color = getAvatarColor(m.name)
-            const photoSection = m.image_path
+            showOverlay(m.image_path
                 ? `<div class="md-preview-image-wrap">
-                        <img src="${m.image_path}" alt="${escapeHtml(m.name)}" draggable="false">
-                        <div class="md-preview-meta">
-                            <div class="md-preview-initials-sm" style="background-color: ${color}">${escapeHtml(initials)}</div>
-                            <div class="md-preview-name">${escapeHtml(m.name)}</div>
-                        </div>
-                    </div>`
+                       <img src="${m.image_path}" alt="${escapeHtml(m.name)}" draggable="false">
+                       <div class="md-preview-meta">
+                           <div class="md-preview-initials-sm" style="background-color: ${color}">${escapeHtml(initials)}</div>
+                           <div class="md-preview-name">${escapeHtml(m.name)}</div>
+                       </div>
+                   </div>`
                 : `<div class="md-preview-initials-wrap">
-                        <div class="md-preview-initials-circle" style="background-color: ${color}">${escapeHtml(initials)}</div>
-                        <div class="md-preview-name">${escapeHtml(m.name)}</div>
-                    </div>`
-            const signatureSection = m.signature_path
-                ? `<div class="md-preview-signature-wrap" style="margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--border-light); text-align: center;">
-                        <div style="font-size: 0.7rem; color: var(--text-muted); margin-bottom: 0.25rem; text-transform: uppercase; letter-spacing: 0.05em;">Signature</div>
-                        <img src="${m.signature_path}" alt="Signature" style="max-height: 3.5rem; max-width: 100%; object-fit: contain;">
-                    </div>`
-                : ''
-            previewEl.innerHTML = `<div style="display: flex; flex-direction: column; align-items: center;">${photoSection}${signatureSection}</div>`
-            document.body.appendChild(previewEl)
-        }
+                       <div class="md-preview-initials-circle" style="background-color: ${color}">${escapeHtml(initials)}</div>
+                       <div class="md-preview-name">${escapeHtml(m.name)}</div>
+                   </div>`)
+        })
+    }
 
-        const hidePreview = () => {
-            if (pressTimer) { clearTimeout(pressTimer); pressTimer = null }
-            if (previewEl) { previewEl.remove(); previewEl = null }
-        }
-
-        const startPress = (e) => {
-            if (e.type === 'touchstart') e.preventDefault()
-            // Stop propagation so it doesn't trigger other clicks
+    const sigThumb = modal.querySelector('#md-signature-thumb')
+    if (sigThumb && m.signature_path) {
+        sigThumb.addEventListener('click', (e) => {
             e.stopPropagation()
-            pressTimer = setTimeout(() => { showPreview() }, 350)
-            document.addEventListener('mouseup', hidePreview, { once: true })
-            document.addEventListener('touchend', hidePreview, { once: true })
-            document.addEventListener('touchcancel', hidePreview, { once: true })
-        }
-
-        avatarWrap.addEventListener('mousedown', startPress)
-        avatarWrap.addEventListener('touchstart', startPress, { passive: false })
-
-        // Clean up listeners when modal is removed
-        const cleanup = () => {
-            hidePreview()
-        }
-        modal.querySelector('#md-close-btn').addEventListener('click', cleanup, { once: true })
-        modal.addEventListener('click', (e) => { if (e.target === modal) cleanup() }, { once: true })
+            showOverlay(`
+                <div style="background: #fff; border-radius: 14px; padding: 1.5rem 1.75rem; max-width: min(88vw, 520px); width: 100%; box-shadow: 0 24px 80px rgba(0,0,0,0.65); animation: mdScaleIn 0.22s cubic-bezier(0.34,1.3,0.64,1);">
+                    <div style="font-size: 0.72rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 0.75rem;">Signature — ${escapeHtml(m.name)}</div>
+                    <img src="${m.signature_path}" alt="Signature of ${escapeHtml(m.name)}" draggable="false" style="width: 100%; max-height: 52vh; object-fit: contain;">
+                </div>`)
+        })
     }
 
     // ── Edit ─────────────────────────────────────────────────────────────────
@@ -526,7 +584,8 @@ export async function renderMemberModal(m, user) {
 
     // ── View Ledger ───────────────────────────────────────────────────────────
     modal.querySelector('#view-ledger-btn')?.addEventListener('click', () => {
+        const memberName = m.name || `${m.first_name || ''} ${m.last_name || ''}`.trim() || 'Selected Member'
         modal.remove()
-        window.dispatchEvent(new CustomEvent('change-tab', { detail: { tab: 'ledger', memberId: m.id } }))
+        window.dispatchEvent(new CustomEvent('change-tab', { detail: { tab: 'ledger', memberId: m.id, memberName } }))
     })
 }

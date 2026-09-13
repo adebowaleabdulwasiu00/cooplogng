@@ -143,6 +143,7 @@ export async function getEnterpriseAccountData(cooperativeId, user, enterpriseId
 }
 
 export async function getGeneralLedgerData(cooperativeId, dateFrom, dateTo, enterpriseId) {
+    const useSpecialId = localStorage.getItem('useSpecialIdInReports') === 'true';
     let sql = `
         SELECT 
             r.id as remittance_id,
@@ -187,12 +188,14 @@ export async function getGeneralLedgerData(cooperativeId, dateFrom, dateTo, ente
 
     const rows = await queryRows(sql, params);
 
-    let runningBalance = 0;
-    const useSpecialId = localStorage.getItem('useSpecialIdInReports') === 'true';
-
+    // Running balance resets per account — a single total across unrelated
+    // accounts is meaningless.
+    let runningByAccount = {};
     const data = rows.map((row, idx) => {
         const amt = parseFloat(row.amount || 0);
-        runningBalance += amt;
+        const acctKey = row.account_name || 'N/A';
+        runningByAccount[acctKey] = (runningByAccount[acctKey] || 0) + amt;
+        const runningBalance = runningByAccount[acctKey];
 
         const type = (row.account_type || '').toLowerCase();
         const isRevenue = row.is_revenue == 1 || row.is_revenue === '1' || row.is_revenue === 'true' || row.is_revenue === true || type === 'revenue';
@@ -234,6 +237,7 @@ export async function getPersonalLedgerData(cooperativeId, memberId) {
             r.id as remittance_id,
             r.remittance_date,
             e.account_name,
+            e.account_type,
             rd.amount,
             r.transaction_type,
             r.description
@@ -251,13 +255,19 @@ export async function getPersonalLedgerData(cooperativeId, memberId) {
     let runningBalance = 0;
     const data = rows.map((row, idx) => {
         runningBalance += row.amount;
+        // DR/CR follows the account's normal balance: savings/liability and
+        // revenue balances grow on the credit side; loans/assets/expenses on
+        // the debit side (same convention as the General Ledger).
+        const type = (row.account_type || '').toLowerCase();
+        const creditNormal = !(type === 'asset' || type === 'loan' || type === 'expense');
+        const amt = parseFloat(row.amount || 0);
         return [
             idx + 1,
             formatDate(row.remittance_date),
             row.account_name || 'N/A',
             row.transaction_type || 'N/A',
-            row.amount > 0 ? row.amount : '',
-            row.amount < 0 ? -row.amount : '',
+            creditNormal ? (amt > 0 ? amt : '') : (amt < 0 ? -amt : ''),
+            creditNormal ? (amt < 0 ? -amt : '') : (amt > 0 ? amt : ''),
             runningBalance,
             row.description || ''
         ];

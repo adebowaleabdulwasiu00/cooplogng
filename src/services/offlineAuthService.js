@@ -7,8 +7,8 @@
  * 
  * Security:
  * - Passwords are NEVER stored locally.
- * - Only a session token (SHA-256 of uid+coopId+timestamp) is stored.
- * - Sessions expire after 7 days.
+ * - Only a session token (SHA-256 of uid+coopId+timestamp+random) is stored.
+ * - Sessions expire after 10 minutes of inactivity (sliding window).
  * - Permissions snapshot is compared on revalidation; mismatches force logout.
  */
 
@@ -26,12 +26,27 @@ import {
 } from './sqliteService.js'
 import { hashPassword } from '../utils/formatters.js'
 
-const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000  // 7 days
+function generateSecureRandom(length) {
+    const array = new Uint8Array(length);
+    crypto.getRandomValues(array);
+    return Array.from(array, b => b.toString(16).padStart(2, '0')).join('');
+}
+
+const SESSION_TTL_MS = 10 * 60 * 1000  // 10 minutes of inactivity
+// Remembered ("Remember me") sessions live much longer and auto-restore on
+// launch, giving zero-typing sign-in without ever storing a password.
+export const REMEMBER_TTL_MS = 30 * 24 * 60 * 60 * 1000  // 30 days
 const SYNC_SESSION_KEY = 'cooplog-web-session'
+// Alias: how long a session may sit idle before auto-logout.
+// Active users keep their session alive via recordActivity().
+export const INACTIVITY_TIMEOUT_MS = SESSION_TTL_MS
+const ACTIVITY_TOUCH_THROTTLE_MS = 60 * 1000  // extend IndexedDB expiry at most once/min
+const WATCHER_CHECK_MS = 30 * 1000  // inactivity watcher tick
 
 /**
  * Synchronous load for app initialization (main.js state).
  * Uses sessionStorage for immediate tab-session state.
+ * Returns null when the session has been idle past the timeout.
  */
 export function loadSavedSession() {
     try {
@@ -40,6 +55,12 @@ export function loadSavedSession() {
         const session = JSON.parse(raw)
         // Basic validation
         if (!session.cooperativeId || (!session.memberId && session.role === 'member')) {
+            window.sessionStorage.removeItem(SYNC_SESSION_KEY)
+            return null
+        }
+        // Inactivity expiry: idle past the timeout forces a fresh login
+        const lastActive = session.lastActivityTs || 0
+        if (lastActive && Date.now() - lastActive > INACTIVITY_TIMEOUT_MS) {
             window.sessionStorage.removeItem(SYNC_SESSION_KEY)
             return null
         }
@@ -56,16 +77,183 @@ export function clearSavedSession() {
     window.sessionStorage.removeItem(SYNC_SESSION_KEY)
 }
 
+let _lastTouchTs = 0
+let _lastActivityWriteTs = 0
+const ACTIVITY_WRITE_THROTTLE_MS = 5 * 1000  // sessionStorage stamp at most every 5s
+
+/**
+ * Record user activity: refreshes the idle clock in sessionStorage so
+ * active users are never logged out. Extends the IndexedDB offline
+ * session expiry at most once per minute (sliding 10-min window).
+ * Cheap and safe to call from global interaction listeners.
+ */
+export function recordActivity() {
+    try {
+        const now = Date.now()
+        // Throttle the sessionStorage read/write (fires on every mousemove)
+        if (now - _lastActivityWriteTs < ACTIVITY_WRITE_THROTTLE_MS) return
+        const raw = window.sessionStorage.getItem(SYNC_SESSION_KEY)
+        if (!raw) return
+        const session = JSON.parse(raw)
+        _lastActivityWriteTs = now
+        session.lastActivityTs = now
+        window.sessionStorage.setItem(SYNC_SESSION_KEY, JSON.stringify(session))
+
+        // Sliding expiry for the persistent offline session (throttled)
+        if (now - _lastTouchTs > ACTIVITY_TOUCH_THROTTLE_MS) {
+            _lastTouchTs = now
+            const coopId = session.cooperativeId
+            const userId = session.userId || session.memberId || session.userDoc?.id
+            if (coopId && userId) {
+                touchSession(coopId, userId).catch(() => {})
+            }
+        }
+    } catch {
+        // never break the UI on activity bookkeeping
+    }
+}
+
+let _watcherStarted = false
+
+/**
+ * Start the inactivity auto-logout watcher (idempotent).
+ * Every 30s: if logged in and idle longer than the timeout,
+ * `onTimeout` is invoked (the app performs a full logout there).
+ */
+export function startInactivityWatcher(onTimeout) {
+    if (_watcherStarted) return
+    _watcherStarted = true
+    setInterval(() => {
+        try {
+            const raw = window.sessionStorage.getItem(SYNC_SESSION_KEY)
+            if (!raw) return
+            const session = JSON.parse(raw)
+            if (!session?.cooperativeId) return
+            const lastActive = session.lastActivityTs || 0
+            if (Date.now() - lastActive > INACTIVITY_TIMEOUT_MS) {
+                onTimeout && onTimeout()
+            }
+        } catch {
+            // ignore
+        }
+    }, WATCHER_CHECK_MS)
+}
+
+/**
+ * Persist the current tab so resume (reload / cold start) lands back on the
+ * last page. Writes sessionStorage synchronously plus the IndexedDB session
+ * row best-effort (the row is what cold starts read). Fire-and-forget safe.
+ */
+export async function persistActiveTab(tab) {
+    if (!tab) return
+    try {
+        const raw = window.sessionStorage.getItem(SYNC_SESSION_KEY)
+        if (raw) {
+            const s = JSON.parse(raw)
+            s.activeTab = tab
+            s.lastActivityTs = Date.now()
+            window.sessionStorage.setItem(SYNC_SESSION_KEY, JSON.stringify(s))
+            const coopId = s.cooperativeId
+            const userId = s.userId || s.memberId || s.userDoc?.id
+            if (coopId && userId) {
+                const key = makeSessionKey(coopId, userId)
+                const row = await loadLocalSession(key).catch(() => null)
+                if (row && row.active_tab !== tab) {
+                    await saveLocalSession(key, { ...row, active_tab: tab }).catch(() => {})
+                }
+            }
+        }
+    } catch {
+        // never break navigation on bookkeeping
+    }
+}
+
+/**
+ * Repair a restored welcomeUser against the CURRENT local database.
+ * Persisted snapshots (role/permissions/enterprises/coop name) can predate
+ * admin changes or have been saved as '' by older builds. A fresh login
+ * already rebuilds these from the live user doc (main.js), so restore must
+ * do the same from the local users/members + cooperatives tables —
+ * otherwise the dashboard filters on stale rights and shows the coop id.
+ * Best-effort: never throws, returns the (possibly unrepaired) object.
+ */
+export async function repairWelcomeUser(welcomeUser) {
+    if (!welcomeUser) return welcomeUser
+    try {
+        const { getDocById_Global } = await import('./sqliteService.js')
+        const isMember = welcomeUser.role === 'member' || welcomeUser.userCollection === 'members'
+        const collection = isMember ? 'members' : 'users'
+        const id = welcomeUser.userId || welcomeUser.memberId
+        if (id) {
+            const row = await getDocById_Global(collection, String(id)).catch(() => null)
+            if (row && !row.is_deleted) {
+                welcomeUser.role = collection === 'members' ? 'member' : (row.role || welcomeUser.role)
+                if (row.permissions !== undefined) welcomeUser.permissions = row.permissions
+                const rights = row.enterprise_rights || row.enterprises
+                if (rights !== undefined) {
+                    welcomeUser.enterprises = rights
+                    welcomeUser.enterprise_rights = rights
+                }
+                welcomeUser.username = row.username || row.mobile || welcomeUser.username
+                welcomeUser.fullName = collection === 'members'
+                    ? (`${row.last_name || ''} ${row.first_name || ''} ${row.middle_name || ''}`.trim() || welcomeUser.fullName)
+                    : (row.full_name || row.username || welcomeUser.fullName)
+            }
+        }
+        // memberId must mirror a fresh login: members keep it, staff/admin get
+        // null. A stale user_id here member-scopes balance/remittance/member
+        // queries (balance.js) and zeroes the whole dashboard.
+        if (welcomeUser.role === 'member') {
+            welcomeUser.memberId = welcomeUser.memberId || welcomeUser.userId || null
+        } else {
+            welcomeUser.memberId = null
+        }
+        if (welcomeUser.cooperativeId && (!welcomeUser.cooperativeName || welcomeUser.cooperativeName === welcomeUser.cooperativeId)) {
+            const coop = await getDocById_Global('cooperatives', String(welcomeUser.cooperativeId)).catch(() => null)
+            const name = coop?.full_name || coop?.short_name
+            if (name) welcomeUser.cooperativeName = name
+        }
+    } catch {
+        // repair is best-effort; a partial session is better than no session
+    }
+    return welcomeUser
+}
+
 /**
  * Restore a persisted session from IndexedDB into sessionStorage.
  * Used after sessionStorage is cleared (e.g. browser crash).
+ * The restored session is repaired against the local DB (see
+ * repairWelcomeUser) and written back so the next restore is clean.
  */
 export async function restoreSessionFromIndexedDB() {
     try {
         const session = await loadBestOfflineSession()
         if (!session) return null
         const welcomeUser = sessionToWelcomeUser(session)
+        await repairWelcomeUser(welcomeUser)
+        // Policy: no dashboard on a weak stored credential. A restored
+        // session skips password entry, so re-check the live row here —
+        // plaintext hash or explicit flag means fresh login + forced change.
+        if (await sessionRequiresPasswordChange(welcomeUser).catch(() => false)) {
+            console.warn('[OfflineAuth] Restored session requires password change; forcing fresh login.')
+            return null
+        }
+        welcomeUser.lastActivityTs = Date.now()
         window.sessionStorage.setItem(SYNC_SESSION_KEY, JSON.stringify(welcomeUser))
+        // Persist the repaired snapshots back so future restores are clean
+        try {
+            await saveLocalSession(`${session.cooperative_id}_${session.user_id}`, {
+                ...session,
+                cooperative_name: welcomeUser.cooperativeName || session.cooperative_name || '',
+                permissions_snapshot: JSON.stringify(welcomeUser.permissions ?? ''),
+                enterprises_snapshot: JSON.stringify(welcomeUser.enterprises ?? welcomeUser.enterprise_rights ?? ''),
+                full_name: welcomeUser.fullName || session.full_name || '',
+                username: welcomeUser.username || session.username || '',
+                last_verified_ts: Date.now(),
+            })
+        } catch {
+            // persist-back is best-effort
+        }
         return welcomeUser
     } catch {
         return null
@@ -74,15 +262,18 @@ export async function restoreSessionFromIndexedDB() {
 
 /**
  * Save session for both immediate use and long-term offline persistence.
+ * `remember` (from the login screen's Remember-me checkbox) grants the
+ * persistent session a 30-day life so launches auto-sign-in; otherwise the
+ * standard 10-minute inactivity expiry applies. Passwords are never stored.
  */
-export async function saveSessionLocally(session, password) {
+export async function saveSessionLocally(session, password, remember) {
     if (!session) {
         clearSavedSession()
         return
     }
 
-    // 1. Sync save for main.js state
-    const payload = { ...session }
+    // 1. Sync save for main.js state (stamped so idle sessions can expire)
+    const payload = { ...session, lastActivityTs: Date.now() }
     window.sessionStorage.setItem(SYNC_SESSION_KEY, JSON.stringify(payload))
 
     // 2. Async save for long-term offline login persistence
@@ -98,7 +289,10 @@ export async function saveSessionLocally(session, password) {
         memberId: session.memberId,
         fullName: session.fullName,
         cooperativeName: session.cooperativeName,
-        activeTab: session.activeTab || 'history'
+        activeTab: session.activeTab || 'history',
+        // undefined = not a login event: keep whatever the stored row has
+        // (dashboard re-renders must not demote remembered sessions).
+        remember,
     }
 
     // Fire-and-forget: offline persistence is best-effort, non-critical for login
@@ -128,7 +322,11 @@ export async function attemptOfflineLogin(username, password, cooperativeId) {
     const normalizedUsername = String(username || '').trim().toLowerCase()
     const { hashPassword } = await import('../utils/formatters.js')
     const pwdHash = await hashPassword(password)
-    const session = await validateOfflineLogin(normalizedUsername, pwdHash, cooperativeId)
+    const session = await validateOfflineLogin(normalizedUsername, pwdHash, cooperativeId, String(password || ''))
+    // Preserve the force-change signal: sessionToWelcomeUser only maps full
+    // sessions and would strip it, leaving a hollow (all-undefined) user
+    // that sails past the modal straight to an Access-Denied dashboard.
+    if (session && session.forceChange) return session
     return sessionToWelcomeUser(session)
 }
 
@@ -140,7 +338,7 @@ function makeSessionKey(cooperativeId, userId) {
  * Generate a secure session token (no password stored).
  */
 async function generateSessionToken(userId, cooperativeId) {
-    const raw = `${userId}|${cooperativeId}|${Date.now()}|${Math.random()}`
+    const raw = `${userId}|${cooperativeId}|${Date.now()}|${generateSecureRandom(16)}`
     return hashPassword(raw)
 }
 
@@ -168,6 +366,18 @@ export async function saveOfflineSession(sessionData) {
     const token = await generateSessionToken(userId, cooperativeId)
     const now = Date.now()
     const sessionKey = makeSessionKey(cooperativeId, userId)
+    // Explicit true/false comes from a login event; undefined means a
+    // background re-save (e.g. dashboard render) — inherit the stored flag
+    // so those never demote a remembered session back to 10 minutes.
+    let remembered = !!sessionData.remember
+    if (sessionData.remember === undefined) {
+        try {
+            const existing = await loadLocalSession(sessionKey).catch(() => null)
+            if (existing && existing.remember) remembered = true
+        } catch {
+            // inherit-best-effort only
+        }
+    }
 
     await saveLocalSession(sessionKey, {
         user_id: userId,
@@ -183,8 +393,9 @@ export async function saveOfflineSession(sessionData) {
         cooperative_name: cooperativeName || '',
         active_tab: activeTab || 'history',
         session_token: token,
+        remember: remembered,
         last_verified_ts: now,
-        session_expires_ts: now + SESSION_TTL_MS,
+        session_expires_ts: now + (remembered ? REMEMBER_TTL_MS : SESSION_TTL_MS),
         created_ts: now,
     })
 
@@ -241,7 +452,7 @@ export async function loadOfflineSession(cooperativeId, userId) {
  * @param {string} cooperativeId
  * @returns session object or null
  */
-export async function validateOfflineLogin(username, passwordHash, cooperativeId) {
+export async function validateOfflineLogin(username, passwordHash, cooperativeId, plaintextPassword = '') {
     try {
         const coopId = String(cooperativeId)
         const normalizedInput = String(username || '').toLowerCase()
@@ -255,7 +466,7 @@ export async function validateOfflineLogin(username, passwordHash, cooperativeId
         const usersByE = await getUserByEmail(coopId, username)
         for (const u of [...users, ...usersByE]) {
             const stored = u.password_hash || ''
-            if (stored && (stored === passwordHash || stored === String(username || ''))) {
+            if (stored && (stored === passwordHash || (plaintextPassword && stored === plaintextPassword))) {
                 userDoc = u
                 collection = 'users'
                 break
@@ -279,7 +490,7 @@ export async function validateOfflineLogin(username, passwordHash, cooperativeId
                 })
                 if (matches) {
                     const stored = m.password_hash || ''
-                    if (stored && (stored === passwordHash || stored === String(username || ''))) {
+                    if (stored && (stored === passwordHash || (plaintextPassword && stored === plaintextPassword))) {
                         userDoc = m
                         collection = 'members'
                         break
@@ -289,6 +500,14 @@ export async function validateOfflineLogin(username, passwordHash, cooperativeId
         }
 
         if (!userDoc) return null
+
+        // Same 6-digit PIN policy as online login (see formatters.js):
+        // 6-digit PINs pass, grandfathered legacy-complex passwords pass,
+        // plain-text non-legacy and old <6-digit PINs must change.
+        const { needsForceChangeAfterMatch } = await import('../utils/formatters.js')
+        if (needsForceChangeAfterMatch(userDoc.password_hash || '', plaintextPassword, userDoc.force_password_change === true)) {
+            return { forceChange: true, userDoc, collection };
+        }
 
         if (collection === 'members' && userDoc) {
             const lastLoginStr = new Date().toISOString()
@@ -314,11 +533,22 @@ export async function validateOfflineLogin(username, passwordHash, cooperativeId
         const userId = userDoc.id
         const sessionKey = makeSessionKey(coopId, userId)
         let session = await loadLocalSession(sessionKey)
+        const _now = Date.now()
 
         if (!session) {
-            // Build a "synthetic" session if one doesn't exist
+            // Build a "synthetic" session if one doesn't exist.
+            // Snapshots come straight from the live local userDoc, and the
+            // coop name is resolved locally so restores never show the id.
             const role = collection === 'members' ? 'member' : (userDoc.role || 'user')
             const now = Date.now()
+            let coopName = ''
+            try {
+                const { getDocById_Global } = await import('./sqliteService.js')
+                const coop = await getDocById_Global('cooperatives', String(coopId)).catch(() => null)
+                coopName = coop?.full_name || coop?.short_name || ''
+            } catch {
+                // name lookup is best-effort
+            }
             session = {
                 user_id: userId,
                 user_collection: collection,
@@ -332,7 +562,7 @@ export async function validateOfflineLogin(username, passwordHash, cooperativeId
                     ? `${userDoc.last_name || ''} ${userDoc.first_name || ''} ${userDoc.middle_name || ''}`.trim() || (userDoc.username || userDoc.mobile)
                     : (userDoc.full_name || userDoc.username),
                 registration_no: userDoc.registration_no || '',
-                cooperative_name: '', 
+                cooperative_name: coopName,
                 active_tab: 'history',
                 session_token: 'offline_' + now,
                 last_verified_ts: now,
@@ -340,11 +570,30 @@ export async function validateOfflineLogin(username, passwordHash, cooperativeId
                 created_ts: now,
             }
             await saveLocalSession(sessionKey, session)
-        } else if (!session.full_name) {
-            // Update old session with full_name
-            session.full_name = collection === 'members' 
-                ? `${userDoc.last_name || ''} ${userDoc.first_name || ''} ${userDoc.middle_name || ''}`.trim() || (userDoc.username || userDoc.mobile)
-                : (userDoc.full_name || userDoc.username);
+        } else {
+            // Refresh snapshots from the live local userDoc on every offline
+            // login, so permission/enterprise changes apply without an
+            // online round-trip (same repair as restoreSessionFromIndexedDB).
+            session.permissions_snapshot = JSON.stringify(userDoc.permissions || '');
+            session.enterprises_snapshot = JSON.stringify(userDoc.enterprise_rights || userDoc.enterprises || '');
+            session.username = userDoc.username || userDoc.mobile || session.username;
+            session.role = collection === 'members' ? 'member' : (userDoc.role || session.role);
+            session.full_name = collection === 'members'
+                ? (`${userDoc.last_name || ''} ${userDoc.first_name || ''} ${userDoc.middle_name || ''}`.trim() || (userDoc.username || userDoc.mobile))
+                : (userDoc.full_name || userDoc.username || session.full_name);
+            if (!session.cooperative_name || session.cooperative_name === String(coopId)) {
+                try {
+                    const { getDocById_Global: _getById } = await import('./sqliteService.js')
+                    const _coop = await _getById('cooperatives', String(coopId)).catch(() => null)
+                    const _name = _coop?.full_name || _coop?.short_name
+                    if (_name) session.cooperative_name = _name
+                } catch {
+                    // best-effort
+                }
+            }
+            session.last_verified_ts = _now
+            // Preserve long-lived remembered sessions; standard ones stay 10-min.
+            session.session_expires_ts = _now + (session.remember ? REMEMBER_TTL_MS : SESSION_TTL_MS)
             await saveLocalSession(sessionKey, session)
         }
 
@@ -422,7 +671,7 @@ export async function touchSession(cooperativeId, userId) {
     await saveLocalSession(sessionKey, {
         ...session,
         last_verified_ts: Date.now(),
-        session_expires_ts: Date.now() + SESSION_TTL_MS,
+        session_expires_ts: Date.now() + (session.remember ? REMEMBER_TTL_MS : SESSION_TTL_MS),
     })
 }
 
@@ -455,8 +704,11 @@ export async function clearAllOfflineSessions() {
  */
 export function sessionToWelcomeUser(session) {
     if (!session) return null
+    const isMember = session.role === 'member'
     return {
-        memberId: session.member_id || session.user_id,
+        // Staff/admin must have memberId null (like a fresh online login);
+        // a spurious memberId would member-scope every dashboard query to zero rows.
+        memberId: isMember ? (session.member_id || session.user_id) : null,
         userId: session.user_id,
         userCollection: session.user_collection,
         username: session.username,
@@ -469,6 +721,34 @@ export function sessionToWelcomeUser(session) {
         registrationNo: session.registration_no || '',
         activeTab: session.active_tab || 'history',
         isOfflineSession: true,
+    }
+}
+
+/**
+ * Policy check: must this session set a new password before ANY dashboard
+ * access — including session restores, which skip password entry?
+ * Plaintext (non-SHA-256) stored hash or an explicit flag is sufficient
+ * evidence on its own (mirrors needsForceChangeAfterMatch cases 1-2, which
+ * need no typed input). Fail-open on lookup errors so a broken DB never
+ * bricks logins; callers run this only after initDb.
+ */
+export async function sessionRequiresPasswordChange(welcomeUser) {
+    try {
+        if (!welcomeUser) return false
+        const { getDocById_Global } = await import('./sqliteService.js')
+        const { isSha256Hex } = await import('../utils/formatters.js')
+        const isMember = welcomeUser.role === 'member' || welcomeUser.userCollection === 'members'
+        const collection = isMember ? 'members' : 'users'
+        const id = welcomeUser.userId || welcomeUser.memberId
+        if (!id) return false
+        const row = await getDocById_Global(collection, String(id)).catch(() => null)
+        if (!row || row.is_deleted) return false
+        const flag = row.force_password_change
+        if (flag === true || flag === 1 || flag === '1') return true
+        if (!isSha256Hex(row.password_hash || '')) return true
+        return false
+    } catch {
+        return false
     }
 }
 

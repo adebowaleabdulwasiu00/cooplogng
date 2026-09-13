@@ -1,9 +1,9 @@
-import { escapeHtml, formatCurrency, formatDate, formatDateTime, formatDateForInput, getInitials, generateId } from '../../utils/formatters.js';
+import { escapeHtml, formatCurrency, formatDate, formatDateTime, formatDateForInput, getInitials, generateId, timestampTail } from '../../utils/formatters.js';
 import { getAvatarColor } from './constants.js';
 import { attachEventListeners } from './remittanceEventListeners.js';
 
 export function render(container, deps) {
-    const { formData, historyState, enterpriseData, members, selectorMembers, banks, transactionTypes, openingBalances, paymentAdvise, showAllZeros, previewMode, isAdmin, isMember, canApprove, canDelete, trackFocus, restoreFocus, getFormattedName, attachHistoryEventListeners } = deps;
+    const { formData, historyState, enterpriseData, members, selectorMembers, banks, transactionTypes, openingBalances, paymentAdvise, showAllZeros, previewMode, isAdmin, isMember, canApprove, canDelete, canReverse, trackFocus, restoreFocus, getFormattedName, attachHistoryEventListeners } = deps;
     trackFocus();
     const selectedMember = formData.member_id ? historyState.membersMap[formData.member_id] : null;
 
@@ -592,6 +592,7 @@ export function render(container, deps) {
               </form>
             </div>
             <div class="form-actions">
+              ${!previewMode && !isMember ? `<button type="button" id="bulk-log-btn" class="btn btn-secondary" style="margin-right: auto;" title="Bulk loans, deposits, dues, penalties and transfers for many members at once">Bulk Entry</button>` : ''}
               <button type="button" id="clear-log-btn" class="btn btn-secondary">${previewMode ? 'Add New Remittance' : 'Clear Form'}</button>
               ${previewMode ? (canApprove && formData.status === 'Pending' ?
                 `<button type="button" id="review-log-btn" class="btn btn-primary">Review</button>`
@@ -666,7 +667,7 @@ export function render(container, deps) {
                               ${advise === 0 ? '-' : advise.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2})}
                             </td>
                             <td style="padding: 0.2rem;">
-                              <input type="number" step="0.01" class="detail-amt-grid clear-on-zero" data-opening="${opening}" value="${inputAmt}" data-row-index="${idx}" ${previewMode ? 'disabled' : ''}>
+                              <input type="number" step="0.01" class="detail-amt-grid clear-on-zero" data-opening="${opening}" value="${inputAmt}" data-row-index="${idx}" ${previewMode || e.compulsory_due ? 'disabled' : ''} ${!previewMode && e.compulsory_due ? 'title="Compulsory due — charged separately on save"' : ''}>
                             </td>
                             <td class="row-closing-bal" style="padding: 0.4rem 0.6rem; font-weight: 600; color: ${closing < 0 ? 'var(--danger)' : 'inherit'}">
                               ${closing === 0 ? '-' : closing.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2})}
@@ -717,6 +718,9 @@ export function render(container, deps) {
                 }
                 if (canDelete) {
                   html += `<button type="button" id="delete-selected-btn" class="btn btn-danger" style="padding: 0.5rem 1rem; display: ${hasSelected ? 'inline-block' : 'none'};">Delete Selected</button>`;
+                }
+                if (canReverse) {
+                  html += `<button type="button" id="reverse-selected-btn" class="btn btn-secondary" style="padding: 0.5rem 1rem; display: ${hasSelected ? 'inline-block' : 'none'};" title="Mirror the selected transaction(s) with opposite amounts">Reverse</button>`;
                 }
                 return html;
               })()}
@@ -773,11 +777,11 @@ export function render(container, deps) {
                     ${!isMember ? `
                       <td>
                         <div class="member-name-cell" style="color: ${remit.member_id === '0000000000' ? 'var(--accent-primary)' : 'var(--text-primary)'}">${escapeHtml(getFormattedName(remit.member_id, remit.transaction_type))}</div>
-                        <div class="member-reg-cell">${String(remit.r_id || '').padStart(5, '0')}</div>
+                        <div class="member-reg-cell">${timestampTail(remit.id)}</div>
                       </td>
                     ` : `
                       <td>
-                        <div class="member-name-cell">${String(remit.r_id || '').padStart(5, '0')}</div>
+                        <div class="member-name-cell">${timestampTail(remit.id)}</div>
                       </td>
                     `}
                     <td><div style="color: var(--text-muted); font-size: 0.85rem;">${escapeHtml(member?.special_id || '—')}</div></td>

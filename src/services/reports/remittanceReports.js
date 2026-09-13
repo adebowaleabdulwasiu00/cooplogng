@@ -1,13 +1,13 @@
 import { queryRows } from '../sqliteService.js';
 import { fetchEnterprises } from '../dataService.js';
-import { formatDate } from '../../utils/formatters.js';
+import { formatDate, shortRef } from '../../utils/formatters.js';
 
 export async function getRemittanceListData(cooperativeId, user, filters = {}) {
     const { dateFrom, dateTo, bank, transactionType } = filters;
     const isAdmin = user.role === 'admin' || (user.permissions || '').includes('admin');
 
     let sql = `
-        SELECT r.r_id, r.remittance_date, m.last_name, m.first_name, m.middle_name, m.registration_no, m.special_id, r.amount, r.bank_name, r.transaction_type, r.status, r.description, r.category
+        SELECT r.id, r.remittance_date, m.last_name, m.first_name, m.middle_name, m.registration_no, m.special_id, r.amount, r.bank_name, r.transaction_type, r.status, r.description, r.category
         FROM remittance r
         LEFT JOIN members m ON r.member_id = m.id
         WHERE r.cooperative_id = ? AND r.is_deleted = 0 AND r.status = 'Approved'
@@ -43,13 +43,13 @@ export async function getRemittanceListData(cooperativeId, user, filters = {}) {
         bind.push(user.username);
     }
 
-    sql += " ORDER BY r.remittance_date ASC, r.r_id ASC";
+    sql += " ORDER BY r.remittance_date ASC, r.created_at ASC, r.id ASC";
 
     const rows = await queryRows(sql, bind);
     const useSpecialId = localStorage.getItem('useSpecialIdInReports') === 'true';
     const headers = ["ID", "Date", useSpecialId ? "Member ID" : "Reg No", "Member Name", "Amount", "Bank", "Transaction Type", "Category", "Status", "Description"];
     const data = rows.map(r => [
-        r.r_id ? String(r.r_id).padStart(5, '0') : '',
+        shortRef(r.id),
         formatDate(r.remittance_date),
         useSpecialId && r.special_id ? r.special_id : (r.registration_no ? String(r.registration_no).padStart(4, '0') : ''),
         `${r.last_name || ''} ${r.first_name || ''} ${r.middle_name || ''}`.trim() || 'Admin',
@@ -141,6 +141,7 @@ export async function getEODReportData(cooperativeId, dateFrom, dateTo) {
         SELECT 
             r.id,
             r.remittance_date,
+            r.member_id,
             m.last_name,
             m.first_name,
             m.middle_name,
@@ -160,6 +161,7 @@ export async function getEODReportData(cooperativeId, dateFrom, dateTo) {
         AND r.status = 'Approved'
         AND r.is_deleted = 0
         AND rd.is_deleted = 0
+        AND r.bank_name != 'Internal Transfer'
         AND date(r.remittance_date) >= date(?)
         AND date(r.remittance_date) <= date(?)
         ORDER BY r.created_at ASC
@@ -175,6 +177,11 @@ export async function getEODReportData(cooperativeId, dateFrom, dateTo) {
     const data = rows.map((row, idx) => {
         const amount = Number(row.amount) || 0;
         const bank = row.bank_name || 'N/A';
+        // Coop-wide system pickups (member 0000000000) are the cooperative's
+        // own postings, not a person called Admin.
+        const memberLabel = String(row.member_id || '') === '0000000000'
+            ? 'Cooperative'
+            : ([row.last_name, row.first_name, row.middle_name].filter(Boolean).join(' ') || 'Admin');
 
         if (amount > 0) {
             totalDeposits += amount;
@@ -190,7 +197,7 @@ export async function getEODReportData(cooperativeId, dateFrom, dateTo) {
             idx + 1,
             formatDate(row.remittance_date),
             useSpecialId ? (row.special_id || (row.registration_no ? String(row.registration_no).padStart(4, '0') : 'N/A')) : (row.registration_no ? String(row.registration_no).padStart(4, '0') : 'N/A'),
-            [row.last_name, row.first_name, row.middle_name].filter(Boolean).join(' ') || 'Admin',
+            memberLabel,
             row.account_name || 'N/A',
             row.transaction_type || 'N/A',
             bank,

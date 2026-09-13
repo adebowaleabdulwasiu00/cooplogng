@@ -1,21 +1,22 @@
-import { fetchRemittances, fetchEnterprises, fetchAllMembers, addRemittance, updateRemittance, fetchBanks, getNextRemittanceRid, buildAccountBalance, fetchLoanById, fetchGuarantorStats, fetchMemberDoc, fetchTransactionTypes, fetchRemittancesPage, deleteRemittance, fetchMemberPaymentAdvise } from '../../services/dataService.js';
+import { fetchRemittances, fetchEnterprises, fetchAllMembers, addRemittance, updateRemittance, fetchBanks, buildAccountBalance, fetchLoanById, fetchGuarantorStats, fetchMemberDoc, fetchTransactionTypes, fetchRemittancesPage, deleteRemittance, fetchMemberPaymentAdvise } from '../../services/dataService.js';
 import { hasPermission } from '../../services/permissionService.js';
-import { formatCurrency, formatDate, formatDateForInput, escapeHtml, getTimestampMs, generateId, generateRemittanceId, wrapDateInput, formatDateTime, getInitials } from '../../utils/formatters.js';
+import { formatCurrency, formatDate, formatDateForInput, escapeHtml, getTimestampMs, generateId, generateRemittanceId, wrapDateInput, formatDateTime, getInitials, timestampTail } from '../../utils/formatters.js';
 import { getDoc, doc, getDb } from '../../firebase.js';
 import { showToast } from '../../services/toastService.js';
 import { getAllForCoop } from '../../services/sqliteService.js';
-import ExcelJS from 'exceljs';
-import { getAvatarColor, showModalDialog } from './constants.js';
+import { getAvatarColor } from './constants.js';
 import { applyLoanRequestPrefillInternal, applyWithdrawalRequestPrefillInternal } from './remittancePrefill.js';
 import { showLoanConfigModal } from './remittanceLoanConfig.js';
 import { exportData } from './remittanceExport.js';
 import { attachEventListeners } from './remittanceEventListeners.js';
 import { render as _render } from './remittanceRender.js';
+import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
 
     export async function renderUnifiedPayment(container, user) {
     const isActualAdmin = hasPermission(user.permissions, 'admin') || (user.username || '').toLowerCase() === 'admin';
     const canApprove = isActualAdmin || hasPermission(user.permissions, 'approve_remittance');
     const canDelete = isActualAdmin || hasPermission(user.permissions, 'delete_remittance');
+    const canReverse = isActualAdmin || hasPermission(user.permissions, 'reverse_remittance');
     const isAdmin = isActualAdmin || user.isAdmin || hasPermission(user.permissions, 'read_member');
     const isMember = user.role === 'member';
     const cooperativeId = user.cooperativeId;
@@ -54,6 +55,15 @@ import { render as _render } from './remittanceRender.js';
   let initialFormData = JSON.parse(JSON.stringify(formData));
 
   // --- History State ---
+  // A dashboard shortcut ("Review pending") may pre-set the status filter
+  // via sessionStorage; consume it once so the table lands pre-filtered
+  // (the filter overlay select reflects historyState.filters.status).
+  let requestedHistoryStatus = 'All';
+  try {
+    const v = sessionStorage.getItem('cooplog-history-status');
+    if (v && ['Pending', 'Approved', 'Rejected'].includes(v)) requestedHistoryStatus = v;
+    sessionStorage.removeItem('cooplog-history-status');
+  } catch {}
   const historyState = {
     cooperativeId,
     allRemittances: [],
@@ -68,7 +78,7 @@ import { render as _render } from './remittanceRender.js';
     selectedRemittanceId: null,
     selectedRemittanceIds: new Set(),
     filters: {
-      status: 'All',
+      status: requestedHistoryStatus,
       bank: 'All',
       dateRange: 'All',
       minAmount: null,
@@ -216,14 +226,7 @@ import { render as _render } from './remittanceRender.js';
   };
 
   // --- Load Data ---
-  container.innerHTML = `
-    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background: var(--bg-main); font-family: inherit;">
-      <div style="width: 48px; height: 48px; border: 4px solid var(--border-medium); border-top: 4px solid var(--accent-primary); border-radius: 50%; animation: spin 1s linear infinite;"></div>
-      <h2 style="margin-top: 24px; color: var(--text-primary); font-weight: 600; font-size: 1.25rem;">Loading workspace...</h2>
-      <p style="color: var(--text-muted); font-size: 0.875rem; margin-top: 8px;">Please wait while we prepare your workspace</p>
-      <style>@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }</style>
-    </div>
-  `;
+  showWorkspaceSpinner(container);
   try {
     const [entRes, memRes, bankRes, txRes] = await Promise.all([
       fetchEnterprises(cooperativeId, true, true),
@@ -321,12 +324,13 @@ import { render as _render } from './remittanceRender.js';
       }
     }
     
-    // Sort: newest first by r_id (desc), fallback to remittance_date (desc)
+    // Sort: newest first by creation time, fallback to remittance_date (desc), then id.
     historyState.allRemittances.sort((a, b) => {
-      const aRid = a.r_id || 0;
-      const bRid = b.r_id || 0;
-      if (aRid !== bRid) return bRid - aRid;
-      return new Date(b.remittance_date || 0) - new Date(a.remittance_date || 0);
+      const createdCmp = String(b.created_at || '').localeCompare(String(a.created_at || ''));
+      if (createdCmp !== 0) return createdCmp;
+      const dateCmp = new Date(b.remittance_date || 0) - new Date(a.remittance_date || 0);
+      if (dateCmp !== 0) return dateCmp;
+      return String(b.id).localeCompare(String(a.id));
     });
     calculateStats();
     updateHistoryTable();
@@ -355,6 +359,10 @@ import { render as _render } from './remittanceRender.js';
   }
 
   // --- Member Balances ---
+  // Opening rule: sum ONLY records created BEFORE the selected remittance
+  // (< its created_on). No remittance selected (new form) -> limitKey is null
+  // -> no date limit. Pending records never count: buildAccountBalance only
+  // sums Approved, and Closing adds only freshly typed inputs on top.
   async function loadMemberBalances(memberId) {
     if (!memberId || memberId === '0000000000') {
       openingBalances = {};
@@ -362,8 +370,8 @@ import { render as _render } from './remittanceRender.js';
       return;
     }
     try {
-      const limitRid = formData.id ? formData.r_id : null;
-      const balData = await buildAccountBalance(cooperativeId, { ...user, memberId }, limitRid);
+      const limitKey = formData.id && formData.created_at ? { ts: formData.created_at, id: formData.id } : null;
+      const balData = await buildAccountBalance(cooperativeId, { ...user, memberId }, limitKey);
       openingBalances = {};
       balData.accountBalance.forEach(b => openingBalances[b.id] = b.sum_of_amount);
       paymentAdvise = {};
@@ -525,17 +533,20 @@ import { render as _render } from './remittanceRender.js';
     }
     
     // Set non-detail fields first (details set AFTER balance load to avoid
-    // syncFormData reading old DOM during the await and reverting our details)
+    // syncFormData reading old DOM during the await and reverting our details).
+    // created_at is required: the opening-balance cutoff sums only records
+    // created BEFORE this one (< created_on). Without it the cutoff is null
+    // and the selected record (plus everything after it) leaks into Opening.
     Object.keys(formData).forEach(k => delete formData[k]);
     Object.assign(formData, {
       id: remit.id,
-      r_id: remit.r_id,
       remittance_date: remit.remittance_date,
       bank_name: remit.bank_name || '',
       amount: remit.amount || 0,
       description: remit.description || '',
       transaction_type: remit.transaction_type || '',
       member_id: remit.member_id || '',
+      created_at: remit.created_at || '',
       isLoanRequest: remit.isLoanRequest || (remit.loans && remit.loans.length > 0),
       status: remit.status
     });
@@ -575,6 +586,22 @@ import { render as _render } from './remittanceRender.js';
     historyState.selectedRemittanceId = null;
     historyState.selectedRemittanceIds = new Set();
     historyState.selectAll = false;
+
+    // Refresh the history table to default (clear search, filters, pagination)
+    historyState.searchTerm = '';
+    historyState.searchColumn = 'All Columns';
+    historyState.filters = {
+      status: 'All',
+      bank: 'All',
+      dateRange: 'All',
+      minAmount: null,
+      maxAmount: null,
+      memberId: (isActualAdmin || isAdmin) ? 'All' : (user.memberId || 'All'),
+      transactionType: 'All',
+      dateFrom: '',
+      dateTo: ''
+    };
+    await loadHistoryData(true);
     
     // Reset or load balances
     if (formData.member_id && formData.member_id !== '0000000000') {
@@ -728,6 +755,75 @@ import { render as _render } from './remittanceRender.js';
   }
 
 
+
+  // --- Compulsory Dues & Penalties Popup ---
+  // Lists each due/penalty enterprise with an editable amount box.
+  // Resolves null when dismissed (abort save), { charge:false } on
+  // "Don't Charge", or { charge:true, items:[{enterprise_id,name,amount}] }
+  // on "Charge". Amounts are normalized to positive here; the negative
+  // sign is applied when the autogen debit children are built.
+  function showDuesChargePopup(chargeable) {
+    return new Promise(resolve => {
+      const modalId = 'dues-charge-modal';
+      document.getElementById(modalId)?.remove();
+
+      const overlay = document.createElement('div');
+      overlay.id = modalId;
+      overlay.className = 'modal-overlay';
+      overlay.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 999999; display: flex; align-items: center; justify-content: center; opacity: 1; pointer-events: auto;';
+
+      const modalContent = document.createElement('div');
+      modalContent.style.cssText = 'background: var(--bg-card); border-radius: var(--radius-md); width: 90%; max-width: 500px; margin: 2rem auto; max-height: 90vh; overflow-y: auto; padding: 1.5rem; box-shadow: var(--shadow-xl);';
+
+      const rowsHtml = chargeable.map((c, idx) => `
+        <div style="display: flex; align-items: center; gap: 0.75rem; padding: 0.6rem; background: var(--bg-secondary); border-radius: var(--radius-sm);">
+          <div style="flex: 1; min-width: 0;">
+            <div style="display: flex; align-items: center; gap: 0.35rem; font-weight: 700; font-size: 0.85rem; color: var(--text-primary);">
+              ${c.isDue ? `<span style="background: var(--accent-primary); color: white; font-size: 0.6rem; font-weight: 800; padding: 0.1rem 0.35rem; border-radius: 999px; line-height: 1;">C</span>` : ''}
+              ${c.isPen ? `<span style="background: var(--danger); color: white; font-size: 0.6rem; font-weight: 800; padding: 0.1rem 0.35rem; border-radius: 999px; line-height: 1;">P</span>` : ''}
+              <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(c.name)}</span>
+            </div>
+            <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 0.15rem;">${c.isDue ? `Default ₦${Number(c.defaultAmount || 0).toFixed(2)}` : 'Enter penalty amount'}</div>
+          </div>
+          <input type="number" step="0.01" min="0" class="dues-charge-input" data-idx="${idx}" value="${Number(c.defaultAmount || 0).toFixed(2)}" style="width: 130px; padding: 0.5rem 0.6rem; border-radius: var(--radius-sm); border: 1px solid var(--border-medium); background: var(--bg-input); color: var(--text-primary); font-size: 0.9rem; text-align: right;">
+        </div>
+      `).join('');
+
+      modalContent.innerHTML = `
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+          <h3 style="margin: 0;">Compulsory Dues & Penalties</h3>
+          <button type="button" class="close-dues-btn" style="background: transparent; border: none; font-size: 1.5rem; cursor: pointer; color: var(--text-muted);">&times;</button>
+        </div>
+        <p style="margin: 0 0 1rem 0; font-size: 0.85rem; color: var(--text-muted);">Set the amounts to charge. They will be debited from the member and credited to Other Income as linked auto entries.</p>
+        <div style="display: flex; flex-direction: column; gap: 0.6rem;">${rowsHtml}</div>
+        <div style="display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 1.5rem; border-top: 1px solid var(--border-light); padding-top: 1.5rem;">
+          <button type="button" class="btn btn-secondary dues-dont-charge">Don&apos;t Charge</button>
+          <button type="button" class="btn btn-primary dues-charge">Charge</button>
+        </div>
+      `;
+
+      const done = (result) => { overlay.remove(); resolve(result); };
+      modalContent.querySelector('.close-dues-btn').addEventListener('click', () => done(null));
+      modalContent.querySelector('.dues-dont-charge').addEventListener('click', () => done({ charge: false, items: [] }));
+      modalContent.querySelector('.dues-charge').addEventListener('click', () => {
+        const items = [];
+        modalContent.querySelectorAll('.dues-charge-input').forEach(input => {
+          const c = chargeable[parseInt(input.dataset.idx, 10)];
+          if (!c) return;
+          let val = parseFloat(input.value || 0);
+          if (isNaN(val) || val <= 0) return;
+          items.push({ enterprise_id: c.enterprise_id, name: c.name, amount: Math.abs(val) });
+        });
+        done({ charge: true, items });
+      });
+
+      overlay.appendChild(modalContent);
+      document.body.appendChild(overlay);
+      setTimeout(() => modalContent.querySelector('.dues-charge-input')?.focus(), 50);
+    });
+  }
+  // Shared with bulk remittance (ask-once dues decision for the whole batch)
+  deps.showDuesChargePopup = showDuesChargePopup;
 
   // --- Handle Submit ---
   const handleSubmit = async () => {
@@ -936,38 +1032,39 @@ import { render as _render } from './remittanceRender.js';
         });
       }
       
-      // Compulsory due validation: skip for loan transactions (they use their own charge config)
+      // Compulsory dues & penalties: distribution rows for compulsory dues are
+      // disabled (always 0 there), so dues are collected here via popup AFTER
+      // the user confirms save. Charge => linked autogen children
+      // (member debits + Other Income pickup). Don't charge => parent only.
+      // Skipped for loan/withdrawal/coop-wide transactions like before.
       const getAccountTypeLocal = (acc) => (acc?.account_type || acc?.type || acc?.Account_Type || '').toLowerCase();
       const localLoanEntIds = enterpriseData.filter(e => getAccountTypeLocal(e) === 'loan').map(e => e.id);
       const localSavingsEntIds = enterpriseData.filter(e => getAccountTypeLocal(e) === 'savings').map(e => e.id);
       const hasLoanDist = formData.details.some(d => localLoanEntIds.includes(d.enterprise_id || d.item) && d.amount < 0);
       const hasSavingsDist = formData.details.some(d => localSavingsEntIds.includes(d.enterprise_id || d.item) && d.amount < 0);
+      let duesDecision = null;
       if (!isCoopWide && !hasLoanDist && !hasSavingsDist && amountVal >= 0) {
-        const compulsoryWarnings = [];
+        const chargeable = [];
+        const seenChargeable = new Set();
         enterpriseData.forEach(ent => {
-          if (ent.compulsory_due && parseFloat(ent.compulsory_amount || 0) > 0) {
-            const detail = formData.details.find(d => (d.enterprise_id || d.item) === ent.id);
-            const distAmount = parseFloat(detail?.amount || 0);
-            const requiredAmount = parseFloat(ent.compulsory_amount);
-            if (distAmount < requiredAmount) {
-              compulsoryWarnings.push({ name: ent.account_name || ent.id, required: requiredAmount, entered: distAmount });
-            }
-          }
-        });
-        if (compulsoryWarnings.length > 0) {
-          const proceed = await new Promise(resolve => {
-            showModalDialog('Compulsory Amounts Not Met', [
-              '<div style="margin-bottom: 0.75rem;"><strong>The following enterprises have not met their compulsory due amounts:</strong></div>',
-              ...compulsoryWarnings.map(w =>
-                `<div style="margin: 0.25rem 0; padding: 0.5rem; background: var(--bg-secondary); border-radius: var(--radius-sm);">${w.name}: <strong>₦${w.required.toFixed(2)}</strong> required, ₦${w.entered.toFixed(2)} entered</div>`
-              ),
-              '<div style="margin-top: 0.75rem;">Do you want to continue anyway or go back to adjust the amounts?</div>'
-            ].join(''), [
-              { text: 'Go Back', class: 'btn btn-secondary', onClick: () => resolve(false) },
-              { text: 'Continue Anyway', class: 'btn btn-primary', onClick: () => resolve(true) }
-            ]);
+          if (seenChargeable.has(ent.id)) return;
+          const isDue = !!ent.compulsory_due && parseFloat(ent.compulsory_amount || 0) > 0;
+          const isPen = !!ent.is_penalty;
+          if (!isDue && !isPen) return;
+          seenChargeable.add(ent.id);
+          chargeable.push({
+            enterprise_id: ent.id,
+            name: ent.account_name || ent.id,
+            isDue,
+            isPen,
+            // Dues default to the enterprise setting; penalties are entered fresh each time
+            defaultAmount: isDue ? parseFloat(ent.compulsory_amount || 0) : 0
           });
-          if (!proceed) {
+        });
+        if (chargeable.length > 0) {
+          duesDecision = await showDuesChargePopup(chargeable);
+          if (!duesDecision) {
+            // Popup closed without choosing (same as old "Go Back")
             if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = 'Save Remittance'; }
             return;
           }
@@ -975,13 +1072,18 @@ import { render as _render } from './remittanceRender.js';
       }
 
       // Only handle new remittances
-      const nextRid = await getNextRemittanceRid(user.cooperativeId);
       const selectedMember = members.find(m => m.id === formData.member_id);
-      const status = canApprove ? 'Approved' : 'Pending';
-      const finalDescription = (status === 'Approved' && formData.description === 'Loan Request') ? '' : formData.description;
+      // Full name stamped onto the 0000000000 pickup descriptions below.
+      const pickupMemberName = [selectedMember?.last_name, selectedMember?.first_name, selectedMember?.middle_name].filter(Boolean).join(' ')
+        || selectedMember?.name
+        || formData.member_id;
+      const status = canApprove ? 'Approved' : 'Pending';      const finalDescription = (status === 'Approved' && formData.description === 'Loan Request') ? '' : formData.description;
       
       formData.loans = [];
       const autogenRemittances = [];
+      // Per-loan charge totals for the income pickup below (one pickup child
+      // per loan totalling the charges created in this same run).
+      const loanPickupTotals = {};
 
       formData.details.forEach(d => {
         if (d.loan_info) {
@@ -1026,15 +1128,38 @@ import { render as _render } from './remittanceRender.js';
                 details: singleDetail,
                 chargeIndex: chargeIdx
               });
+              loanPickupTotals[loanId] = (loanPickupTotals[loanId] || 0) + Math.abs(val);
             });
           }
         }
       });
 
+      // Loan income pickup (one per loan): +ve Internal Transfer to admin
+      // 0000000000 totalling that loan's charges above. Header only (no
+      // details on admin remittances); classification resolves inside
+      // addRemittance like the dues pickup. Ids/status flow through the
+      // same autogen save loop below.
+      for (const [pickupLoanId, pickupTotal] of Object.entries(loanPickupTotals)) {
+        if (!(pickupTotal > 0)) continue;
+        autogenRemittances.push({
+          member_id: '0000000000',
+          amount: pickupTotal,
+          remittance_date: formData.remittance_date,
+          bank_name: 'Internal Transfer',
+          transaction_type: 'Loan Charges',
+          description: `Auto Loan Charges Income - ${pickupMemberName}`,
+          autogen: 1,
+          loan_id: pickupLoanId,
+        });
+      }
+
+      // Pre-generate the parent id so dues/penalty autogen children can link
+      // back to it (loan_id = parent id, same convention as loan charges).
+      const parentRemId = generateRemittanceId(user.cooperativeId);
       await addRemittance({
         ...formData,
+        id: parentRemId,
         description: finalDescription,
-        r_id: nextRid,
         status,
         cooperative_id: user.cooperativeId,
         user_role: user.role || 'member',
@@ -1048,15 +1173,74 @@ import { render as _render } from './remittanceRender.js';
           const baseId = generateRemittanceId(user.cooperativeId);
           const suffix = String(idx + 1).padStart(2, '0');
           autoRem.id = `${baseId}-${suffix}`;
-          const autoRid = await getNextRemittanceRid(user.cooperativeId);
           await addRemittance({
               ...autoRem,
-              r_id: autoRid,
               status,
               cooperative_id: user.cooperativeId,
               user_role: user.role || 'member',
               user_roles: [user.role || 'member']
           }, isMember ? 'self' : user.username);
+      }
+
+      // Save dues/penalty autogen remittances (Charge path only).
+      // Child A (per enterprise, member debit): negative amount + negative
+      // detail on that enterprise, Internal Transfer. Typing 100 or -100
+      // both store -100. Child B (single pickup): positive total to
+      // Other Income under admin 0000000000 with matching positive details
+      // so the credit materializes in income reports (detail-driven).
+      // Categories resolve from transaction-type settings inside addRemittance.
+      if (duesDecision && duesDecision.charge && Array.isArray(duesDecision.items) && duesDecision.items.length > 0) {
+          const validItems = duesDecision.items.filter(it => parseFloat(it.amount || 0) > 0);
+          let dueIndex = 0;
+          for (const item of validItems) {
+              dueIndex++;
+              const dueVal = -Math.abs(parseFloat(item.amount));
+              await addRemittance({
+                  id: `${parentRemId}-DUE-${String(dueIndex).padStart(2, '0')}`,
+                  cooperative_id: user.cooperativeId,
+                  member_id: formData.member_id,
+                  amount: dueVal,
+                  remittance_date: formData.remittance_date,
+                  bank_name: 'Internal Transfer',
+                  transaction_type: 'Internal Transfer',
+                  description: `Auto Internal Charges (${item.name})`,
+                  autogen: 1,
+                  loan_id: parentRemId,
+                  status,
+                  user_role: user.role || 'member',
+                  user_roles: [user.role || 'member'],
+                  details: [{
+                      id: generateId(),
+                      enterprise_id: item.enterprise_id,
+                      amount: dueVal,
+                      notes: item.name
+                  }]
+              }, isMember ? 'self' : user.username);
+          }
+          const totalDue = validItems.reduce((s, it) => s + Math.abs(parseFloat(it.amount || 0)), 0);
+          if (totalDue > 0) {
+              await addRemittance({
+                  id: `${parentRemId}-INCOME`,
+                  cooperative_id: user.cooperativeId,
+                  member_id: '0000000000',
+                  amount: totalDue,
+                  remittance_date: formData.remittance_date,
+                  bank_name: 'Internal Transfer',
+                  transaction_type: 'Other Income',
+                  description: `Auto Other Income (Dues & Penalties) - ${pickupMemberName}`,
+                  autogen: 1,
+                  loan_id: parentRemId,
+                  status,
+                  user_role: user.role || 'member',
+                  user_roles: [user.role || 'member'],
+                  details: validItems.map(item => ({
+                      id: generateId(),
+                      enterprise_id: item.enterprise_id,
+                      amount: Math.abs(parseFloat(item.amount || 0)),
+                      notes: item.name
+                  }))
+              }, isMember ? 'self' : user.username);
+          }
       }
       
       if (formData.loans && formData.loans.length > 0) {
@@ -1210,11 +1394,11 @@ import { render as _render } from './remittanceRender.js';
         ${!isMember ? `
           <td>
             <div class="member-name-cell" style="color: ${remit.member_id === '0000000000' ? 'var(--accent-primary)' : 'var(--text-primary)'}">${escapeHtml(getFormattedName(remit.member_id, remit.transaction_type))}</div>
-            <div class="member-reg-cell">${String(remit.r_id || '').padStart(5, '0')}</div>
+            <div class="member-reg-cell">${timestampTail(remit.id)}</div>
           </td>
         ` : `
           <td>
-            <div class="member-name-cell">${String(remit.r_id || '').padStart(5, '0')}</div>
+            <div class="member-name-cell">${timestampTail(remit.id)}</div>
           </td>
         `}
         <td><div style="color: var(--text-muted); font-size: 0.85rem;">${escapeHtml(member?.special_id || '—')}</div></td>
@@ -1318,6 +1502,16 @@ import { render as _render } from './remittanceRender.js';
       };
     }
 
+    // Reverse selected button (multi-select cascades like delete)
+    const reverseSelectedBtn = container.querySelector('#reverse-selected-btn');
+    if (reverseSelectedBtn && canReverse) {
+      reverseSelectedBtn.onclick = async () => {
+        if (historyState.selectedRemittanceIds.size === 0) return;
+        const { showReverseModal } = await import('./remittanceReverse.js');
+        showReverseModal(deps);
+      };
+    }
+
     // Export button
     const exportBtn = container.querySelector('#export-excel-btn');
     if (exportBtn) {
@@ -1407,9 +1601,14 @@ import { render as _render } from './remittanceRender.js';
         const hasSelected = historyState.selectedRemittanceIds && historyState.selectedRemittanceIds.size > 0;
         deleteBtn.style.display = hasSelected ? 'inline-block' : 'none';
     }
+    const reverseBtn = container.querySelector('#reverse-selected-btn');
+    if (reverseBtn) {
+        const hasSelected = historyState.selectedRemittanceIds && historyState.selectedRemittanceIds.size > 0;
+        reverseBtn.style.display = hasSelected ? 'inline-block' : 'none';
+    }
   }
 
-  Object.assign(deps, { formData, enterpriseData, members, selectorMembers, banks, transactionTypes, isMember, user, historyState, loadHistoryData, clearForm, clearSavedForm, render, openingBalances, paymentAdvise, showAllZeros, previewMode, panelSizes, isAdmin, isActualAdmin, canApprove, canDelete, cooperativeId, PANEL_SIZE_KEY, syncFormData, checkDirty, saveSavedForm, handleMemberChange, handleSubmit, updateHistoryTable, updateDeleteSelectedButton, loadRemittanceToForm, attachImagePreview, trackFocus, isFormValid, restoreFocus, getFormattedName, attachHistoryEventListeners });
+  Object.assign(deps, { formData, enterpriseData, members, selectorMembers, banks, transactionTypes, isMember, user, historyState, loadHistoryData, clearForm, clearSavedForm, render, openingBalances, paymentAdvise, showAllZeros, previewMode, panelSizes, isAdmin, isActualAdmin, canApprove, canDelete, canReverse, cooperativeId, PANEL_SIZE_KEY, syncFormData, checkDirty, saveSavedForm, handleMemberChange, handleSubmit, updateHistoryTable, updateDeleteSelectedButton, loadRemittanceToForm, attachImagePreview, trackFocus, isFormValid, restoreFocus, getFormattedName, attachHistoryEventListeners });
   render();
 
   return {
