@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app'
-import { getFirestore, collection, query, where, getDocs, limit, doc, getDoc, addDoc, updateDoc, setDoc, orderBy, startAfter, Timestamp, serverTimestamp, writeBatch, runTransaction, arrayUnion, arrayRemove } from 'firebase/firestore'
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth'
+import { getFirestore, collection, query, where, getDocs, limit, doc, getDoc, addDoc, updateDoc, setDoc, deleteDoc, orderBy, startAfter, Timestamp, serverTimestamp, writeBatch, runTransaction, arrayUnion, arrayRemove } from 'firebase/firestore'
+import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, signOut } from 'firebase/auth'
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -39,4 +39,4 @@ export function getFirebaseAuth() {
   return { auth: authInstance, googleProvider: googleProviderInstance }
 }
 
-export { collection, query, where, getDocs, limit, doc, getDoc, addDoc, updateDoc, setDoc, orderBy, startAfter, Timestamp, serverTimestamp, writeBatch, runTransaction, arrayUnion, arrayRemove, signInWithPopup, signOut }
+export { collection, query, where, getDocs, limit, doc, getDoc, addDoc, updateDoc, setDoc, deleteDoc, orderBy, startAfter, Timestamp, serverTimestamp, writeBatch, runTransaction, arrayUnion, arrayRemove, signInWithPopup, signInWithRedirect, getRedirectResult, signOut }

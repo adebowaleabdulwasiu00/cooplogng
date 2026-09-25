@@ -24,12 +24,82 @@ export function renderLoginHTML(renderAlertFn, renderGlobalModalFn) {
     1: 'Welcome Back',
     2: 'Select Cooperative',
     3: 'Enter Password',
+    4: 'Link Google Account',
   }
 
   const buttonLabels = {
     1: 'Next',
     2: 'Next',
     3: 'Sign In',
+    4: 'Verify & Link',
+  }
+
+  // First-time Google linking screen (stage 4). Same responsive
+  // .shell/.card/.form layout as login; full-width touch-sized buttons.
+  if (state.stage === 4) {
+    const linkCoops = Array.isArray(state.googleLinkCoops) ? state.googleLinkCoops : [];
+    return `
+    <main class="shell">
+      <section class="card" style="animation: fadeIn 0.5s ease-out; position: relative;">
+        <div class="brand">COOPERATIVE LOG APP</div>
+        <h1 style="font-weight: 800; font-size: 1.5rem; color: var(--text-primary); margin-top: 0; text-align: center;">${titles[4]}</h1>
+        <p style="color: var(--text-muted); text-align: center; margin-bottom: 1rem; font-size: 0.9rem; line-height: 1.5;">
+          Your Google email <strong style="color: var(--text-primary);">${escapeHtml(state.googleLinkEmail || '')}</strong>
+          ${state.googleLinkVerified ? '✓ verified' : ''} is new here.<br/>Enter the details below to link it to your membership.
+        </p>
+        <div style="margin-bottom: 1rem;"></div>
+        ${renderAlertFn()}
+        <form class="form" style="text-align: left;">
+          <label class="field">
+            <span>Mobile Number (as registered with your cooperative)</span>
+            <input name="google-link-mobile" type="tel" inputmode="tel" autocomplete="tel" placeholder="e.g. 0803 123 4567" value="${escapeAttribute(state.googleLinkMobile || '')}" style="min-height: 3rem;" />
+          </label>
+          <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+            <label class="field" style="flex: 1 1 8rem;">
+              <span>First Name</span>
+              <input name="google-link-first" type="text" autocomplete="given-name" placeholder="First name" value="${escapeAttribute(state.googleLinkFirst || '')}" style="min-height: 3rem;" />
+            </label>
+            <label class="field" style="flex: 1 1 8rem;">
+              <span>Last Name</span>
+              <input name="google-link-last" type="text" autocomplete="family-name" placeholder="Last name" value="${escapeAttribute(state.googleLinkLast || '')}" style="min-height: 3rem;" />
+            </label>
+          </div>
+          <div class="actions" style="flex-direction: column; align-items: stretch;">
+            <button type="button" class="primary-button" data-action="google-link-search" style="width: 100%; min-height: 3rem;" ${state.isSubmitting ? 'disabled' : ''}>
+              ${state.isSubmitting ? 'Please wait...' : 'Find My Cooperatives'}
+            </button>
+          </div>
+          ${linkCoops.length > 0 ? `
+          <div style="margin-top: 1.25rem;">
+            <span style="font-size: 0.7rem; font-weight: 700; color: var(--text-muted); margin-bottom: 0.5rem; text-transform: uppercase; letter-spacing: 0.08em; display: block;">Select your cooperative</span>
+            <div role="radiogroup" aria-label="Cooperatives" style="display: flex; flex-direction: column; gap: 0.5rem; max-height: 40vh; overflow-y: auto;">
+              ${linkCoops.map(coop => `
+                <label style="display: flex; align-items: center; gap: 0.75rem; padding: 0.85rem 1rem; border: 1px solid var(--border-light); border-radius: 0.75rem; cursor: pointer; min-height: 3rem;">
+                  <input type="radio" name="google-link-coop" value="${escapeAttribute(coop.id)}" ${state.googleLinkSelectedCoop === coop.id ? 'checked' : ''} style="width: 1.25rem; height: 1.25rem; accent-color: var(--accent-primary);" />
+                  <span>
+                    <span style="display: block; font-weight: 600; color: var(--text-primary);">${escapeHtml(coop.name || 'Cooperative')}</span>
+                    <span style="display: block; font-size: 0.7rem; color: var(--text-muted);">ID: ${escapeHtml(coop.id)}</span>
+                  </span>
+                </label>
+              `).join('')}
+            </div>
+            <div class="actions" style="flex-direction: column; align-items: stretch; margin-top: 1rem;">
+              <button type="button" class="primary-button" data-action="google-link-verify" style="width: 100%; min-height: 3rem;" ${state.isSubmitting ? 'disabled' : ''}>
+                ${state.isSubmitting ? 'Please wait...' : buttonLabels[4]}
+              </button>
+            </div>
+          </div>
+          ` : ''}
+          <div class="actions" style="margin-top: 1rem;">
+            <button type="button" class="secondary-button" data-action="google-link-cancel" style="width: 100%; min-height: 3rem;" ${state.isSubmitting ? 'disabled' : ''}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      </section>
+    </main>
+    ${renderGlobalModalFn()}
+    `
   }
 
   return `
@@ -102,7 +172,7 @@ export function renderLoginHTML(renderAlertFn, renderGlobalModalFn) {
               Logging in as <strong style="color: var(--text-primary);">${escapeHtml(state.username)}</strong>
               ${state.selectedCooperativeId ? `→ <strong style="color: var(--text-primary);">${escapeHtml(state.cooperatives.find(c => c.id === state.selectedCooperativeId)?.name || '')}</strong>` : ''}
             </div>
-            <div class="pin-wrap" style="display: flex; gap: 0.5rem; justify-content: center; margin-bottom: 1rem;">
+            <div class="pin-wrap" style="margin-bottom: 1rem;">
               ${[0,1,2,3,4,5].map(i => `
                 <input
                   type="text"
@@ -110,7 +180,6 @@ export function renderLoginHTML(renderAlertFn, renderGlobalModalFn) {
                   maxlength="1"
                   pattern="[0-9]"
                   inputmode="numeric"
-                  style="width: 3rem; height: 3rem; font-size: 1.5rem; text-align: center; border: 2px solid var(--border-medium); border-radius: 0.5rem; background: var(--bg-primary); color: var(--text-primary);"
                   ${state.stage !== 3 ? 'disabled' : ''}
                   aria-label="PIN digit ${i+1}"
                 />
@@ -166,6 +235,9 @@ export function setupLoginPostRender() {
       const len = input.value.length;
       input.setSelectionRange(len, len);
     }
+  } else if (state.stage === 4) {
+    const input = document.querySelector('input[name="google-link-mobile"]');
+    if (input && !state.isSubmitting) input.focus();
   } else if (state.stage === 3) {
     const firstPinInput = document.querySelector('input[name="pin-0"]');
     if (firstPinInput && !state.isSubmitting) firstPinInput.focus();
@@ -220,8 +292,21 @@ export function setupLoginPostRender() {
 }
 
 export function classifyLoginError(err) {
-  const msg = (err && (err.message || err.toString() || '' )).toLowerCase()
+  const rawMsg = (err && (err.message || err.toString() || ''));
+  const msg = rawMsg.toLowerCase()
   if (!msg) return { type: 'unknown', message: 'Unable to sign in. Please try again.' }
+  // Unsubscribed/expired accounts are blocked completely — surface verbatim.
+  if (msg.includes('subscription is inactive') || msg.includes('subscription') && msg.includes('contact your administrator')) {
+    return { type: 'subscription', message: rawMsg || 'Your account subscription is inactive. Please contact your administrator for assistance.' }
+  }
+  // Progressive back-off lockouts must reach the user verbatim (with countdown).
+  if (msg.includes('too many failed attempts') || msg.includes('try again in')) {
+    return { type: 'lockout', message: rawMsg }
+  }
+  // Cooperative extracted - block login with clear message
+  if (msg.includes('extracted') || msg.includes('contact your administrator')) {
+    return { type: 'extracted', message: rawMsg || 'This cooperative\'s data has been extracted. Please contact your administrator for assistance.' }
+  }
   // Keep network/timeout errors specific
   if (msg.includes('network') || msg.includes('fetch') || msg.includes('timeout') || msg.includes('abort') || msg.includes('internet') || msg.includes('connection')) {
     if (msg.includes('timeout')) return { type: 'timeout', message: 'The server is not responding. Please check your connection and try again.' }
@@ -246,6 +331,15 @@ export async function handleNext() {
     return
   }
 
+  if (state.stage === 4) {
+    if (!state.googleLinkCoops || state.googleLinkCoops.length === 0) {
+      await handleGoogleLinkSearch()
+    } else {
+      await handleGoogleLinkVerify()
+    }
+    return
+  }
+
   await handlePasswordStage()
 }
 
@@ -259,59 +353,265 @@ export function handleBack() {
     state.cooperatives = []
     state.coopSearchQuery = ''
     state.isGoogleLoginFlow = false
+  } else if (state.stage === 4) {
+    _resetGoogleLinkState()
+    state.stage = 1
+    state.isGoogleLoginFlow = false
+    import('../../firebase.js').then(m => {
+      try {
+        const { auth } = m.getFirebaseAuth()
+        if (auth?.currentUser) m.signOut(auth).catch(() => {})
+      } catch {}
+    }).catch(() => {})
   }
 
   state.errorMessage = ''
   window.__render()
 }
 
+function _resetGoogleLinkState() {
+  state.googleLinkEmail = ''
+  state.googleLinkVerified = false
+  state.googleLinkMobile = ''
+  state.googleLinkFirst = ''
+  state.googleLinkLast = ''
+  state.googleLinkCoops = []
+  state.googleLinkSelectedCoop = ''
+}
+
+async function _signOutGoogleQuietly() {
+  try {
+    const m = await import('../../firebase.js')
+    const { auth } = m.getFirebaseAuth()
+    if (auth?.currentUser) await m.signOut(auth)
+  } catch {}
+}
+
+async function _abortGoogleLink(message) {
+  await _signOutGoogleQuietly()
+  _resetGoogleLinkState()
+  state.isGoogleLoginFlow = false
+  state.stage = 1
+  state.isSubmitting = false
+  state.errorMessage = message
+  window.__render()
+}
+
+function _isCapacitorNative() {
+  try {
+    return typeof window !== 'undefined' && !!(window.Capacitor?.isNativePlatform?.() || (window.Capacitor?.getPlatform && window.Capacitor.getPlatform() !== 'web'))
+  } catch { return false }
+}
+
+function _isMobileBrowser() {
+  try {
+    if (typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches) return true
+    return /Android|iPhone|iPad|iPod|Mobile/i.test(typeof navigator !== 'undefined' ? navigator.userAgent : '')
+  } catch { return false }
+}
+
+async function _signInWithGoogleCrossPlatform() {
+  const m = await import('../../firebase.js')
+  const { auth, googleProvider } = m.getFirebaseAuth()
+  try {
+    if (googleProvider?.setCustomParameters) googleProvider.setCustomParameters({ prompt: 'select_account' })
+  } catch {}
+  if (_isCapacitorNative()) {
+    await m.signInWithRedirect(auth, googleProvider)
+    return null
+  }
+  try {
+    const result = await m.signInWithPopup(auth, googleProvider)
+    return result?.user || null
+  } catch (popupErr) {
+    const code = String(popupErr?.code || '')
+    // User deliberately dismissed the popup — respect it, no silent redirect.
+    if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') throw popupErr
+    const msg = String(popupErr?.message || '').toLowerCase()
+    const popupUnusable = code.startsWith('auth/popup')
+      || msg.includes('popup') || msg.includes('blocked') || msg.includes('redirect')
+    // Blocked popup? Redirect works everywhere — use it instead of erroring.
+    if (popupUnusable) {
+      await m.signInWithRedirect(auth, googleProvider)
+      return null
+    }
+    throw popupErr
+  }
+}
+
+async function _completeGoogleSession(session, fallbackEmail) {
+  if (session && session.forceChange) {
+    state.isSubmitting = false
+    showForcePasswordChangeModal(session.userDoc, session.collection)
+    return
+  }
+  if (!session) throw new Error('Login validation failed.')
+  state.welcomeUser = session
+  await saveSession(session)
+  _resetGoogleLinkState()
+  state.isGoogleLoginFlow = false
+  state.isSubmitting = false
+  window.__render()
+}
+
+export async function handleGoogleUser(email, emailVerified) {
+  const verifiedEmail = String(email || '').trim().toLowerCase()
+  if (!verifiedEmail || !verifiedEmail.includes('@')) throw new Error('No email associated with this Google account.')
+  if (emailVerified === false) {
+    await _abortGoogleLink('This Google email is not verified. Please verify it with Google and try again.')
+    return
+  }
+  const { discoverLoginCooperativesByEmail, validateGoogleLogin } = await import('../../services/authService.js')
+  const cooperatives = await Promise.race([
+    discoverLoginCooperativesByEmail(verifiedEmail),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000)),
+  ])
+  if (cooperatives.length === 1) {
+    const session = await validateGoogleLogin(verifiedEmail, cooperatives[0].id)
+    await _completeGoogleSession(session, verifiedEmail)
+  } else if (cooperatives.length > 1) {
+    state.cooperatives = cooperatives
+    state.username = verifiedEmail
+    state.selectedCooperativeId = ''
+    state.isGoogleLoginFlow = true
+    state.stage = 2
+    state.isSubmitting = false
+    window.__render()
+  } else {
+    _resetGoogleLinkState()
+    state.googleLinkEmail = verifiedEmail
+    state.googleLinkVerified = true
+    state.username = verifiedEmail
+    state.isGoogleLoginFlow = true
+    state.stage = 4
+    state.isSubmitting = false
+    state.errorMessage = ''
+    window.__render()
+  }
+}
+
+export async function handleGoogleLinkSearch() {
+  const email = String(state.googleLinkEmail || '').trim().toLowerCase()
+  const mobile = String(state.googleLinkMobile || '').trim()
+  const first = String(state.googleLinkFirst || '').trim()
+  const last = String(state.googleLinkLast || '').trim()
+  if (!email) { await _abortGoogleLink('Google session expired. Please tap "Sign In with Google" again.'); return }
+  if (!mobile || !first || !last) {
+    state.errorMessage = 'Please enter your mobile number, first name and last name.'
+    window.__render()
+    return
+  }
+  if (!navigator.onLine) {
+    state.errorMessage = 'Internet connection required to link your account. Please connect and try again.'
+    window.__render()
+    return
+  }
+  try {
+    state.isSubmitting = true
+    state.errorMessage = ''
+    window.__render()
+    const { discoverCooperativesByMobile } = await import('../../services/authService.js')
+    const coops = await Promise.race([
+      discoverCooperativesByMobile(mobile),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000)),
+    ])
+    if (!coops || coops.length === 0) {
+      await _abortGoogleLink('No cooperative record found for this mobile number. Please contact your administrator.')
+      return
+    }
+    state.googleLinkCoops = coops
+    state.googleLinkSelectedCoop = coops.length === 1 ? coops[0].id : ''
+    state.isSubmitting = false
+    state.errorMessage = coops.length === 1
+      ? 'One cooperative found for this mobile. Tap "Verify & Link" to continue.'
+      : `${coops.length} cooperatives found for this mobile. Select yours, then tap "Verify & Link".`
+    window.__render()
+  } catch (error) {
+    state.isSubmitting = false
+    state.errorMessage = /timeout/i.test(String(error?.message || ''))
+      ? 'The server is not responding. Please check your connection and try again.'
+      : (error?.message || 'Could not search cooperatives. Please try again.')
+    window.__render()
+  }
+}
+
+export async function handleGoogleLinkVerify() {
+  const email = String(state.googleLinkEmail || '').trim().toLowerCase()
+  const mobile = String(state.googleLinkMobile || '').trim()
+  const first = String(state.googleLinkFirst || '').trim()
+  const last = String(state.googleLinkLast || '').trim()
+  const coopId = String(state.googleLinkSelectedCoop || '').trim()
+  if (!email) { await _abortGoogleLink('Google session expired. Please tap "Sign In with Google" again.'); return }
+  if (!coopId) {
+    state.errorMessage = 'Please select your cooperative first.'
+    window.__render()
+    return
+  }
+  try {
+    state.isSubmitting = true
+    state.errorMessage = ''
+    window.__render()
+    const { fetchMemberCandidatesByMobileForCoop, verifyMemberLinkCandidate, linkGoogleEmailToMember, validateGoogleLogin } = await import('../../services/authService.js')
+    const candidates = await Promise.race([
+      fetchMemberCandidatesByMobileForCoop(mobile, coopId),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000)),
+    ])
+    if (!candidates || candidates.length === 0) {
+      await _abortGoogleLink('Details do not match any record in the selected cooperative. Login cancelled — please contact your administrator.')
+      return
+    }
+    if (candidates.length > 1) {
+      await _abortGoogleLink('Multiple records share this mobile number in the selected cooperative. Login cancelled — please contact your administrator to fix the duplicate.')
+      return
+    }
+    const check = verifyMemberLinkCandidate(candidates[0], { mobile, firstName: first, lastName: last })
+    if (!check.matched) {
+      await _abortGoogleLink('Details do not match our records (mobile plus first or last name must match). Login cancelled — please contact your administrator.')
+      return
+    }
+    await linkGoogleEmailToMember(candidates[0].id, coopId, email)
+    const session = await validateGoogleLogin(email, coopId)
+    await _completeGoogleSession(session, email)
+    try { showToast('Google account linked successfully. Welcome!', 'success') } catch {}
+  } catch (error) {
+    await _abortGoogleLink(error?.message || 'Could not link your account. Login cancelled — please try again or contact your administrator.')
+  }
+}
+
 export async function handleGoogleLogin() {
   if (state.isSubmitting) return;
+
+  if (typeof window !== 'undefined' && window.cooplog) {
+    state.errorMessage = 'Google sign-in is not available in the desktop app. Please sign in with Google once in your browser to link your account, then use your username and PIN here.';
+    window.__render();
+    return;
+  }
 
   try {
     state.isSubmitting = true;
     state.errorMessage = '';
     window.__render();
 
-    const { getFirebaseAuth, signInWithPopup } = await import('../../firebase.js');
-    const { auth, googleProvider } = getFirebaseAuth();
-    
-    const result = await signInWithPopup(auth, googleProvider);
-    const user = result.user;
-    
-    if (!user.email) {
-      throw new Error('No email associated with this Google account.');
-    }
+    if (!navigator.onLine) throw new Error('No internet connection. Please connect and try again.');
 
-    const { discoverLoginCooperativesByEmail, validateGoogleLogin } = await import('../../services/authService.js');
-    const cooperatives = await discoverLoginCooperativesByEmail(user.email);
-
-    if (cooperatives.length === 0) {
-      throw new Error('No cooperative account found for this email.');
-    }
-
-    if (cooperatives.length === 1) {
-      const session = await validateGoogleLogin(user.email, cooperatives[0].id);
-      if (session) {
-        state.welcomeUser = session;
-        await saveSession(session);
-        state.isSubmitting = false;
-        window.__render();
-      } else {
-        throw new Error('Login validation failed.');
-      }
-    } else {
-      state.cooperatives = cooperatives;
-      state.username = user.email;
-      state.selectedCooperativeId = '';
-      state.isGoogleLoginFlow = true; 
-      state.stage = 2;
+    const user = await _signInWithGoogleCrossPlatform();
+    // null => redirect flow started (native/mobile); boot completes login.
+    if (!user) {
       state.isSubmitting = false;
+      state.errorMessage = 'Completing Google sign-in…';
       window.__render();
+      return;
     }
+    await handleGoogleUser(user.email, user.emailVerified);
   } catch (error) {
     console.error('Google Auth Error:', error);
-    state.errorMessage = error.message || 'Google Sign-In failed.';
+    await _signOutGoogleQuietly();
+    const msg = String(error?.message || '');
+    state.errorMessage = /timeout/i.test(msg)
+      ? 'The server is not responding. Please check your connection and try again.'
+      : (error?.code === 'auth/popup-closed-by-user' ? 'Google sign-in was cancelled.'
+        : (error?.code === 'auth/popup-blocked' ? 'Popup was blocked by your browser. Please allow popups for this site and try again.'
+          : (msg || 'Google Sign-In failed.')));
     state.isSubmitting = false;
     window.__render();
   }
@@ -472,9 +772,22 @@ export async function handlePasswordStage() {
     state.errorMessage = ''
     window.__render()
 
+    // Progressive back-off pre-check (1-4 free, 5th→1m, 6th→5m, 7-8th→15m, 9th+→1h)
+    try {
+      const { checkRateLimit, formatDelay } = await import('../../services/authService.js')
+      const gate = checkRateLimit(username.toLowerCase(), cooperativeId)
+      if (!gate.allowed) {
+        state.errorMessage = `Too many failed attempts. Try again in ${formatDelay(gate.retryAfterMs)}.`
+        state.isSubmitting = false
+        window.__render()
+        return
+      }
+    } catch {}
+
     // Online authentication (with 10s timeout)
     let session = null
     let loginError = null
+    let onlineRecordedFail = false
     try {
       if (navigator.onLine) {
         console.log(`[Login] [${Date.now()}] Sending authentication request...`);
@@ -483,42 +796,61 @@ export async function handlePasswordStage() {
           new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 10000))
         ]);
         console.log(`[Login] [${Date.now()}] Authentication response received. Success: ${!!session}`);
+        if (!session) onlineRecordedFail = true
       } else {
         loginError = { type: 'network', message: 'No internet connection detected. Please check your network and try again.' }
         console.log(`[Login] [${Date.now()}] No internet connection.`);
       }
     } catch (onlineErr) {
-      // Check if it's a network/timeout error - keep those specific
-      const msg = (onlineErr && (onlineErr.message || onlineErr.toString() || '')).toLowerCase()
-      if (msg.includes('network') || msg.includes('fetch') || msg.includes('timeout') || msg.includes('abort') || msg.includes('internet')) {
-        loginError = classifyLoginError(onlineErr)
-      } else {
-        // Generic auth error for everything else
-        loginError = { type: 'auth', message: 'Invalid username or PIN. Please try again.' }
-      }
+      loginError = classifyLoginError(onlineErr)
+      if (loginError.type === 'lockout' || loginError.type === 'auth') onlineRecordedFail = true
       console.warn(`[Login] [${Date.now()}] Online authentication failed:`, onlineErr.message)
     }
 
-    // Offline fallback
+    // Offline fallback (skipped when online already gave a final verdict:
+    // lockout, extracted coop, or unsubscribed account must not fall back
+    // to stale local data).
     if (!session) {
+      if (loginError?.type === 'lockout' || loginError?.type === 'subscription' || loginError?.type === 'extracted') {
+        state.errorMessage = loginError.message
+        state.isSubmitting = false
+        window.__render()
+        return
+      }
       console.log(`[Login] [${Date.now()}] Attempting offline authentication...`);
       try {
-        session = await attemptOfflineLogin(username, password, cooperativeId)
+        session = await attemptOfflineLogin(username, password, cooperativeId, onlineRecordedFail)
         if (session) loginError = null
         console.log(`[Login] [${Date.now()}] Offline authentication result: ${!!session}`);
+        if (!session && !onlineRecordedFail) {
+          try {
+            const { recordFailedAttempt } = await import('../../services/authService.js')
+            recordFailedAttempt(username.toLowerCase(), cooperativeId)
+          } catch {}
+        }
       } catch (offlineErr) {
-        const msg = (offlineErr && (offlineErr.message || offlineErr.toString() || '')).toLowerCase()
-        if (msg.includes('network') || msg.includes('fetch') || msg.includes('timeout') || msg.includes('abort') || msg.includes('internet')) {
-          if (!loginError) loginError = classifyLoginError(offlineErr)
-        } else {
-          if (!loginError) loginError = { type: 'auth', message: 'Invalid username or PIN. Please try again.' }
+        const classified = classifyLoginError(offlineErr)
+        // A definitive offline verdict (blocked/lockout) overrides a softer
+        // online error (e.g. timeout/network) so the polite message wins.
+        if (!loginError || classified.type === 'subscription' || classified.type === 'extracted' || classified.type === 'lockout') {
+          loginError = classified
         }
         console.warn(`[Login] [${Date.now()}] Offline authentication failed:`, offlineErr.message)
       }
     }
 
-    // No session — show specific error
+    // No session — show specific error (with enforced delay when locked)
     if (!session) {
+      try {
+        const { checkRateLimit, formatDelay } = await import('../../services/authService.js')
+        const gate = checkRateLimit(username.toLowerCase(), cooperativeId)
+        if (!gate.allowed) {
+          state.errorMessage = `Too many failed attempts. Try again in ${formatDelay(gate.retryAfterMs)}.`
+          state.isSubmitting = false
+          window.__render()
+          return
+        }
+      } catch {}
       const errorMsg = loginError?.message || 'Invalid username or PIN. Please try again.'
       console.log(`[Login] [${Date.now()}] No session returned. Error: "${errorMsg}"`);
       state.errorMessage = errorMsg
@@ -536,6 +868,30 @@ export async function handlePasswordStage() {
       memberId: session?.memberId,
       isOffline: !!session?.isOfflineSession
     });
+
+    // Defense-in-depth: a subscription revoked between auth and session
+    // build (or a stale offline row) must still block here with the same
+    // polite message — before the force-change modal and before any session
+    // is persisted. Admin is exempt inside the helper.
+    try {
+      const { isSubscriptionBlocked, SUBSCRIPTION_BLOCKED_MSG } = await import('../../services/subscriptionService.js')
+      const docForGate = session.userDoc || session
+      if (isSubscriptionBlocked(docForGate, session.username)) {
+        state.errorMessage = SUBSCRIPTION_BLOCKED_MSG
+        state.isSubmitting = false
+        window.__render()
+        console.log(`[Login] -------- LOGIN BLOCKED (subscription) -------- [${Date.now()}]`);
+        return
+      }
+    } catch (e) {
+      if (e && /subscription is inactive/i.test(e.message || '')) {
+        state.errorMessage = e.message
+        state.isSubmitting = false
+        window.__render()
+        return
+      }
+      // helper-load failure: fail-open, auth layer already enforced
+    }
 
     if (session && session.forceChange) {
       console.log(`[Login] [${Date.now()}] Force password change required.`);
@@ -561,6 +917,8 @@ export async function handlePasswordStage() {
     }
 
     // Build the welcomeUser immediately, subscription will be loaded in background
+    // Seed from the live auth doc (already subscription-gated above) so the
+    // dashboard guard is correct on first paint — not a hardcoded 1.
     state.welcomeUser = {
       memberId: session.memberId,
       username: session.username,
@@ -571,8 +929,8 @@ export async function handlePasswordStage() {
       enterprise_rights: session.enterprise_rights || session.enterprises || '',
       cooperativeId: session.cooperativeId,
       cooperativeName,
-      subscriptionStatus: 1,
-      subscriptionExpiry: null,
+      subscriptionStatus: session.userDoc?.subscriptionStatus ?? 1,
+      subscriptionExpiry: session.userDoc?.expiry_date ?? session.userDoc?.subscriptionExpiry ?? null,
       userDoc: session.userDoc,
       collection: session.collection,
     }
@@ -599,11 +957,13 @@ export async function handlePasswordStage() {
     window.__render()
     console.log(`[Login] [${Date.now()}] Dashboard rendered. Login completed in ${Date.now() - loginStartTs}ms`);
 
-    // Background: Load subscription info (non-blocking)
+    // Background: Load subscription info (non-blocking) from the correct
+    // table — members logins previously read the users table (always miss).
     (async () => {
       try {
+        const table = session.collection === 'members' ? 'members' : 'users'
         const userRecord = await queryOne(
-          'SELECT subscriptionStatus, expiry_date FROM users WHERE id = ?',
+          `SELECT subscriptionStatus, expiry_date FROM ${table} WHERE id = ?`,
           [session.userDoc?.id || '']
         );
         if (userRecord) {
@@ -672,15 +1032,16 @@ export async function showForcePasswordChangeModal(userDoc, collectionName) {
   state.modal.data = { userDoc, collectionName };
   state.modal.isOpen = true;
   state.modal.content = `
-        <div style="padding: 1rem 0;">
-            <p style="color: #64748b; font-size: 0.9rem; margin-bottom: 1.5rem;">
-                Your account is currently using a default or temporary password. For your security, please set a new 6-digit PIN to continue.
+        <div class="force-pin">
+            <p class="force-pin-desc">
+                Your account is currently using a default or temporary password. For your
+                security, please set a new 6-digit numeric PIN to continue. Letters are not allowed.
             </p>
-            
-            <form id="force-pwd-form" style="display: flex; flex-direction: column; gap: 1.25rem;">
-                <div class="field">
-                    <span>New 6-Digit PIN</span>
-                    <div class="pin-wrap" style="display: flex; gap: 0.5rem; justify-content: center; margin-bottom: 1rem;">
+
+            <form id="force-pwd-form" class="force-pin-form">
+                <div class="field force-pin-field">
+                    <span class="force-pin-label">New 6-Digit PIN (numbers only)</span>
+                    <div class="pin-wrap force-pin-boxes">
                       ${[0,1,2,3,4,5].map(i => `
                         <input
                           type="text"
@@ -688,15 +1049,15 @@ export async function showForcePasswordChangeModal(userDoc, collectionName) {
                           maxlength="1"
                           pattern="[0-9]"
                           inputmode="numeric"
-                          style="width: 3rem; height: 3rem; font-size: 1.5rem; text-align: center; border: 2px solid var(--border-medium); border-radius: 0.5rem; background: var(--bg-primary); color: var(--text-primary);"
+                          autocomplete="one-time-code"
                           aria-label="New PIN digit ${i+1}"
                         />
                       `).join('')}
                     </div>
                 </div>
-                <div class="field">
-                    <span>Confirm 6-Digit PIN</span>
-                    <div class="pin-wrap" style="display: flex; gap: 0.5rem; justify-content: center; margin-bottom: 1rem;">
+                <div class="field force-pin-field">
+                    <span class="force-pin-label">Confirm 6-Digit PIN</span>
+                    <div class="pin-wrap force-pin-boxes">
                       ${[0,1,2,3,4,5].map(i => `
                         <input
                           type="text"
@@ -704,14 +1065,22 @@ export async function showForcePasswordChangeModal(userDoc, collectionName) {
                           maxlength="1"
                           pattern="[0-9]"
                           inputmode="numeric"
-                          style="width: 3rem; height: 3rem; font-size: 1.5rem; text-align: center; border: 2px solid var(--border-medium); border-radius: 0.5rem; background: var(--bg-primary); color: var(--text-primary);"
+                          autocomplete="one-time-code"
                           aria-label="Confirm PIN digit ${i+1}"
                         />
                       `).join('')}
                     </div>
                 </div>
 
-                <button type="submit" id="submit-new-pwd" class="primary-button" style="width: 100%; margin-top: 1rem;" disabled>Set PIN & Login</button>
+                <div id="pwd-requirements" class="force-pin-reqs">
+                    <div class="force-pin-reqs-title">Requirements</div>
+                    <ul class="force-pin-reqs-list">
+                        <li id="req-length" class="req-pending">○ Exactly 6 digits</li>
+                        <li id="req-match" class="req-pending">○ PINs match</li>
+                    </ul>
+                </div>
+
+                <button type="submit" id="submit-new-pwd" class="primary-button force-pin-submit" disabled>Set PIN &amp; Login</button>
             </form>
         </div>
     `;
@@ -734,38 +1103,58 @@ export function setupForcePwdListeners() {
 
   const getPinValue = (inputs) => inputs.map(i => i?.value || '').join('');
 
+  const setReq = (id, ok) => {
+    const el = body.querySelector(id);
+    if (!el) return;
+    const label = id === '#req-length' ? 'Exactly 6 digits' : 'PINs match';
+    el.textContent = `${ok ? '●' : '○'} ${label}`;
+    el.classList.toggle('req-ok', !!ok);
+    el.classList.toggle('req-pending', !ok);
+  };
+
   const validate = () => {
     const newPin = getPinValue(newPinInputs);
     const confirmPin = getPinValue(confirmPinInputs);
 
-    const checks = {
-      length: newPin.length === 6 && /^\d{6}$/.test(newPin),
-      match: newPin.length === 6 && newPin === confirmPin
-    };
+    const lengthOk = newPin.length === 6 && /^\d{6}$/.test(newPin);
+    const matchOk = lengthOk && newPin === confirmPin;
+    setReq('#req-length', lengthOk);
+    setReq('#req-match', matchOk);
 
-    const reqLength = body.querySelector('#req-length');
-    const reqMatch = body.querySelector('#req-match');
-    // Remove old requirement elements if they exist
-    [reqLength, reqMatch].forEach(el => { if (el) el.remove(); });
-
-    submitBtn.disabled = !Object.values(checks).every(v => v === true);
+    if (submitBtn) submitBtn.disabled = !(lengthOk && matchOk);
   };
 
-  // Auto-focus next input on digit entry
-  [...newPinInputs, ...confirmPinInputs].forEach((input, idx, arr) => {
-    if (!input) return;
-    input.addEventListener('input', (e) => {
-      if (e.target.value.length === 1 && idx < arr.length - 1) {
-        arr[idx + 1]?.focus();
-      }
-      validate();
+  const wireGroup = (inputs, nextGroup) => {
+    inputs.forEach((input, idx) => {
+      if (!input) return;
+      input.addEventListener('input', (e) => {
+        e.target.value = e.target.value.replace(/\D/g, '').slice(0, 1);
+        input.classList.toggle('filled', !!e.target.value);
+        if (e.target.value && idx < inputs.length - 1) inputs[idx + 1]?.focus();
+        else if (e.target.value && idx === inputs.length - 1 && nextGroup) nextGroup[0]?.focus();
+        validate();
+      });
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Backspace' && !e.target.value && idx > 0) {
+          inputs[idx - 1]?.focus();
+        }
+      });
+      input.addEventListener('paste', (e) => {
+        e.preventDefault();
+        const text = (e.clipboardData?.getData('text') || '').replace(/\D/g, '').slice(0, 6);
+        if (!text) return;
+        text.split('').forEach((ch, k) => {
+          if (inputs[idx + k]) { inputs[idx + k].value = ch; inputs[idx + k].classList.add('filled'); }
+        });
+        inputs[Math.min(idx + text.length, inputs.length - 1)]?.focus();
+        validate();
+      });
     });
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Backspace' && !e.target.value && idx > 0) {
-        arr[idx - 1]?.focus();
-      }
-    });
-  });
+  };
+  wireGroup(newPinInputs, confirmPinInputs);
+  wireGroup(confirmPinInputs, null);
+  validate();
+  newPinInputs[0]?.focus();
 
   form?.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -803,13 +1192,18 @@ export function setupForcePwdListeners() {
       });
 
       const nowIso = new Date().toISOString();
+      // This forced change IS a successful login, so members get +1 login_count
+      // (validateLogin returns forceChange early without counting — see authService.js).
+      const isMemberLogin = collectionName === 'members';
+      const newLoginCount = isMemberLogin ? (parseInt(userDoc.login_count || 0, 10) + 1) : undefined;
       const minimalPayload = {
         cooperative_id: String(userDoc.cooperative_id),
         password_hash: hashed,
         force_password_change: false,
         modified_at: nowIso,
         modified_by: 'system-security',
-        sync_at: nowIso
+        sync_at: nowIso,
+        ...(isMemberLogin ? { last_login: nowIso, login_count: newLoginCount } : {})
       };
 
       // 1. Push directly to Firestore first — must succeed before login.
@@ -829,13 +1223,20 @@ export function setupForcePwdListeners() {
       // 2. Mirror locally. updateMember/updateUser hash internally,
       // so pass the PLAINTEXT PIN (not `hashed`) to avoid double-hashing.
       try {
-        const localPayload = { ...userDoc, password_hash: newPin, force_password_change: false, modified_at: nowIso, modified_by: 'system-security' };
+        const localPayload = { ...userDoc, password_hash: newPin, force_password_change: false, modified_at: nowIso, modified_by: 'system-security', ...(isMemberLogin ? { last_login: nowIso, login_count: newLoginCount } : {}) };
         const { updateMember, updateUser } = await import('../../services/dataService.js');
         if (collectionName === 'members') {
           await updateMember(userDoc.id, localPayload, 'system-security');
         } else {
           await updateUser(userDoc.id, localPayload, 'system-security');
         }
+        // Keep the in-memory doc in sync so the session below carries the count.
+        if (isMemberLogin) {
+          userDoc.login_count = newLoginCount;
+          userDoc.last_login = nowIso;
+        }
+        userDoc.password_hash = hashed;
+        userDoc.force_password_change = false;
       } catch (localErr) {
         console.warn('[PasswordChange] Local mirror failed (cloud already updated):', localErr.message);
       }
@@ -867,8 +1268,12 @@ export function setupForcePwdListeners() {
         role,
         permissions: userDoc.permissions || '',
         enterprises: userDoc.enterprise_rights || userDoc.enterprises || '',
+        enterprise_rights: userDoc.enterprise_rights || userDoc.enterprises || '',
         cooperativeId: userDoc.cooperative_id,
         cooperativeName,
+        collection: collectionName,
+        userDoc: { ...userDoc },
+        ...(isMemberLogin ? { login_count: newLoginCount, last_login: nowIso } : {}),
       };
       // Ensure no forceChange flag leaks into the session
       delete welcomeUser.forceChange;

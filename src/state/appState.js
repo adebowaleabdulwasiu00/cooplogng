@@ -4,13 +4,14 @@ import { loadRememberedIdentity } from '../services/rememberMeService.js'
 
 function getDefaultTab(user) {
   if (!user) return 'dashboard';
-  const order = ['dashboard', 'ledger', 'payments', 'members', 'reports', 'reconciliation', 'settings'];
+  const order = ['dashboard', 'ledger', 'advice', 'payments', 'members', 'reports', 'reconciliation', 'settings'];
   const isMember = user.role === 'member';
   const can = (tab) => {
     switch (tab) {
       case 'dashboard': return isMember || hasPermission(user.permissions, 'dashboard_view');
       case 'ledger': return isMember || hasPermission(user.permissions, 'read_ledger') || hasPermission(user.permissions, 'read_coop_ledger');
-      case 'payments': return hasPermission(user.permissions, 'read_remittance');
+      case 'advice': return isMember;
+      case 'payments': return !!user && user.role !== 'member';
       case 'members': return !isMember && hasPermission(user.permissions, 'read_member');
       case 'reports': return !isMember && hasPermission(user.permissions, 'read_member');
       case 'reconciliation': return hasPermission(user.permissions, 'read_reconcile');
@@ -33,7 +34,14 @@ const rememberedIdentity = loadRememberedIdentity();
 if (!savedSession) {
   restoreSessionFromIndexedDB().then(session => {
     if (session) {
-      // Session restored from IndexedDB into sessionStorage; reload to pick it up
+      // Session restored from IndexedDB into sessionStorage; reload to pick it up.
+      // Guarded to once per tab session AND verified readable — otherwise a
+      // session that fails loadSavedSession() validation would F5 forever.
+      try {
+        if (sessionStorage.getItem('cooplog-restore-reloaded')) return
+        if (!loadSavedSession()) return
+        sessionStorage.setItem('cooplog-restore-reloaded', '1')
+      } catch { return }
       window.location.reload()
     }
   }).catch(() => {})
@@ -44,9 +52,9 @@ const state = {
   stage: 1,
   username: rememberedIdentity?.username || '',
   rememberMe: !!rememberedIdentity,
-  password: '',
-  selectedCooperativeId: '',
-  cooperatives: [],
+  password: rememberedIdentity?.password || '',
+  selectedCooperativeId: rememberedIdentity?.cooperativeId || '',
+  cooperatives: (rememberedIdentity?.cooperativeId ? [{ id: rememberedIdentity.cooperativeId, name: rememberedIdentity.cooperativeName || rememberedIdentity.cooperativeId }] : []),
   isSubmitting: false,
   isSyncing: false,
   showPassword: false,
@@ -59,6 +67,13 @@ const state = {
   members: [],
   isRegistering: false,
   coopSearchQuery: '',
+  googleLinkEmail: '',
+  googleLinkVerified: false,
+  googleLinkMobile: '',
+  googleLinkFirst: '',
+  googleLinkLast: '',
+  googleLinkCoops: [],
+  googleLinkSelectedCoop: '',
   showActivationKeyPrompt: false,
   activationKeyInput: '',
   activationKeyError: '',

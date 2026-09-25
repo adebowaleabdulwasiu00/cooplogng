@@ -11,6 +11,8 @@ import {
   getDocs,
   limit,
   getFirebaseAuth,
+  signInWithPopup,
+  signInWithRedirect,
   signOut
 } from './firebase.js'
 
@@ -19,6 +21,7 @@ import { renderMemberLedger } from './screens/MemberLedger.js'
 import { renderUnifiedPayment } from './screens/Remittance/index.js'
 import { renderMembers } from './screens/members/index.js'
 import { renderSettings } from './screens/Settings.js'
+import { renderPaymentAdvice } from './screens/PaymentAdvice.js'
 import { renderReports } from './screens/Reports.js'
 import { renderReconciliation } from './screens/Reconciliation.js'
 import { renderRegistration } from './screens/Registration.js'
@@ -29,20 +32,23 @@ import { initializeSyncService, syncCooperativeData, performHardRestore } from '
 import { getAllForCoop, loadDoc, isSynced, queryOne } from './services/sqliteService.js'
 import { validateLogin } from './services/authService.js'
 
-import { attemptOfflineLogin, saveSessionLocally as saveSession, loadSavedSession, clearSavedSession, clearOfflineSession, clearAllOfflineSessions, recordActivity, startInactivityWatcher, persistActiveTab, sessionRequiresPasswordChange } from './services/offlineAuthService.js'
+import { attemptOfflineLogin, saveSessionLocally as saveSession, loadSavedSession, clearSavedSession, clearOfflineSession, clearAllOfflineSessions, recordActivity, startInactivityWatcher, persistActiveTab, sessionRequiresPasswordChange, maybeCountMemberReturnVisit, restoreSessionFromIndexedDB } from './services/offlineAuthService.js'
 import { loadRememberedIdentity, saveRememberedIdentity, clearRememberedIdentity } from './services/rememberMeService.js'
 
 /**
  * Persist (or clear) the global remembered login identity after a
- * successful sign-in. Only username + cooperative are stored — never secrets.
+ * successful sign-in. Username + cooperative + password/PIN are stored
+ * (obfuscated) so the next visit pre-fills everything — Next → Next →
+ * Sign In with no typing. Cleared on untick or logout.
  */
-function persistRememberMe(username, cooperativeId, cooperativeName) {
+function persistRememberMe(username, cooperativeId, cooperativeName, password) {
   if (state.rememberMe) {
-    saveRememberedIdentity(username, cooperativeId, cooperativeName)
+    saveRememberedIdentity(username, cooperativeId, cooperativeName, password)
   } else {
     clearRememberedIdentity()
   }
 }
+import * as statePersist from './services/statePersistence.js'
 import { mountNotificationBell } from './components/NotificationBell.js'
 import { getNotificationListHtml, setupNotificationModalListeners } from './components/NotificationModal.js'
 import { showToast } from './services/toastService.js'
@@ -56,7 +62,13 @@ const app = document.querySelector('#app')
  * Dashboard > Ledger > Remittance > Members > Reports > Reconciliation > Settings.
  * Mirrors sidebar visibility so the landing tab always has a nav item.
  */
-const LANDING_ORDER = ['dashboard', 'ledger', 'payments', 'members', 'reports', 'reconciliation', 'settings'];
+const LANDING_ORDER = ['dashboard', 'ledger', 'advice', 'payments', 'members', 'reports', 'reconciliation', 'settings'];
+
+function canSeeRemittance(user) {
+  // Staff/admin (any non-member role) can always see Remittance.
+  // Members are explicitly excluded, even with read_remittance.
+  return !!user && user.role !== 'member';
+}
 
 function canAccessTab(user, tab) {
   if (!user) return tab === 'dashboard';
@@ -64,11 +76,13 @@ function canAccessTab(user, tab) {
   switch (tab) {
     case 'dashboard': return isMember || hasPermission(user.permissions, 'dashboard_view');
     case 'ledger': return isMember || hasPermission(user.permissions, 'read_ledger') || hasPermission(user.permissions, 'read_coop_ledger');
-    case 'payments': return hasPermission(user.permissions, 'read_remittance');
+    case 'advice': return isMember;
+    case 'payments': return canSeeRemittance(user);
     case 'members': return !isMember && hasPermission(user.permissions, 'read_member');
     case 'reports': return !isMember && hasPermission(user.permissions, 'read_member');
     case 'reconciliation': return hasPermission(user.permissions, 'read_reconcile');
     case 'settings': return isMember || hasPermission(user.permissions, 'settings_manage');
+    case 'dev-settings': return isDevEnvironment();
     default: return false;
   }
 }
@@ -87,9 +101,9 @@ const PING_INTERVAL = 30000 // 30s
 const DASHBOARD_REFRESH_INTERVAL = 60000 // 60s
 
 async function checkConnectivity() {
-  const tryPing = async (url) => {
+  const tryPing = async (url, timeoutMs = 5000) => {
     const ctrl = new AbortController()
-    const t = setTimeout(() => ctrl.abort(), 5000)
+    const t = setTimeout(() => ctrl.abort(), timeoutMs)
     await fetch(url, { mode: 'no-cors', signal: ctrl.signal })
     clearTimeout(t)
   }
@@ -97,6 +111,8 @@ async function checkConnectivity() {
   const endpoints = [
     'https://www.gstatic.com/generate_204',
     'https://www.google.com/generate_204',
+    'https://cdn.jsdelivr.com/favicon.ico',
+    'https://httpbin.org/get',
   ]
 
   for (const url of endpoints) {
@@ -128,15 +144,44 @@ function startConnectivityCheck() {
   _pingInterval = setInterval(checkConnectivity, PING_INTERVAL)
 }
 
+// Which logged-out view to show ('landing' | 'login') is kept in
+// sessionStorage so a same-tab reload (e.g. a service-worker update firing
+// while the user types on the login form) never bounces them back to the
+// landing page. sessionStorage survives reloads but dies with the tab, so
+// cold-start behaviour (first visit -> landing) is unchanged.
+const PUBLIC_VIEW_KEY = 'cooplog-public-view';
+function loadPersistedPublicView() {
+  try {
+    const v = sessionStorage.getItem(PUBLIC_VIEW_KEY);
+    return v === 'login' || v === 'landing' ? v : null;
+  } catch { return null; }
+}
+function persistPublicView(view) {
+  state.publicView = view;
+  try {
+    if (view) sessionStorage.setItem(PUBLIC_VIEW_KEY, view);
+    else sessionStorage.removeItem(PUBLIC_VIEW_KEY);
+  } catch {}
+}
+
 const savedSession = loadSavedSession();
+
+// Cold start: pre-fill EVERYTHING the user saved via "Remember me" so the
+// next visit is Next → Next → Sign In with no typing. Cleared on untick/logout.
+const _rememberedAtBoot = loadRememberedIdentity();
+
+// Restore persisted login wizard state (stage, username, cooperative, etc.)
+// so a refresh mid-login preserves progress. Only used when no session exists.
+const _savedWizard = (!savedSession) ? statePersist.load('login-wizard') : null;
 
 const state = {
   isOnline: navigator.onLine,
-  stage: 1,
-  username: '',
-  password: '',
-  selectedCooperativeId: '',
-  cooperatives: [],
+  stage: _savedWizard?.stage || 1,
+  username: _savedWizard?.username || _rememberedAtBoot?.username || '',
+  rememberMe: _savedWizard?.rememberMe ?? !!_rememberedAtBoot,
+  password: _savedWizard?.password || _rememberedAtBoot?.password || '',
+  selectedCooperativeId: _savedWizard?.selectedCooperativeId || _rememberedAtBoot?.cooperativeId || '',
+  cooperatives: (_savedWizard?.cooperatives?.length ? _savedWizard.cooperatives : (_rememberedAtBoot?.cooperativeId ? [{ id: _rememberedAtBoot.cooperativeId, name: _rememberedAtBoot.cooperativeName || _rememberedAtBoot.cooperativeId }] : [])),
   isSubmitting: false,
   isSyncing: false,
   showPassword: false,
@@ -147,9 +192,17 @@ const state = {
   editingRemittance: null, // Holds data when editing
   editingRemittanceId: null, // ID of record being edited
   members: [], // List of all members for Admins
+  memberCoops: [], // Member's cooperatives for the in-app switcher dropdown
   isRegistering: false,
-  publicView: null, // logged-out view: 'landing' | 'login' (resolved lazily)
-  coopSearchQuery: '', // NEW: For searchable dropdown
+  publicView: loadPersistedPublicView(), // logged-out view: 'landing' | 'login' (resolved lazily, survives reload)
+  coopSearchQuery: _savedWizard?.coopSearchQuery || '',
+  googleLinkEmail: _savedWizard?.googleLinkEmail || '',
+  googleLinkVerified: _savedWizard?.googleLinkVerified || false,
+  googleLinkMobile: _savedWizard?.googleLinkMobile || '',
+  googleLinkFirst: _savedWizard?.googleLinkFirst || '',
+  googleLinkLast: _savedWizard?.googleLinkLast || '',
+  googleLinkCoops: _savedWizard?.googleLinkCoops || [],
+  googleLinkSelectedCoop: _savedWizard?.googleLinkSelectedCoop || '',
   showActivationKeyPrompt: false,
   activationKeyInput: '',
   activationKeyError: '',
@@ -232,10 +285,9 @@ function handleRouting() {
   }
 
   const [tab, ...parts] = hash.split('/')
-  // Remittance is hidden from mobile navigation entirely (bottom nav has no
-  // entry and the sidebar entry is CSS-hidden) — bounce deep links/bookmarks
-  // back to the dashboard so the page is unreachable on mobile layout.
-  if (tab === 'payments' && isMobileLayout()) {
+  // Remittance is available to all staff/admin on every device.
+  // Only members are bounced back to the dashboard.
+  if (tab === 'payments' && state.welcomeUser?.role === 'member') {
     window.location.hash = 'dashboard'
     state.activeTab = 'dashboard'
     state.routeParts = []
@@ -274,6 +326,49 @@ async function bootstrapApp() {
   const startTs = Date.now();
   console.log(`[DEBUG] [${startTs}] bootstrapApp: Starting...`);
   handleRouting()
+  // Complete a redirect-based Google sign-in (Capacitor/mobile) if one is pending.
+  try { await _consumeGoogleRedirectResult(); } catch {}
+
+  // If no session in sessionStorage, try restoring from IndexedDB (e.g.
+  // after a browser crash or private-browsing session swap).
+  if (!state.welcomeUser) {
+    try {
+      const restored = await restoreSessionFromIndexedDB()
+      if (restored) {
+        // Guarded reload: only reload when the restored session is actually
+        // readable via loadSavedSession() and only once per tab session —
+        // otherwise a session that fails validation would F5 forever.
+        let canReload = false
+        try {
+          if (!sessionStorage.getItem('cooplog-restore-reloaded') && loadSavedSession()) {
+            sessionStorage.setItem('cooplog-restore-reloaded', '1')
+            canReload = true
+          }
+        } catch { canReload = false }
+        if (canReload) {
+          window.location.reload()
+          return // reload will re-run bootstrap with the restored session
+        }
+        // Restored into memory but not persistently readable — adopt it
+        // directly instead of reloading so boot can continue to dashboard.
+        state.welcomeUser = restored
+        try { state.activeTab = restored.activeTab || getDefaultTab(restored) } catch {}
+      }
+    } catch {
+      // IndexedDB unavailable — continue to login screen
+    }
+    // A blocked restore (unsubscribed/expired) leaves a polite message for
+    // the login screen instead of failing silently.
+    try {
+      const blockedMsg = window.sessionStorage.getItem('cooplog-login-blocked-msg')
+      if (blockedMsg) {
+        window.sessionStorage.removeItem('cooplog-login-blocked-msg')
+        state.errorMessage = blockedMsg
+        state.publicView = 'login'
+        persistPublicView('login')
+      }
+    } catch {}
+  }
 
   // If there's a saved session, eagerly initialize SQLite so saveSession()
   // during login doesn't trigger initDb() for the first time (blocks UI ~3-5s).
@@ -327,12 +422,30 @@ async function bootstrapApp() {
     }
   }
 
+  // Members stay logged in, but a re-open/refresh after >10 min idle still
+  // counts as a return visit (+1 login_count, fresh last_login) — no logout.
+  if (state.welcomeUser?.role === 'member' && state.welcomeUser?.__idleReturn) {
+    maybeCountMemberReturnVisit(state.welcomeUser).catch(() => {})
+  }
+
   if (state.welcomeUser && (state.welcomeUser.subscriptionStatus === undefined || state.welcomeUser.subscriptionExpiry === undefined)) {    try {
       const { queryOne } = await import('./services/sqliteService.js')
-      const userRecord = await queryOne(
-        'SELECT subscriptionStatus, expiry_date FROM users WHERE cooperative_id = ? AND username = ? AND is_deleted = 0',
-        [String(state.welcomeUser.cooperativeId), state.welcomeUser.username]
-      )
+      const isMember = state.welcomeUser.role === 'member' || state.welcomeUser.userCollection === 'members'
+      const table = isMember ? 'members' : 'users'
+      const userId = state.welcomeUser.userId || state.welcomeUser.memberId
+      let userRecord = null
+      if (userId) {
+        userRecord = await queryOne(
+          `SELECT subscriptionStatus, expiry_date FROM ${table} WHERE id = ? AND is_deleted = 0`,
+          [String(userId)]
+        )
+      }
+      if (!userRecord) {
+        userRecord = await queryOne(
+          `SELECT subscriptionStatus, expiry_date FROM ${table} WHERE cooperative_id = ? AND username = ? AND is_deleted = 0`,
+          [String(state.welcomeUser.cooperativeId), state.welcomeUser.username]
+        )
+      }
       if (userRecord) {
         state.welcomeUser.subscriptionStatus = userRecord.subscriptionStatus
         state.welcomeUser.subscriptionExpiry = userRecord.expiry_date
@@ -342,13 +455,46 @@ async function bootstrapApp() {
     }
   }
 
+  // Bootstrap gate: a restored session whose subscription was revoked while
+  // away must not reach the dashboard — bounce to login with the polite
+  // message (same as a fresh blocked login). Admin exempt inside helper.
+  if (state.welcomeUser) {
+    try {
+      const { getDocById_Global } = await import('./services/sqliteService.js')
+      const { isSubscriptionBlocked, SUBSCRIPTION_BLOCKED_MSG } = await import('./services/subscriptionService.js')
+      const isMember = state.welcomeUser.role === 'member' || state.welcomeUser.userCollection === 'members'
+      const _id = state.welcomeUser.userId || state.welcomeUser.memberId
+      if (_id) {
+        const row = await getDocById_Global(isMember ? 'members' : 'users', String(_id)).catch(() => null)
+        if (row && !row.is_deleted && isSubscriptionBlocked(row, state.welcomeUser.username)) {
+          console.warn('[Bootstrap] Session subscription inactive; forcing login.')
+          try {
+            const { clearSavedSession } = await import('./services/offlineAuthService.js')
+            clearSavedSession()
+          } catch {}
+          state.welcomeUser = null
+          state.activeTab = 'dashboard'
+          state.stage = 1
+          state.publicView = 'login'
+          persistPublicView('login')
+          state.errorMessage = SUBSCRIPTION_BLOCKED_MSG
+        }
+      }
+    } catch (e) {
+      console.warn('[Bootstrap] Session subscription check skipped:', e?.message)
+    }
+  }
+
   // Start real connectivity pings (replaces unreliable navigator.onLine)
   startConnectivityCheck();
 
-  // Auto-logout after 10 minutes of inactivity (active users stay logged in
-  // via recordActivity on every interaction). Started once; it no-ops when logged out.
+  // Auto-logout after 10 minutes of inactivity for STAFF/ADMIN only
+  // (active users stay logged in via recordActivity on every interaction).
+  // Members never auto-logout — only the manual Log Out button ends them.
+  // Started once; it no-ops when logged out.
   startInactivityWatcher(() => {
     if (!state.welcomeUser) return
+    if (state.welcomeUser.role === 'member') return
     performLogout(true)
   });
 
@@ -459,12 +605,20 @@ function isNativeAndroid() {
     return true
   } catch { return false }
 }
+function isDevEnvironment() {
+  try {
+    if (typeof window === 'undefined' || !window.location) return false
+    const host = (window.location.hostname || '').toLowerCase()
+    return host === 'localhost' || host === '127.0.0.1' || host === '[::1]'
+  } catch { return false }
+}
 // Mobile layout = the layout that shows the bottom nav (kept in sync with
-// the max-width: 768px media query in style.css).
+// the max-width: 999px media query in style.css: anything below 1000px is
+// treated as mobile).
 function isMobileLayout() {
   try {
     if (isNativeAndroid()) return true
-    return typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches
+    return typeof window !== 'undefined' && window.matchMedia('(max-width: 999px)').matches
   } catch { return false }
 }
 function resolvePublicView() {
@@ -474,20 +628,52 @@ function resolvePublicView() {
 }
 
 function setupPWAUpdateListener() {
-  if ('serviceWorker' in navigator) {
-    // Guard against infinite reload loops caused by frequent controller changes
-    if (window.__hasReloaded) return;
-    window.__hasReloaded = true;
-    navigator.serviceWorker.addEventListener('controllerchange', () => {
-      // Reload only once when a new service worker takes control
-      if (!window.__hasReloaded) {
-        window.__hasReloaded = true;
-        window.location.reload();
-      }
-    });
-    // Reset the flag after a short delay to allow future legitimate updates
-    setTimeout(() => { window.__hasReloaded = false; }, 5000);
-  }
+  if (!('serviceWorker' in navigator)) return;
+  // Distinguish a first install (no previous controller) from a genuine
+  // update. The SW uses skipWaiting() + clients.claim(), so the very first
+  // visit fires controllerchange (null -> worker) — often seconds after load,
+  // exactly while a new user is typing on the login form. That must never
+  // reload; only a real update (old worker -> new worker) should.
+  let hadControllerAtSetup = false;
+  try { hadControllerAtSetup = !!navigator.serviceWorker.controller; } catch {}
+  let reloading = false;
+  const userIsTyping = () => {
+    try {
+      const ae = document.activeElement;
+      if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT' || ae.isContentEditable)) return true;
+      if (window.__isFormDirty) return true;
+      // Logged-out login wizard with anything entered — a reload here wipes
+      // typed credentials and used to bounce back to the landing page.
+      if (state && !state.welcomeUser && (state.username || state.password || state.coopSearchQuery || state.stage !== 1)) return true;
+    } catch {}
+    return false;
+  };
+  const safeReload = () => {
+    if (reloading) return;
+    // Never yank the page mid-typing — retry when idle instead.
+    if (userIsTyping()) {
+      setTimeout(safeReload, 5000);
+      return;
+    }
+    // Loop-breaker: the in-memory `reloading` flag dies with the page, so
+    // a churning SW version (or double controllerchange) used to F5 forever.
+    // Allow at most one SW-driven reload per 60s per tab.
+    try {
+      const last = Number(sessionStorage.getItem('cooplog-sw-reloaded-ts') || 0);
+      if (last && Date.now() - last < 60000) return;
+      sessionStorage.setItem('cooplog-sw-reloaded-ts', String(Date.now()));
+    } catch {}
+    reloading = true;
+    window.location.reload();
+  };
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadControllerAtSetup) {
+      // First install just claimed the page — adopt it silently, no reload.
+      hadControllerAtSetup = true;
+      return;
+    }
+    safeReload();
+  });
 }
 
 // Pull-down to refresh for the Android APK. The native WebView has no
@@ -600,11 +786,13 @@ async function performLogout(isAuto = false) {
   state.welcomeUser = null
   state.stage = 1
   state.isGoogleLoginFlow = false
-  // Global remember-me survives logout: pre-fill the remembered username
-  // so the next sign-in needs no typing (only the password/PIN).
-  const rememberedAfterLogout = loadRememberedIdentity()
-  state.username = rememberedAfterLogout?.username || ''
-  state.rememberMe = !!rememberedAfterLogout
+  _resetGoogleLinkState()
+  // "Remember me" ends at logout by user request: forget everything so the
+  // next sign-in starts blank (unticking the box forgets immediately too).
+  try { clearRememberedIdentity() } catch {}
+  try { localStorage.removeItem('cooplog-last-coop-' + String(state.username || '').toLowerCase()) } catch {}
+  state.username = ''
+  state.rememberMe = false
   state.password = ''
   state.selectedCooperativeId = ''
   state.cooperatives = []
@@ -632,6 +820,11 @@ async function performLogout(isAuto = false) {
     }
   }
   saveSession(null)
+  _clearLoginWizard()
+  statePersist.clearAll()
+  // Re-persist AFTER clearAll (it wipes every cooplog-* sessionStorage key,
+  // including the persisted public view set above).
+  persistPublicView('login')
   // Stop background sync FIRST so the old session can never keep writing.
   try {
     const { stopBackgroundSync, clearSyncSession } = await import('./services/backgroundSyncService.js')
@@ -644,6 +837,136 @@ async function performLogout(isAuto = false) {
   }
   await clearAllOfflineSessions()
   render()
+}
+
+/**
+ * Fill the member cooperative switcher dropdown (mobile match, no PIN).
+ * Hidden unless the member exists in 2+ cooperatives on this device.
+ */
+async function populateCoopSwitcher() {
+  const sel = document.getElementById('coop-switcher')
+  const wrap = document.getElementById('coop-switcher-wrap')
+  const hide = () => {
+    try { if (sel) sel.style.display = 'none' } catch {}
+    try { if (wrap) wrap.style.display = 'none' } catch {}
+  }
+  try {
+    if (!sel) return
+    if (!state.welcomeUser || state.welcomeUser.role !== 'member') { hide(); return }
+    const { getMemberCooperatives } = await import('./services/offlineAuthService.js')
+    const coops = await getMemberCooperatives()
+    state.memberCoops = coops || []
+    if (!coops || coops.length < 2) {
+      hide()
+      return
+    }
+    const cur = String(state.welcomeUser.cooperativeId)
+    sel.innerHTML = coops.map(c => `<option value="${escapeAttribute(String(c.id))}"${String(c.id) === cur ? ' selected' : ''}>${escapeHtml(c.name || c.id)}</option>`).join('')
+    // Keep the select in sync when the active coop changed elsewhere.
+    try { sel.value = cur } catch {}
+    try { sel.disabled = false } catch {}
+    sel.style.display = ''
+    if (wrap) wrap.style.display = ''
+  } catch {
+    hide()
+  }
+}
+
+let _switchingCoop = false
+
+/**
+ * In-app cooperative switch for multi-coop members (no logout, no PIN).
+ * Pushes the current coop's queue when online (leaves it queued offline —
+ * strictly per-coop, so Coop A writes can never land in Coop B), swaps the
+ * session, then resyncs the new coop in the background.
+ */
+async function handleCoopSwitch(targetId) {
+  const sel = document.getElementById('coop-switcher')
+  if (_switchingCoop) return
+  const current = state.welcomeUser
+  if (!current || current.role !== 'member') return
+  const target = String(targetId || '')
+  if (!target || target === String(current.cooperativeId)) return
+  if (isFormDirty()) {
+    showToast('Please save or discard your changes before switching cooperative.', 'warning')
+    if (sel) sel.value = String(current.cooperativeId)
+    return
+  }
+  _switchingCoop = true
+  if (sel) sel.disabled = true
+  showToast('Switching cooperative...', 'info')
+  try {
+    const { switchMemberCooperative, maybeCountMemberReturnVisit, persistActiveTab } = await import('./services/offlineAuthService.js')
+    const res = await switchMemberCooperative(target)
+    if (!res.ok) {
+      showToast(res.error || 'Could not switch cooperative.', 'error')
+      if (sel) {
+        sel.value = String(state.welcomeUser?.cooperativeId || '')
+        sel.disabled = false
+      }
+      _switchingCoop = false
+      return
+    }
+    const w = res.welcomeUser
+    state.welcomeUser = w
+    state.selectedMemberId = null
+    state.members = []
+    state.editingRemittance = null
+    state.editingRemittanceId = null
+    state.loanRequest = {
+      step: 1,
+      enterpriseId: '',
+      amount: 0,
+      duration: 1,
+      guarantors: [],
+      bankDetails: { bankName: '', accountName: '', accountNumber: '' }
+    }
+    state.modal.isOpen = false
+    state.activeTab = getDefaultTab(w)
+    state.routeParts = []
+    window.history.replaceState(null, '', `#${state.activeTab}`)
+    window.__isFormDirty = false
+    try { await persistActiveTab(state.activeTab).catch(() => {}) } catch {}
+    // First visit / return after >10 min idle in the new coop counts +1.
+    maybeCountMemberReturnVisit(state.welcomeUser).catch(() => {})
+    render()
+    showToast(`Switched to ${w.cooperativeName}`, 'success')
+    // Background scope-switch resync of the NEW coop (full re-download of the
+    // new coop only; the old coop's rows + queued writes stay untouched).
+    try {
+      const { syncCooperativeData, initializeSyncService } = await import('./services/syncService.js')
+      if (navigator.onLine) {
+        syncCooperativeData(
+          w.cooperativeId, w.role, w.memberId, w.permissions, w.username, w.registrationNo || ''
+        ).then(() => {
+          initializeSyncService().catch(err => console.warn('[CoopSwitch] initializeSyncService failed:', err.message))
+        }).catch(err => {
+          console.warn('[CoopSwitch] Background sync failed:', err.message)
+          initializeSyncService().catch(() => {})
+        })
+      } else {
+        initializeSyncService().catch(err => console.warn('[CoopSwitch] initializeSyncService failed:', err.message))
+        showToast('Offline — showing saved data. Changes will sync later.', 'warning')
+      }
+    } catch (e) {
+      console.warn('[CoopSwitch] Sync handoff failed:', e?.message)
+    }
+  } catch (e) {
+    showToast(e?.message || 'Could not switch cooperative.', 'error')
+    if (sel) {
+      sel.value = String(state.welcomeUser?.cooperativeId || '')
+      sel.disabled = false
+    }
+  } finally {
+    _switchingCoop = false
+    try {
+      const live = document.getElementById('coop-switcher')
+      if (live) {
+        live.disabled = false
+        if (state.welcomeUser?.cooperativeId) live.value = String(state.welcomeUser.cooperativeId)
+      }
+    } catch {}
+  }
 }
 
 
@@ -719,6 +1042,32 @@ app.addEventListener('click', async (event) => {
     return;
   }
 
+  if (action === 'google-link-search') {
+    await handleGoogleLinkSearch();
+    return;
+  }
+
+  if (action === 'google-link-verify') {
+    await handleGoogleLinkVerify();
+    return;
+  }
+
+  if (action === 'google-link-cancel') {
+    await _abortGoogleLink('Google sign-in cancelled.');
+    return;
+  }
+
+  if (action === 'google-link-pick') {
+    const id = event.target.closest('[data-id]')?.dataset.id;
+    if (id) {
+      state.googleLinkSelectedCoop = id;
+      state.errorMessage = '';
+      _saveLoginWizard();
+      render();
+    }
+    return;
+  }
+
   if (action === 'logout') {
     await performLogout(false)
     return
@@ -743,14 +1092,7 @@ app.addEventListener('click', async (event) => {
   }
 
   if (action === 'delete-remit') {
-    const remitId = event.target.closest('[data-id]').dataset.id
-    if (confirm('Are you sure you want to delete this payment record?')) {
-      import('./services/dataService.js').then(m => {
-        m.deleteRemittance(remitId, state.welcomeUser.username).then(() => {
-          renderDashboardContent()
-        })
-      })
-    }
+    // Delete hidden for everyone — action disabled.
     return
   }
 
@@ -793,7 +1135,7 @@ app.addEventListener('click', async (event) => {
   }
 
   if (action === 'go-login') {
-    state.publicView = 'login'
+    persistPublicView('login')
     state.stage = 1
     state.errorMessage = ''
     render()
@@ -802,7 +1144,7 @@ app.addEventListener('click', async (event) => {
 
   if (action === 'go-landing') {
     if (state.welcomeUser) return
-    state.publicView = 'landing'
+    persistPublicView('landing')
     state.showActivationKeyPrompt = false
     state.isRegistering = false
     render()
@@ -893,11 +1235,20 @@ window.addEventListener('mousedown', () => { _lastInteractionTs = Date.now(); re
 window.addEventListener('touchstart', () => { _lastInteractionTs = Date.now(); recordActivity() }, { passive: true })
 window.addEventListener('click', () => { _lastInteractionTs = Date.now(); recordActivity() }, { passive: true })
 
+// Cooperative switcher dropdown (members with 2+ cooperatives, no PIN).
+document.addEventListener('change', (e) => {
+  const t = e.target
+  if (t && t.id === 'coop-switcher') {
+    handleCoopSwitch(String(t.value || ''))
+  }
+})
+
 // Track dirty form inputs globally
 window.addEventListener('input', (e) => {
   const target = e.target
   if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT')) {
     const id = target.id || ''
+    if (id === 'coop-switcher') return
     const className = target.className || ''
     const isFilterOrSearch = id.toLowerCase().includes('search') || 
                              id.toLowerCase().includes('filter') || 
@@ -914,6 +1265,7 @@ window.addEventListener('change', (e) => {
   const target = e.target
   if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT')) {
     const id = target.id || ''
+    if (id === 'coop-switcher') return
     const className = target.className || ''
     const isFilterOrSearch = id.toLowerCase().includes('search') || 
                              id.toLowerCase().includes('filter') || 
@@ -1073,6 +1425,112 @@ syncBus.on(SyncEvents.BULK_MEMBERS_LOADED, () => {
   }
 })
 
+// ─── Session policy enforcement (background sync) ───────────────────────
+// The background loop silently pulls fresh users/members rows. When the
+// CURRENT user's row changes remotely (subscription revoked/expired,
+// permissions/role changed, or account deleted), the app must react by
+// signing out to the login page — silently for permission/role changes,
+// with the polite contact-admin message for subscription blocks.
+// Guards run locally (no extra reads on the hot path when the payload
+// already carries the fresh row) and never throw into the sync loop.
+let _policyLogoutInProgress = false
+async function forceLogoutForPolicy(violation) {
+  if (!state.welcomeUser || _policyLogoutInProgress) return
+  _policyLogoutInProgress = true
+  try {
+    const isSubscription = violation?.code === 'SUBSCRIPTION'
+    const msg = isSubscription ? (violation.message || 'Your account subscription is inactive. Please contact your administrator for assistance.') : ''
+    console.warn(`[SessionPolicy] Logging out (${violation?.code || 'AUTH'}):`, violation?.message || '')
+    await performLogout(true)
+    // performLogout clears the message silently — restore the polite one
+    // only for subscription blocks; permission/role changes stay silent.
+    if (msg) {
+      state.errorMessage = msg
+      try { window.sessionStorage.setItem('cooplog-login-blocked-msg', msg) } catch {}
+      render()
+    }
+  } catch (e) {
+    console.warn('[SessionPolicy] Forced logout failed:', e?.message)
+  } finally {
+    _policyLogoutInProgress = false
+  }
+}
+
+function _payloadRowMatchesCurrentUser(payload) {
+  try {
+    const row = payload?.data
+    if (!row || !row.id || !state.welcomeUser) return null
+    const curId = String(state.welcomeUser.userId || state.welcomeUser.memberId || '')
+    if (!curId || String(row.id) !== curId) return null
+    return row
+  } catch { return null }
+}
+
+async function enforcePolicyFromRow(freshRow) {
+  if (!freshRow || !state.welcomeUser || _policyLogoutInProgress) return false
+  try {
+    const { getSessionPolicyViolation } = await import('./services/offlineAuthService.js')
+    const violation = await getSessionPolicyViolation(state.welcomeUser, freshRow)
+    if (violation) {
+      await forceLogoutForPolicy(violation)
+      return true
+    }
+  } catch (e) {
+    console.warn('[SessionPolicy] Row check skipped:', e?.message)
+  }
+  return false
+}
+
+let _policyCheckQueued = false
+async function enforcePolicyFromLocalDb() {
+  if (!state.welcomeUser || _policyLogoutInProgress || _policyCheckQueued) return false
+  _policyCheckQueued = true
+  try {
+    const { checkCurrentSessionPolicy } = await import('./services/offlineAuthService.js')
+    const violation = await checkCurrentSessionPolicy(state.welcomeUser)
+    if (violation) {
+      await forceLogoutForPolicy(violation)
+      return true
+    }
+  } catch (e) {
+    console.warn('[SessionPolicy] Local check skipped:', e?.message)
+  } finally {
+    _policyCheckQueued = false
+  }
+  return false
+}
+
+// Revalidation loop verdicts (permission/role/subscription from Firestore).
+syncBus.on(SyncEvents.SYNC_FAILED, (payload) => {
+  try {
+    const data = payload?.data || payload || {}
+    if (data.type !== 'AUTH_EXPIRED') return
+    if (!state.welcomeUser || _policyLogoutInProgress) return
+    const code = data.code || 'AUTH'
+    const reason = data.reason || data.error || ''
+    // Subscription carries the polite message; everything else is silent.
+    forceLogoutForPolicy({ code, message: reason })
+  } catch (e) {
+    console.warn('[SessionPolicy] AUTH_EXPIRED handling skipped:', e?.message)
+  }
+})
+
+// Direct row updates for the current user arrive here first (fast path).
+syncBus.on(SyncEvents.USER_UPDATED, (payload) => {
+  const row = _payloadRowMatchesCurrentUser(payload)
+  if (row) enforcePolicyFromRow(row)
+})
+syncBus.on(SyncEvents.MEMBER_UPDATED, (payload) => {
+  const row = _payloadRowMatchesCurrentUser(payload)
+  if (row) enforcePolicyFromRow(row)
+})
+
+// Full-cycle guard: covers deletes, expiries (time-based, no event), and
+// any change the granular events missed. Runs after the dashboard refresh.
+syncBus.on(SyncEvents.SYNC_COMPLETED, () => {
+  enforcePolicyFromLocalDb()
+})
+
 window.addEventListener('refresh-members', async () => {
   if (!state.welcomeUser) return
   const isAdmin = hasPermission(state.welcomeUser.permissions, 'admin') || state.welcomeUser.username.toLowerCase() === 'admin'
@@ -1113,6 +1571,9 @@ app.addEventListener('input', (event) => {
 
   if (target.name === 'username') {
     state.username = target.value
+    // Keep stage-1 typing crash-safe: a debounced wizard save means an
+    // involuntary reload restores the typed username instead of blanking it.
+    _saveLoginWizardDebounced()
   }
 
   if (target.name === 'remember-me' && target.type === 'checkbox') {
@@ -1130,8 +1591,29 @@ app.addEventListener('input', (event) => {
     state.selectedCooperativeId = target.value
   }
 
+  if (target.name === 'google-link-mobile') {
+    state.googleLinkMobile = target.value
+    _saveLoginWizardDebounced()
+  }
+
+  if (target.name === 'google-link-first') {
+    state.googleLinkFirst = target.value
+    _saveLoginWizardDebounced()
+  }
+
+  if (target.name === 'google-link-last') {
+    state.googleLinkLast = target.value
+    _saveLoginWizardDebounced()
+  }
+
+  if (target.name === 'google-link-coop') {
+    state.googleLinkSelectedCoop = target.value
+    state.errorMessage = ''
+  }
+
   if (target.id === 'coop-search-input') {
     state.coopSearchQuery = target.value
+    _saveLoginWizardDebounced()
     const query = target.value
     const suggestionsDiv = document.getElementById('coop-suggestions')
     if (suggestionsDiv) {
@@ -1259,7 +1741,7 @@ function render() {
     }, (result) => {
       showToast(`Registration Successful!\nCooperative ID: ${result.cooperativeId}\n\nYou can now log in with the 'admin' account.`, 'success')
       state.isRegistering = false
-      state.publicView = 'login'
+      persistPublicView('login')
       state.username = 'admin'
       state.stage = 1
       render()
@@ -1280,6 +1762,8 @@ function render() {
     if (bellContainer) {
         mountNotificationBell(bellContainer, state.welcomeUser)
     }
+    // Fill the member cooperative switcher dropdown (hides itself if <2 coops)
+    populateCoopSwitcher().catch(() => {})
     return
   }
 
@@ -1287,7 +1771,7 @@ function render() {
   // (Auto/manual logout always lands on login — see performLogout.)
   if (!state.isRegistering && !state.showActivationKeyPrompt && resolvePublicView() === 'landing') {
     renderLanding(app, {
-      onLogin: () => { state.publicView = 'login'; state.stage = 1; state.errorMessage = ''; render(); },
+      onLogin: () => { persistPublicView('login'); state.stage = 1; state.errorMessage = ''; render(); },
       onRegister: () => {
         state.showActivationKeyPrompt = true
         state.activationKeyInput = ''
@@ -1314,12 +1798,114 @@ function render() {
     1: 'Welcome Back',
     2: 'Select Cooperative',
     3: 'Enter Password',
+    4: 'Link Google Account',
   }
 
   const buttonLabels = {
     1: 'Next',
     2: 'Next',
     3: 'Sign In',
+    4: 'Verify & Link',
+  }
+
+  // ── First-time Google linking screen (stage 4) ─────────────────────
+  // Responsive by construction: same .shell/.card/.form layout as the
+  // login screens, full-width touch-sized buttons, no fixed widths.
+  if (state.stage === 4) {
+    const linkCoops = Array.isArray(state.googleLinkCoops) ? state.googleLinkCoops : [];
+    app.innerHTML = `
+    <main class="shell">
+      <section class="card" style="animation: fadeIn 0.5s ease-out; position: relative;">
+        <div style="position: absolute; top: 1rem; left: 1.25rem;">
+          <div class="network-indicator ${networkIndicatorClass()}" role="status" aria-label="${networkIndicatorLabel()}">
+            <span class="indicator-icon">${networkIndicatorIcon()}</span>
+            <span>${networkIndicatorLabel()}</span>
+          </div>
+        </div>
+        <div class="brand">COOPERATIVE LOG APP</div>
+        <h1 style="font-weight: 800; font-size: 1.5rem; color: var(--text-primary); margin-top: 0; text-align: center;">${titles[4]}</h1>
+        <p style="color: var(--text-muted); text-align: center; margin-bottom: 1rem; font-size: 0.9rem; line-height: 1.5;">
+          Your Google email <strong style="color: var(--text-primary);">${escapeHtml(state.googleLinkEmail)}</strong>
+          ${state.googleLinkVerified ? '✓ verified' : ''} is new here.<br/>Enter the details below to link it to your membership.
+        </p>
+        <div style="margin-bottom: 1rem;"></div>
+        ${renderAlert()}
+        <form class="form" style="text-align: left;">
+          <label class="field">
+            <span>Mobile Number (as registered with your cooperative)</span>
+            <input
+              name="google-link-mobile"
+              type="tel"
+              inputmode="tel"
+              autocomplete="tel"
+              placeholder="e.g. 0803 123 4567"
+              value="${escapeAttribute(state.googleLinkMobile)}"
+              style="min-height: 3rem;"
+            />
+          </label>
+          <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+            <label class="field" style="flex: 1 1 8rem;">
+              <span>First Name</span>
+              <input
+                name="google-link-first"
+                type="text"
+                autocomplete="given-name"
+                placeholder="First name"
+                value="${escapeAttribute(state.googleLinkFirst)}"
+                style="min-height: 3rem;"
+              />
+            </label>
+            <label class="field" style="flex: 1 1 8rem;">
+              <span>Last Name</span>
+              <input
+                name="google-link-last"
+                type="text"
+                autocomplete="family-name"
+                placeholder="Last name"
+                value="${escapeAttribute(state.googleLinkLast)}"
+                style="min-height: 3rem;"
+              />
+            </label>
+          </div>
+          <div class="actions" style="flex-direction: column; align-items: stretch;">
+            <button type="button" class="primary-button" data-action="google-link-search" style="width: 100%; min-height: 3rem;" ${state.isSubmitting ? 'disabled' : ''}>
+              ${state.isSubmitting ? 'Please wait...' : 'Find My Cooperatives'}
+            </button>
+          </div>
+          ${linkCoops.length > 0 ? `
+          <div style="margin-top: 1.25rem;">
+            <span style="font-size: 0.7rem; font-weight: 700; color: var(--text-muted); margin-bottom: 0.5rem; text-transform: uppercase; letter-spacing: 0.08em; display: block;">Select your cooperative</span>
+            <div role="radiogroup" aria-label="Cooperatives" style="display: flex; flex-direction: column; gap: 0.5rem; max-height: 40vh; overflow-y: auto;">
+              ${linkCoops.map(coop => `
+                <label data-action="google-link-pick" data-id="${escapeAttribute(coop.id)}" style="display: flex; align-items: center; gap: 0.75rem; padding: 0.85rem 1rem; border: 1px solid ${state.googleLinkSelectedCoop === coop.id ? 'var(--accent-primary)' : 'var(--border-light)'}; border-radius: 0.75rem; cursor: pointer; min-height: 3rem; background: ${state.googleLinkSelectedCoop === coop.id ? 'var(--bg-secondary)' : 'transparent'};">
+                  <input type="radio" name="google-link-coop" value="${escapeAttribute(coop.id)}" ${state.googleLinkSelectedCoop === coop.id ? 'checked' : ''} style="width: 1.25rem; height: 1.25rem; accent-color: var(--accent-primary); pointer-events: none;" />
+                  <span>
+                    <span style="display: block; font-weight: 600; color: var(--text-primary);">${escapeHtml(coop.name || 'Cooperative')}</span>
+                    <span style="display: block; font-size: 0.7rem; color: var(--text-muted);">ID: ${escapeHtml(coop.id)}</span>
+                  </span>
+                </label>
+              `).join('')}
+            </div>
+            <div class="actions" style="flex-direction: column; align-items: stretch; margin-top: 1rem;">
+              <button type="button" class="primary-button" data-action="google-link-verify" style="width: 100%; min-height: 3rem;" ${state.isSubmitting ? 'disabled' : ''}>
+                ${state.isSubmitting ? 'Please wait...' : buttonLabels[4]}
+              </button>
+            </div>
+          </div>
+          ` : ''}
+          <div class="actions" style="margin-top: 1rem;">
+            <button type="button" class="secondary-button" data-action="google-link-cancel" style="width: 100%; min-height: 3rem;" ${state.isSubmitting ? 'disabled' : ''}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      </section>
+    </main>
+    ${renderGlobalModal()}
+    `;
+    const _glFirst = document.querySelector('input[name="google-link-mobile"]');
+    if (_glFirst && !state.isSubmitting && !linkCoops.length) _glFirst.focus();
+    return;
   }
 
   app.innerHTML = `
@@ -1519,9 +2105,11 @@ function renderDashboard() {
     members: 'Members',
     payments: 'Remittance',
     ledger: 'Ledger',
+    advice: 'Payment Advice',
     reports: 'Reports',
     reconciliation: 'Reconciliation',
-    settings: 'Settings'
+    settings: 'Settings',
+    'dev-settings': 'Dev. Settings'
   };
   const activeTitle = activeTabTitles[state.activeTab] || 'CoopLog';
 
@@ -1589,7 +2177,7 @@ function renderDashboard() {
               <span>Members</span>
             </button>
           ` : ''}
-          ${hasPermission(state.welcomeUser.permissions, 'read_remittance') ? `
+          ${canSeeRemittance(state.welcomeUser) ? `
             <button class="nav-item ${state.activeTab === 'payments' ? 'active' : ''}" data-action="nav-tab" data-tab="payments">
               <span class="nav-icon"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></span>
               <span>Remittance</span>
@@ -1599,6 +2187,12 @@ function renderDashboard() {
             <button class="nav-item ${state.activeTab === 'ledger' ? 'active' : ''}" data-action="nav-tab" data-tab="ledger/summary">
               <span class="nav-icon"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg></span>
               <span>Ledger</span>
+            </button>
+          ` : ''}
+          ${state.welcomeUser.role === 'member' ? `
+            <button class="nav-item ${state.activeTab === 'advice' ? 'active' : ''}" data-action="nav-tab" data-tab="advice">
+              <span class="nav-icon"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/></svg></span>
+              <span>Payment Advice</span>
             </button>
           ` : ''}
           <button class="nav-item ${state.activeTab === 'withdrawal-request' ? 'active' : ''}" data-action="withdrawal-request">
@@ -1624,7 +2218,22 @@ function renderDashboard() {
               <span>Settings</span>
             </button>
           ` : ''}
+          ${isDevEnvironment() ? `
+            <button class="nav-item ${state.activeTab === 'dev-settings' ? 'active' : ''}" data-action="nav-tab" data-tab="dev-settings">
+              <span class="nav-icon"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065zM15 12a3 3 0 11-6 0 3 3 0 016 0z"/><circle cx="12" cy="12" r="2.5" stroke-width="1.5"/></svg></span>
+              <span>Dev. Settings</span>
+            </button>
+          ` : ''}
         </nav>
+
+        ${state.welcomeUser.role === 'member' ? `
+          <div class="sidebar-brand-text" id="coop-switcher-wrap" style="margin: 0 1rem 0.75rem; display: none;">
+            <div style="font-size: 0.65rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.3rem;">Cooperative account</div>
+            <select id="coop-switcher" title="Switch cooperative" aria-label="Switch cooperative" style="width: 100%; padding: 0.5rem 0.6rem; border-radius: var(--radius-md); border: 1px solid var(--border-medium); background: var(--bg-secondary); color: var(--text-primary); font-size: 0.8rem; font-weight: 600; cursor: pointer; display: none;">
+              <option value="${escapeAttribute(state.welcomeUser.cooperativeId)}">${escapeHtml(state.welcomeUser.cooperativeName)}</option>
+            </select>
+          </div>
+        ` : ''}
 
         <div class="sidebar-footer">
           <div style="display: flex; gap: 0.75rem; align-items: center; width: 100%;">
@@ -1673,14 +2282,31 @@ function renderDashboard() {
               <span class="nav-label">Ledger</span>
             </button>
           ` : ''}
-          
+          ${state.welcomeUser.role === 'member' ? `
+            <button class="bottom-nav-item ${state.activeTab === 'advice' ? 'active' : ''}" data-action="nav-tab" data-tab="advice">
+              <svg class="nav-icon" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/></svg>
+              <span class="nav-label">Advice</span>
+            </button>
+          ` : ''}
+          ${canSeeRemittance(state.welcomeUser) ? `
+            <button class="bottom-nav-item ${state.activeTab === 'payments' ? 'active' : ''}" data-action="nav-tab" data-tab="payments">
+              <svg class="nav-icon" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+              <span class="nav-label">Remittance</span>
+            </button>
+          ` : ''}
         `}
-        ${(state.welcomeUser.role === 'member' || hasPermission(state.welcomeUser.permissions, 'settings_manage')) ? `
-          <button class="bottom-nav-item ${state.activeTab === 'settings' ? 'active' : ''}" data-action="nav-tab" data-tab="settings">
-            <svg class="nav-icon" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065zM15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-            <span class="nav-label">Settings</span>
-          </button>
-        ` : ''}
+          ${(state.welcomeUser.role === 'member' || hasPermission(state.welcomeUser.permissions, 'settings_manage')) ? `
+            <button class="bottom-nav-item ${state.activeTab === 'settings' ? 'active' : ''}" data-action="nav-tab" data-tab="settings">
+              <svg class="nav-icon" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065zM15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+              <span class="nav-label">Settings</span>
+            </button>
+          ` : ''}
+          ${isDevEnvironment() ? `
+            <button class="bottom-nav-item ${state.activeTab === 'dev-settings' ? 'active' : ''}" data-action="nav-tab" data-tab="dev-settings">
+              <svg class="nav-icon" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><circle cx="12" cy="12" r="2.5" stroke-width="1.5"/></svg>
+              <span class="nav-label">Dev</span>
+            </button>
+          ` : ''}
       </nav>
 
       <!-- Mobile Context FAB Container -->
@@ -1771,7 +2397,7 @@ function updateMobileFab() {
   
   fabContainer.innerHTML = '';
   
-  if (window.innerWidth >= 768) return; // Only show on mobile
+  if (window.innerWidth >= 1000) return; // Only show on mobile (<1000px)
   
   const isAdmin = hasPermission(state.welcomeUser.permissions, 'admin') || String(state.welcomeUser.username || '').toLowerCase() === 'admin';
   
@@ -2018,8 +2644,13 @@ function _updateNetworkIndicator() {
 }
 
 function classifyLoginError(err) {
-  const msg = (err && (err.message || err.toString() || '' )).toLowerCase()
+  const rawMsg = (err && (err.message || err.toString() || ''));
+  const msg = rawMsg.toLowerCase()
   if (!msg) return { type: 'unknown', message: 'Unable to sign in. Please try again or contact your administrator if the problem persists.' }
+  // Progressive back-off lockouts must reach the user verbatim (with countdown).
+  if (msg.includes('too many failed attempts') || msg.includes('try again in')) {
+    return { type: 'lockout', message: rawMsg }
+  }
   if (msg.includes('network') || msg.includes('fetch') || msg.includes('timeout') || msg.includes('abort')) {
     if (msg.includes('timeout')) return { type: 'timeout', message: 'The server is not responding. Please check your connection and try again.' }
     return { type: 'network', message: 'A network error occurred. Please check your internet connection and try again.' }
@@ -2037,6 +2668,32 @@ function classifyLoginError(err) {
     return { type: 'auth', message: 'Invalid username or password.' }
   }
   return { type: 'unknown', message: 'An unexpected error occurred during login. Please try again or contact your administrator if the problem persists.' }
+}
+
+// Live countdown for progressive back-off lockouts: re-renders the login
+// alert every second with the remaining delay so the user sees exactly when
+// to retry. Stops early on successful login / navigation away.
+let _lockoutTimer = null
+function startLockoutCountdown(usernameLower, cooperativeId) {
+  try { if (_lockoutTimer) clearInterval(_lockoutTimer) } catch {}
+  _lockoutTimer = setInterval(async () => {
+    try {
+      const { checkRateLimit, formatDelay } = await import('./services/authService.js')
+      const gate = checkRateLimit(usernameLower, cooperativeId)
+      if (gate.allowed || state.welcomeUser) {
+        clearInterval(_lockoutTimer)
+        _lockoutTimer = null
+        return
+      }
+      state.errorMessage = `Too many failed attempts. Try again in ${formatDelay(gate.retryAfterMs)}.`
+      const alertEl = document.querySelector('.alert')
+      if (alertEl) alertEl.textContent = state.errorMessage
+      else render()
+    } catch {
+      clearInterval(_lockoutTimer)
+      _lockoutTimer = null
+    }
+  }, 1000)
 }
 
 // Coalesces overlapping renders: sync events + the 60s auto-refresh used to
@@ -2064,7 +2721,7 @@ async function _renderDashboardContentInner() {
   const subActive = isSubscriptionActive()
 
   if (!subActive && !isAdmin) {
-    if (state.activeTab !== 'dashboard' && state.activeTab !== 'settings') {
+    if (state.activeTab !== 'dashboard' && state.activeTab !== 'settings' && state.activeTab !== 'advice') {
       container.innerHTML = `
         <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 4rem 2rem; text-align: center;">
           <div style="font-size: 3rem; margin-bottom: 1rem;">🔒</div>
@@ -2093,16 +2750,23 @@ async function _renderDashboardContentInner() {
 
   const isMemberRole = state.welcomeUser.role === 'member'
 
-  // Members cannot access the Members tab — redirect to payments
+  // Members cannot access the Members tab — redirect to dashboard
+  // (they also cannot access Remittance, so dashboard is the safe landing).
   if (isMemberRole && state.activeTab === 'members') {
-    state.activeTab = 'payments'
-    window.location.hash = 'payments'
+    state.activeTab = 'dashboard'
+    window.location.hash = 'dashboard'
     return
   }
 
-  // Hide Remittance page on mobile
-  const isMobile = window.innerWidth < 768
-  if (isMobile && state.activeTab === 'payments') {
+  // Members can never view Remittance (all devices); staff/admin can on all devices.
+  if (isMemberRole && state.activeTab === 'payments') {
+    state.activeTab = 'dashboard'
+    window.location.hash = 'dashboard'
+    return
+  }
+
+  // Payment Advice is members-only — staff/admin are bounced to dashboard.
+  if (!isMemberRole && state.activeTab === 'advice') {
     state.activeTab = 'dashboard'
     window.location.hash = 'dashboard'
     return
@@ -2123,6 +2787,8 @@ async function _renderDashboardContentInner() {
     await renderUnifiedPayment(container, displayUser, state.editingRemittance)
   } else if (state.activeTab === 'ledger') {
     await renderMemberLedger(container, displayUser)
+  } else if (state.activeTab === 'advice') {
+    await renderPaymentAdvice(container, displayUser)
   } else if (state.activeTab === 'reports') {
     const displayUserReports = JSON.parse(JSON.stringify(displayUser));
     displayUserReports.reports = state.reports;
@@ -2136,6 +2802,9 @@ async function _renderDashboardContentInner() {
     await renderReconciliation(state, container)
   } else if (state.activeTab === 'settings') {
     await renderSettings(container, displayUser)
+  } else if (state.activeTab === 'dev-settings') {
+    const { renderDevSettings } = await import('./screens/DevSettings.js')
+    await renderDevSettings(container, displayUser)
   }
 
   // Keep mobile page title in sync
@@ -2235,9 +2904,11 @@ async function _renderDashboardContentInner() {
     } else {
       const activeTabTitles = {
         payments: 'Remittance',
+        advice: 'Payment Advice',
         reports: 'Reports',
         reconciliation: 'Reconciliation',
-        settings: 'Settings'
+        settings: 'Settings',
+        'dev-settings': 'Dev. Settings'
       };
       mobileTitleEl.textContent = activeTabTitles[state.activeTab] || 'CoopLog';
     }
@@ -2638,6 +3309,48 @@ function renderAlert() {
   return `<div class="alert">${escapeHtml(state.errorMessage)}</div>`
 }
 
+/**
+ * Persist the login wizard state so a refresh mid-login preserves progress
+ * (username filled, cooperative selected, etc.). Cleared on successful login.
+ */
+function _saveLoginWizard() {
+  // Don't persist if already logged in or password stage (password shouldn't be saved)
+  if (state.welcomeUser || state.stage === 3) {
+    statePersist.clear('login-wizard')
+    return
+  }
+  statePersist.save('login-wizard', {
+    stage: state.stage,
+    username: state.username,
+    selectedCooperativeId: state.selectedCooperativeId,
+    cooperatives: state.cooperatives,
+    coopSearchQuery: state.coopSearchQuery,
+    rememberMe: state.rememberMe,
+    googleLinkEmail: state.googleLinkEmail,
+    googleLinkVerified: state.googleLinkVerified,
+    googleLinkMobile: state.googleLinkMobile,
+    googleLinkFirst: state.googleLinkFirst,
+    googleLinkLast: state.googleLinkLast,
+    googleLinkCoops: state.googleLinkCoops,
+    googleLinkSelectedCoop: state.googleLinkSelectedCoop,
+  })
+}
+
+function _clearLoginWizard() {
+  statePersist.clear('login-wizard')
+}
+
+// Debounced variant for keystroke handlers: persisting on every keypress
+// would hammer sessionStorage, but waiting until Next is pressed means a
+// reload mid-typing loses everything. 500ms after the last keystroke is
+// the middle ground.
+let _wizardSaveTimeout = null
+function _saveLoginWizardDebounced() {
+  if (state.welcomeUser) return
+  try { if (_wizardSaveTimeout) clearTimeout(_wizardSaveTimeout) } catch {}
+  _wizardSaveTimeout = setTimeout(() => { _saveLoginWizard() }, 500)
+}
+
 async function handleNext() {
   if (state.isSubmitting) {
     return
@@ -2650,6 +3363,15 @@ async function handleNext() {
 
   if (state.stage === 2) {
     await handleCooperativeStage()
+    return
+  }
+
+  if (state.stage === 4) {
+    if (!state.googleLinkCoops || state.googleLinkCoops.length === 0) {
+      await handleGoogleLinkSearch()
+    } else {
+      await handleGoogleLinkVerify()
+    }
     return
   }
 
@@ -2666,19 +3388,200 @@ function handleBack() {
     state.cooperatives = []
     state.coopSearchQuery = ''
     state.isGoogleLoginFlow = false
+  } else if (state.stage === 4) {
+    // Leave the Google-link screen: sign out of the pending Google
+    // identity so an aborted link never leaves a live Firebase session.
+    _resetGoogleLinkState()
+    state.stage = 1
+    state.isGoogleLoginFlow = false
+    import('./firebase.js').then(m => {
+      try {
+        const { auth } = m.getFirebaseAuth()
+        if (auth?.currentUser) m.signOut(auth).catch(() => {})
+      } catch {}
+    }).catch(() => {})
   }
 
   state.errorMessage = ''
+  _saveLoginWizard()
   render()
+}
+
+// ── Google sign-in: cross-platform + first-time identity linking ──────
+// Works on web, mobile browsers, Android (Capacitor WebView) and desktop.
+// Electron (window.cooplog, file:// origin) cannot complete Google OAuth,
+// so it stays on username+PIN with a polite message — first-time linking
+// must happen once in a browser, afterwards PIN login works everywhere.
+
+function _isElectronEnv() {
+  return typeof window !== 'undefined' && !!window.cooplog;
+}
+
+function _isCapacitorNative() {
+  try {
+    return typeof window !== 'undefined' && !!(window.Capacitor?.isNativePlatform?.() || window.Capacitor?.platform !== undefined && window.Capacitor?.getPlatform?.() !== 'web');
+  } catch { return false }
+}
+
+function _isMobileBrowser() {
+  try {
+    if (typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches) return true;
+    return /Android|iPhone|iPad|iPod|Mobile/i.test(typeof navigator !== 'undefined' ? navigator.userAgent : '');
+  } catch { return false }
+}
+
+function _resetGoogleLinkState() {
+  state.googleLinkEmail = '';
+  state.googleLinkVerified = false;
+  state.googleLinkMobile = '';
+  state.googleLinkFirst = '';
+  state.googleLinkLast = '';
+  state.googleLinkCoops = [];
+  state.googleLinkSelectedCoop = '';
+}
+
+async function _signOutGoogleQuietly() {
+  try {
+    const m = await import('./firebase.js');
+    const { auth } = m.getFirebaseAuth();
+    if (auth?.currentUser) await m.signOut(auth);
+  } catch { /* best-effort only */ }
+}
+
+async function _abortGoogleLink(message) {
+  await _signOutGoogleQuietly();
+  _resetGoogleLinkState();
+  state.isGoogleLoginFlow = false;
+  state.stage = 1;
+  state.isSubmitting = false;
+  state.errorMessage = message;
+  _saveLoginWizard();
+  render();
+}
+
+/**
+ * Popup-first sign-in with redirect fallback.
+ * Uses the STATIC firebase import on purpose: no `await` runs between the
+ * tap and window.open, so the browser still sees a user gesture and does
+ * not flag the popup as blocked.
+ * If the popup is blocked/closed by the browser anyway (per-site popup
+ * setting, WebView, COOP), we fall back to signInWithRedirect on EVERY
+ * platform and resolve via getRedirectResult() on the next app boot.
+ * Returns a Firebase `user` or null when a redirect was started
+ * (the result arrives after the redirect back).
+ */
+async function _signInWithGoogleCrossPlatform() {
+  const { auth, googleProvider } = getFirebaseAuth();
+  try {
+    if (googleProvider?.setCustomParameters) googleProvider.setCustomParameters({ prompt: 'select_account' });
+  } catch {}
+  const tryRedirect = async () => {
+    await signInWithRedirect(auth, googleProvider);
+    return null; // page navigates away; boot handler completes login
+  };
+  // On native shells go straight to redirect (popups rarely work in WebViews).
+  if (_isCapacitorNative()) return tryRedirect();
+  try {
+    const result = await signInWithPopup(auth, googleProvider);
+    return result?.user || null;
+  } catch (popupErr) {
+    const code = String(popupErr?.code || '');
+    // User deliberately dismissed the popup — respect it, no silent redirect.
+    if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') throw popupErr;
+    const msg = String(popupErr?.message || '').toLowerCase();
+    const popupUnusable = code.startsWith('auth/popup')
+      || msg.includes('popup') || msg.includes('blocked') || msg.includes('redirect');
+    // Blocked popup? Redirect always works — use it instead of erroring.
+    if (popupUnusable) return tryRedirect();
+    throw popupErr;
+  }
+}
+
+/** Completes a redirect-based Google sign-in when the app boots. */
+async function _consumeGoogleRedirectResult() {
+  if (state.welcomeUser) return;
+  try {
+    const m = await import('./firebase.js');
+    const { auth } = m.getFirebaseAuth();
+    const result = await m.getRedirectResult(auth);
+    const user = result?.user;
+    if (user?.email) await handleGoogleUser(user.email, user.emailVerified);
+  } catch (err) {
+    console.warn('[Google] Redirect result handling failed:', err?.message || err);
+  }
+}
+
+async function _completeGoogleSession(session, fallbackEmail) {
+  if (session && session.forceChange) {
+    state.isSubmitting = false;
+    showForcePasswordChangeModal(session.userDoc, session.collection);
+    return;
+  }
+  if (!session) throw new Error('Login validation failed.');
+  state.welcomeUser = session;
+  await saveSession(session, undefined, state.rememberMe);
+  persistRememberMe(session.username || fallbackEmail, session.cooperativeId, session.cooperativeName);
+  _resetGoogleLinkState();
+  state.isGoogleLoginFlow = false;
+  _clearLoginWizard();
+  state.isSubmitting = false;
+  render();
+}
+
+/**
+ * Route a Google-verified email through the existing login path.
+ * Known emails behave EXACTLY as before; unknown emails enter the
+ * first-time identity-linking screen instead of erroring out.
+ */
+async function handleGoogleUser(email, emailVerified) {
+  const verifiedEmail = String(email || '').trim().toLowerCase();
+  if (!verifiedEmail || !verifiedEmail.includes('@')) throw new Error('No email associated with this Google account.');
+  // Google OAuth emails are verified by definition; enforce the flag when present.
+  if (emailVerified === false) {
+    await _abortGoogleLink('This Google email is not verified. Please verify it with Google and try again.');
+    return;
+  }
+  const { discoverLoginCooperativesByEmail, validateGoogleLogin } = await import('./services/authService.js');
+  const cooperatives = await Promise.race([
+    discoverLoginCooperativesByEmail(verifiedEmail),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000)),
+  ]);
+
+  if (cooperatives.length === 1) {
+    const session = await validateGoogleLogin(verifiedEmail, cooperatives[0].id);
+    await _completeGoogleSession(session, verifiedEmail);
+  } else if (cooperatives.length > 1) {
+    state.cooperatives = cooperatives;
+    state.username = verifiedEmail;
+    state.selectedCooperativeId = '';
+    state.isGoogleLoginFlow = true;
+    state.stage = 2;
+    state.isSubmitting = false;
+    _saveLoginWizard();
+    render();
+  } else {
+    // First-time Google user: ask for mobile + names to link the account.
+    _resetGoogleLinkState();
+    state.googleLinkEmail = verifiedEmail;
+    state.googleLinkVerified = true;
+    state.username = verifiedEmail;
+    state.isGoogleLoginFlow = true;
+    state.stage = 4;
+    state.isSubmitting = false;
+    state.errorMessage = '';
+    _saveLoginWizard();
+    render();
+  }
 }
 
 async function handleGoogleLogin() {
   if (state.isSubmitting) return;
 
-  // Desktop (Electron) has no Google button, but guard anyway: the popup
-  // flow cannot work from a file:// origin ("requested action is invalid").
-  if (typeof window !== 'undefined' && window.cooplog) {
-    state.errorMessage = 'Google sign-in is not available in the desktop app. Please use your username and PIN, or sign in with Google in the browser.';
+  // Desktop (Electron) guard: the popup flow cannot work from a file://
+  // origin ("requested action is invalid"). Linking must happen once in a
+  // browser; afterwards PIN login works in the desktop app.
+  if (_isElectronEnv()) {
+    state.errorMessage = 'Google sign-in is not available in the desktop app. Please sign in with Google once in your browser to link your account, then use your username and PIN here.';
     render();
     return;
   }
@@ -2688,48 +3591,121 @@ async function handleGoogleLogin() {
     state.errorMessage = '';
     render();
 
-    const { getFirebaseAuth, signInWithPopup } = await import('./firebase.js');
-    const { auth, googleProvider } = getFirebaseAuth();
-    
-    const result = await signInWithPopup(auth, googleProvider);
-    const user = result.user;
-    
-    if (!user.email) {
-      throw new Error('No email associated with this Google account.');
-    }
+    if (!navigator.onLine) throw new Error('No internet connection. Please connect and try again.');
 
-    const { discoverLoginCooperativesByEmail, validateGoogleLogin } = await import('./services/authService.js');
-    const cooperatives = await discoverLoginCooperativesByEmail(user.email);
-
-    if (cooperatives.length === 0) {
-      throw new Error('No cooperative account found for this email.');
-    }
-
-    if (cooperatives.length === 1) {
-      const session = await validateGoogleLogin(user.email, cooperatives[0].id);
-      if (session) {
-        state.welcomeUser = session;
-        await saveSession(session, undefined, state.rememberMe);
-        persistRememberMe(session.username || user.email, session.cooperativeId, session.cooperativeName);
-        state.isSubmitting = false;
-        render();
-      } else {
-        throw new Error('Login validation failed.');
-      }
-    } else {
-      state.cooperatives = cooperatives;
-      state.username = user.email;
-      state.selectedCooperativeId = '';
-      state.isGoogleLoginFlow = true; 
-      state.stage = 2;
+    const user = await _signInWithGoogleCrossPlatform();
+    // null => redirect flow started (native/mobile); boot completes login.
+    if (!user) {
       state.isSubmitting = false;
+      state.errorMessage = 'Completing Google sign-in…';
       render();
+      return;
     }
+    await handleGoogleUser(user.email, user.emailVerified);
   } catch (error) {
     console.error('Google Auth Error:', error);
-    state.errorMessage = error.message || 'Google Sign-In failed.';
+    await _signOutGoogleQuietly();
+    const msg = String(error?.message || '');
+    state.errorMessage = /timeout/i.test(msg)
+      ? 'The server is not responding. Please check your connection and try again.'
+      : (error?.code === 'auth/popup-closed-by-user' ? 'Google sign-in was cancelled.'
+        : (error?.code === 'auth/popup-blocked' ? 'Popup was blocked by your browser. Please allow popups for this site and try again.'
+          : (msg || 'Google Sign-In failed.')));
     state.isSubmitting = false;
     render();
+  }
+}
+
+/** Step 1 of linking: validate details, list cooperatives holding the mobile. */
+async function handleGoogleLinkSearch() {
+  const email = String(state.googleLinkEmail || '').trim().toLowerCase();
+  const mobile = String(state.googleLinkMobile || '').trim();
+  const first = String(state.googleLinkFirst || '').trim();
+  const last = String(state.googleLinkLast || '').trim();
+  if (!email) { await _abortGoogleLink('Google session expired. Please tap "Sign In with Google" again.'); return; }
+  if (!mobile || !first || !last) {
+    state.errorMessage = 'Please enter your mobile number, first name and last name.';
+    render();
+    return;
+  }
+  if (!navigator.onLine) {
+    state.errorMessage = 'Internet connection required to link your account. Please connect and try again.';
+    render();
+    return;
+  }
+  try {
+    state.isSubmitting = true;
+    state.errorMessage = '';
+    render();
+    const { discoverCooperativesByMobile } = await import('./services/authService.js');
+    const coops = await Promise.race([
+      discoverCooperativesByMobile(mobile),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000)),
+    ]);
+    if (!coops || coops.length === 0) {
+      await _abortGoogleLink('No cooperative record found for this mobile number. Please contact your administrator.');
+      return;
+    }
+    state.googleLinkCoops = coops;
+    state.googleLinkSelectedCoop = coops.length === 1 ? coops[0].id : '';
+    state.isSubmitting = false;
+    state.errorMessage = coops.length === 1
+      ? `One cooperative found for this mobile. Tap "Verify & Link" to continue.`
+      : `${coops.length} cooperatives found for this mobile. Select yours, then tap "Verify & Link".`;
+    _saveLoginWizard();
+    render();
+  } catch (error) {
+    console.error('[GoogleLink] Search failed:', error);
+    state.isSubmitting = false;
+    state.errorMessage = /timeout/i.test(String(error?.message || ''))
+      ? 'The server is not responding. Please check your connection and try again.'
+      : (error?.message || 'Could not search cooperatives. Please try again.');
+    render();
+  }
+}
+
+/** Step 2 of linking: 2-of-3 check, overwrite email, log the user in. */
+async function handleGoogleLinkVerify() {
+  const email = String(state.googleLinkEmail || '').trim().toLowerCase();
+  const mobile = String(state.googleLinkMobile || '').trim();
+  const first = String(state.googleLinkFirst || '').trim();
+  const last = String(state.googleLinkLast || '').trim();
+  const coopId = String(state.googleLinkSelectedCoop || '').trim();
+  if (!email) { await _abortGoogleLink('Google session expired. Please tap "Sign In with Google" again.'); return; }
+  if (!coopId) {
+    state.errorMessage = 'Please select your cooperative first.';
+    render();
+    return;
+  }
+  try {
+    state.isSubmitting = true;
+    state.errorMessage = '';
+    render();
+    const { fetchMemberCandidatesByMobileForCoop, verifyMemberLinkCandidate, linkGoogleEmailToMember, validateGoogleLogin } = await import('./services/authService.js');
+    const candidates = await Promise.race([
+      fetchMemberCandidatesByMobileForCoop(mobile, coopId),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000)),
+    ]);
+    if (!candidates || candidates.length === 0) {
+      await _abortGoogleLink('Details do not match any record in the selected cooperative. Login cancelled — please contact your administrator.');
+      return;
+    }
+    if (candidates.length > 1) {
+      await _abortGoogleLink('Multiple records share this mobile number in the selected cooperative. Login cancelled — please contact your administrator to fix the duplicate.');
+      return;
+    }
+    const check = verifyMemberLinkCandidate(candidates[0], { mobile, firstName: first, lastName: last });
+    if (!check.matched) {
+      await _abortGoogleLink('Details do not match our records (mobile plus first or last name must match). Login cancelled — please contact your administrator.');
+      return;
+    }
+    await linkGoogleEmailToMember(candidates[0].id, coopId, email);
+    const session = await validateGoogleLogin(email, coopId);
+    await _completeGoogleSession(session, email);
+    try { showToast('Google account linked successfully. Welcome!', 'success'); } catch {}
+  } catch (error) {
+    console.error('[GoogleLink] Verify failed:', error);
+    await _abortGoogleLink(error?.message || 'Could not link your account. Login cancelled — please try again or contact your administrator.');
   }
 }
 
@@ -2807,6 +3783,7 @@ async function handleUsernameStage() {
       state.selectedCooperativeId = preselect && cooperatives.some(c => c.id === preselect) ? preselect : '';
       state.stage = 2;
     }
+    _saveLoginWizard()
   } catch (error) {
     state.errorMessage = error.message || 'Unable to continue.'
   } finally {
@@ -2834,6 +3811,7 @@ async function handleCooperativeStage() {
         state.welcomeUser = session;
         await saveSession(session, undefined, state.rememberMe);
         persistRememberMe(session.username || state.username, session.cooperativeId, session.cooperativeName);
+        _clearLoginWizard();
         render();
       } else {
         throw new Error('Login validation failed.');
@@ -2848,6 +3826,7 @@ async function handleCooperativeStage() {
 
   state.stage = 3
   state.errorMessage = ''
+  _saveLoginWizard()
   render()
 }
 
@@ -2882,9 +3861,23 @@ async function handlePasswordStage() {
     state.errorMessage = ''
     render()
 
+    // ── Progressive back-off pre-check (1-4 free, 5th→1m, 6th→5m, 7-8th→15m, 9th+→1h)
+    try {
+      const { checkRateLimit, formatDelay } = await import('./services/authService.js')
+      const gate = checkRateLimit(username.toLowerCase(), cooperativeId)
+      if (!gate.allowed) {
+        state.errorMessage = `Too many failed attempts. Try again in ${formatDelay(gate.retryAfterMs)}.`
+        state.isSubmitting = false
+        render()
+        startLockoutCountdown(username.toLowerCase(), cooperativeId)
+        return
+      }
+    } catch {}
+
     // ── Online authentication (with 10s timeout) ──────────────────────
     let session = null
     let loginError = null
+    let onlineRecordedFail = false
     try {
       if (navigator.onLine) {
         console.log(`[Login] [${Date.now()}] Sending authentication request...`);
@@ -2893,22 +3886,41 @@ async function handlePasswordStage() {
           new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 10000))
         ]);
         console.log(`[Login] [${Date.now()}] Authentication response received. Success: ${!!session}`);
+        // validateLogin records exactly one failure when credentials are wrong;
+        // a null session here (no throw) means it already counted this tap.
+        if (!session) onlineRecordedFail = true
       } else {
         loginError = { type: 'network', message: 'No internet connection detected. Please check your network and try again.' }
         console.log(`[Login] [${Date.now()}] No internet connection.`);
       }
     } catch (onlineErr) {
       loginError = classifyLoginError(onlineErr)
+      // A lockout/auth throw from validateLogin already recorded this tap.
+      if (loginError.type === 'lockout' || loginError.type === 'auth') onlineRecordedFail = true
       console.warn(`[Login] [${Date.now()}] Online authentication failed:`, onlineErr.message)
     }
 
     // ── Offline fallback ──────────────────────────────────────────────
     if (!session) {
+      // Lockouts apply offline too — but don't double-punish right after online.
+      if (loginError?.type === 'lockout') {
+        state.errorMessage = loginError.message
+        state.isSubmitting = false
+        render()
+        startLockoutCountdown(username.toLowerCase(), cooperativeId)
+        return
+      }
       console.log(`[Login] [${Date.now()}] Attempting offline authentication...`);
       try {
-        session = await attemptOfflineLogin(username, password, cooperativeId)
+        session = await attemptOfflineLogin(username, password, cooperativeId, onlineRecordedFail)
         if (session) loginError = null
         console.log(`[Login] [${Date.now()}] Offline authentication result: ${!!session}`);
+        if (!session && !onlineRecordedFail) {
+          try {
+            const { recordFailedAttempt } = await import('./services/authService.js')
+            recordFailedAttempt(username.toLowerCase(), cooperativeId)
+          } catch {}
+        }
       } catch (offlineErr) {
         if (!loginError) loginError = classifyLoginError(offlineErr)
         console.warn(`[Login] [${Date.now()}] Offline authentication failed:`, offlineErr.message)
@@ -2919,6 +3931,19 @@ async function handlePasswordStage() {
     if (!session) {
       const errorMsg = loginError?.message || 'Invalid username or password.'
       console.log(`[Login] [${Date.now()}] No session returned. Error: "${errorMsg}"`);
+      // After recording this failure, report the enforced delay (if any) so
+      // the user sees e.g. "Try again in 1 minute(s)" instead of a bare error.
+      try {
+        const { checkRateLimit, formatDelay } = await import('./services/authService.js')
+        const gate = checkRateLimit(username.toLowerCase(), cooperativeId)
+        if (!gate.allowed) {
+          state.errorMessage = `Too many failed attempts. Try again in ${formatDelay(gate.retryAfterMs)}.`
+          state.isSubmitting = false
+          render()
+          startLockoutCountdown(username.toLowerCase(), cooperativeId)
+          return
+        }
+      } catch {}
       state.errorMessage = errorMsg
       state.isSubmitting = false
       render()
@@ -2943,6 +3968,7 @@ async function handlePasswordStage() {
 
     // Save for future offline access (non-blocking - session already in sessionStorage)
     saveSession(session, password, state.rememberMe).catch(err => console.warn('[Login] Offline save failed:', err))
+    _clearLoginWizard()
 
     const cooperativeName =
       state.cooperatives.find((coop) => coop.id === session.cooperativeId)?.name
@@ -2980,7 +4006,7 @@ async function handlePasswordStage() {
 
     // Save to sessionStorage synchronously
     saveSession(state.welcomeUser, undefined, state.rememberMe)
-    persistRememberMe(state.welcomeUser.username, state.welcomeUser.cooperativeId, state.welcomeUser.cooperativeName)
+    persistRememberMe(state.welcomeUser.username, state.welcomeUser.cooperativeId, state.welcomeUser.cooperativeName, password)
 
     if (!isSubscriptionActive()) {
       state.activeTab = 'dashboard'
@@ -3088,15 +4114,16 @@ async function showForcePasswordChangeModal(userDoc, collectionName) {
   state.modal.data = { userDoc, collectionName };
   state.modal.isOpen = true;
   state.modal.content = `
-        <div style="padding: 1rem 0;">
-            <p style="color: #64748b; font-size: 0.9rem; margin-bottom: 1.5rem;">
-                Your account is currently using a default or temporary password. For your security, please set a new 6-digit numeric PIN to continue. Letters are not allowed.
+        <div class="force-pin">
+            <p class="force-pin-desc">
+                Your account is currently using a default or temporary password. For your
+                security, please set a new 6-digit numeric PIN to continue. Letters are not allowed.
             </p>
 
-            <form id="force-pwd-form" style="display: flex; flex-direction: column; gap: 1.25rem;">
-                <div class="field">
-                    <span>New 6-Digit PIN (numbers only)</span>
-                    <div class="pin-wrap" style="display: flex; gap: 0.5rem; justify-content: center; margin-bottom: 1rem;">
+            <form id="force-pwd-form" class="force-pin-form">
+                <div class="field force-pin-field">
+                    <span class="force-pin-label">New 6-Digit PIN (numbers only)</span>
+                    <div class="pin-wrap force-pin-boxes">
                       ${[0,1,2,3,4,5].map(i => `
                         <input
                           type="text"
@@ -3104,15 +4131,15 @@ async function showForcePasswordChangeModal(userDoc, collectionName) {
                           maxlength="1"
                           pattern="[0-9]"
                           inputmode="numeric"
-                          style="width: 3rem; height: 3rem; font-size: 1.5rem; text-align: center; border: 2px solid var(--border-medium); border-radius: 0.5rem; background: var(--bg-primary); color: var(--text-primary);"
+                          autocomplete="one-time-code"
                           aria-label="New PIN digit ${i+1}"
                         />
                       `).join('')}
                     </div>
                 </div>
-                <div class="field">
-                    <span>Confirm 6-Digit PIN</span>
-                    <div class="pin-wrap" style="display: flex; gap: 0.5rem; justify-content: center; margin-bottom: 1rem;">
+                <div class="field force-pin-field">
+                    <span class="force-pin-label">Confirm 6-Digit PIN</span>
+                    <div class="pin-wrap force-pin-boxes">
                       ${[0,1,2,3,4,5].map(i => `
                         <input
                           type="text"
@@ -3120,22 +4147,22 @@ async function showForcePasswordChangeModal(userDoc, collectionName) {
                           maxlength="1"
                           pattern="[0-9]"
                           inputmode="numeric"
-                          style="width: 3rem; height: 3rem; font-size: 1.5rem; text-align: center; border: 2px solid var(--border-medium); border-radius: 0.5rem; background: var(--bg-primary); color: var(--text-primary);"
+                          autocomplete="one-time-code"
                           aria-label="Confirm PIN digit ${i+1}"
                         />
                       `).join('')}
                     </div>
                 </div>
 
-                <div id="pwd-requirements" style="background: var(--bg-secondary); padding: 1rem; border-radius: 0.75rem; border: 1px solid var(--border-medium);">
-                    <div style="font-size: 0.75rem; font-weight: 700; color: var(--text-primary); margin-bottom: 0.75rem; text-transform: uppercase;">Requirements</div>
-                    <ul style="list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; font-size: 0.8rem;">
-                        <li id="req-length" style="color: var(--text-muted); display: flex; align-items: center; gap: 0.4rem;">○ Exactly 6 digits</li>
-                        <li id="req-match" style="color: var(--text-muted); display: flex; align-items: center; gap: 0.4rem;">○ PINs match</li>
+                <div id="pwd-requirements" class="force-pin-reqs">
+                    <div class="force-pin-reqs-title">Requirements</div>
+                    <ul class="force-pin-reqs-list">
+                        <li id="req-length" class="req-pending">○ Exactly 6 digits</li>
+                        <li id="req-match" class="req-pending">○ PINs match</li>
                     </ul>
                 </div>
 
-                <button type="submit" id="submit-new-pwd" class="primary-button" style="width: 100%; margin-top: 1rem;" disabled>Set PIN & Login</button>
+                <button type="submit" id="submit-new-pwd" class="primary-button force-pin-submit" disabled>Set PIN &amp; Login</button>
             </form>
         </div>
     `;
@@ -3158,40 +4185,68 @@ function setupForcePwdListeners() {
 
   const getPinValue = (inputs) => inputs.map(i => i?.value || '').join('');
 
+  const setReq = (id, ok) => {
+    const el = body.querySelector(id);
+    if (!el) return;
+    const label = id === '#req-length' ? 'Exactly 6 digits' : 'PINs match';
+    el.textContent = `${ok ? '●' : '○'} ${label}`;
+    el.classList.toggle('req-ok', !!ok);
+    el.classList.toggle('req-pending', !ok);
+  };
+
   const validate = () => {
     const newPin = getPinValue(newPinInputs);
     const confirmPin = getPinValue(confirmPinInputs);
 
     // Strict 6-digit numeric PIN — letters are not allowed
-    const checks = {
-      length: newPin.length === 6 && /^\d{6}$/.test(newPin),
-      match: newPin.length === 6 && newPin === confirmPin
-    };
+    const lengthOk = newPin.length === 6 && /^\d{6}$/.test(newPin);
+    const matchOk = lengthOk && newPin === confirmPin;
 
-    const reqLength = body.querySelector('#req-length');
-    const reqMatch = body.querySelector('#req-match');
-    [reqLength, reqMatch].forEach(el => { if (el) el.remove(); });
+    setReq('#req-length', lengthOk);
+    setReq('#req-match', matchOk);
 
-    submitBtn.disabled = !Object.values(checks).every(v => v === true);
+    if (submitBtn) submitBtn.disabled = !(lengthOk && matchOk);
   };
 
-  // Auto-focus next input on digit entry
-  [...newPinInputs, ...confirmPinInputs].forEach((input, idx, arr) => {
-    if (!input) return;
-    input.addEventListener('input', (e) => {
-      // Strip non-digits immediately (alphabet not allowed)
-      e.target.value = e.target.value.replace(/\D/g, '').slice(0, 1);
-      if (e.target.value.length === 1 && idx < arr.length - 1) {
-        arr[idx + 1]?.focus();
-      }
-      validate();
+  const wireGroup = (inputs, nextGroup) => {
+    inputs.forEach((input, idx) => {
+      if (!input) return;
+      input.addEventListener('input', (e) => {
+        // Strip non-digits immediately (alphabet not allowed)
+        e.target.value = e.target.value.replace(/\D/g, '').slice(0, 1);
+        input.classList.toggle('filled', !!e.target.value);
+        if (e.target.value && idx < inputs.length - 1) {
+          inputs[idx + 1]?.focus();
+        } else if (e.target.value && idx === inputs.length - 1 && nextGroup) {
+          nextGroup[0]?.focus();
+        }
+        validate();
+      });
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Backspace' && !e.target.value && idx > 0) {
+          inputs[idx - 1]?.focus();
+        }
+      });
+      input.addEventListener('paste', (e) => {
+        e.preventDefault();
+        const text = (e.clipboardData?.getData('text') || '').replace(/\D/g, '').slice(0, 6);
+        if (!text) return;
+        text.split('').forEach((ch, k) => {
+          if (inputs[idx + k]) {
+            inputs[idx + k].value = ch;
+            inputs[idx + k].classList.add('filled');
+          }
+        });
+        const focusAt = Math.min(idx + text.length, inputs.length - 1);
+        inputs[focusAt]?.focus();
+        validate();
+      });
     });
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Backspace' && !e.target.value && idx > 0) {
-        arr[idx - 1]?.focus();
-      }
-    });
-  });
+  };
+  wireGroup(newPinInputs, confirmPinInputs);
+  wireGroup(confirmPinInputs, null);
+  validate();
+  newPinInputs[0]?.focus();
 
   form?.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -3228,13 +4283,18 @@ function setupForcePwdListeners() {
       });
 
       const nowIso = new Date().toISOString();
+      // This forced change IS a successful login, so members get +1 login_count
+      // (validateLogin returns forceChange early without counting — see authService.js).
+      const isMemberLogin = collectionName === 'members';
+      const newLoginCount = isMemberLogin ? (parseInt(userDoc.login_count || 0, 10) + 1) : undefined;
       const minimalPayload = {
         cooperative_id: String(userDoc.cooperative_id),
         password_hash: hashed,
         force_password_change: false,
         modified_at: nowIso,
         modified_by: 'system-security',
-        sync_at: nowIso
+        sync_at: nowIso,
+        ...(isMemberLogin ? { last_login: nowIso, login_count: newLoginCount } : {})
       };
 
       // ── 1. Push directly to Firestore first — must succeed before login.
@@ -3255,13 +4315,20 @@ function setupForcePwdListeners() {
       // so pass the PLAINTEXT PIN (not `hashed`) to avoid double-hashing.
       let localMirrorOk = true;
       try {
-        const localPayload = { ...userDoc, password_hash: newPwd, force_password_change: false, modified_at: nowIso, modified_by: 'system-security' };
+        const localPayload = { ...userDoc, password_hash: newPwd, force_password_change: false, modified_at: nowIso, modified_by: 'system-security', ...(isMemberLogin ? { last_login: nowIso, login_count: newLoginCount } : {}) };
         const { updateMember, updateUser } = await import('./services/dataService.js');
         if (collectionName === 'members') {
           await updateMember(userDoc.id, localPayload, 'system-security');
         } else {
           await updateUser(userDoc.id, localPayload, 'system-security');
         }
+        // Keep the in-memory doc in sync so the session below carries the count.
+        if (isMemberLogin) {
+          userDoc.login_count = newLoginCount;
+          userDoc.last_login = nowIso;
+        }
+        userDoc.password_hash = hashed;
+        userDoc.force_password_change = false;
       } catch (localErr) {
         localMirrorOk = false;
         console.warn('[PasswordChange] Local mirror failed (cloud already updated):', localErr.message);
@@ -3294,8 +4361,12 @@ function setupForcePwdListeners() {
         role,
         permissions: userDoc.permissions || '',
         enterprises: userDoc.enterprise_rights || userDoc.enterprises || '',
+        enterprise_rights: userDoc.enterprise_rights || userDoc.enterprises || '',
         cooperativeId: userDoc.cooperative_id,
         cooperativeName,
+        collection: collectionName,
+        userDoc: { ...userDoc },
+        ...(isMemberLogin ? { login_count: newLoginCount, last_login: nowIso } : {}),
       };
       // Ensure no forceChange flag leaks into the session
       delete welcomeUser.forceChange;
@@ -3303,7 +4374,7 @@ function setupForcePwdListeners() {
 
       // Save session synchronously to sessionStorage first
       await saveSession(state.welcomeUser, newPwd, state.rememberMe);
-      persistRememberMe(state.welcomeUser.username, state.welcomeUser.cooperativeId, state.welcomeUser.cooperativeName);
+      persistRememberMe(state.welcomeUser.username, state.welcomeUser.cooperativeId, state.welcomeUser.cooperativeName, newPwd);
 
       // ── 5. Navigate to the default landing tab (dashboard for members)
       state.activeTab = 'dashboard';
@@ -3433,7 +4504,7 @@ async function renderLoanRequestStep() {
         <p style="color: var(--text-muted); font-size: 0.9rem;">Who is requesting this withdrawal?</p>
         <div style="position: relative; margin-top: 1.5rem;">
           <input type="text" id="loan-member-search" placeholder="Search member by name or ID..." value="${escapeHtml(state.loanRequest.memberName || '')}" style="width: 100%; height: 2.75rem; padding: 0 0.75rem; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-medium); border-radius: var(--radius-sm);" autocomplete="off">
-          <div id="loan-member-suggestions" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: var(--bg-card); border: 1px solid var(--border-medium); border-radius: 0.5rem; box-shadow: var(--shadow-lg); z-index: 100; max-height: 200px; overflow-y: auto; margin-top: 0.25rem;"></div>
+          <div id="loan-member-suggestions" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: var(--bg-card); border: 1px solid var(--border-medium); border-radius: 0.5rem; box-shadow: var(--shadow-lg); z-index: 999999; max-height: 200px; overflow-y: auto; margin-top: 0.25rem;"></div>
         </div>
         ${state.loanRequest.memberId ? `
           <div style="margin-top: 1rem; padding: 1rem; background: var(--bg-secondary); border-radius: 0.5rem; border: 1px solid var(--border-light);">
@@ -3468,7 +4539,7 @@ async function renderLoanRequestStep() {
         ${isSavingsEnterprise && maxAmount !== null ? `
           <div style="margin-top: 1rem; padding: 0.75rem; background: var(--bg-secondary); border-radius: 0.5rem; border: 1px solid var(--border-light);">
              <span style="font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase; font-weight: 700;">Maximum Withdrawal</span>
-             <div style="font-weight: 700; color: var(--accent-primary); font-size: 1.1rem; margin-top: 0.25rem;">₦${maxAmount.toLocaleString()}</div>
+             <div style="font-weight: 700; color: var(--accent-primary); font-size: 1.1rem; margin-top: 0.25rem;">${formatCurrency(maxAmount)}</div>
           </div>
         ` : ''}
         <div class="field" style="margin-top: 1.5rem;">
@@ -3503,7 +4574,7 @@ async function renderLoanRequestStep() {
                     <div style="display: grid; grid-template-columns: 1fr 120px auto; gap: 0.75rem; align-items: center;">
                        <div style="position: relative;">
                            <input type="text" class="guarantor-search" placeholder="Search guarantor name..." value="${escapeHtml(g.name || '')}" style="width: 100%; height: 2.75rem; padding: 0 0.75rem; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-medium); border-radius: var(--radius-sm);">
-                           <div class="guarantor-suggestions" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: var(--bg-card); border: 1px solid var(--border-medium); border-radius: 0.5rem; box-shadow: var(--shadow-lg); z-index: 100; max-height: 200px; overflow-y: auto; margin-top: 0.25rem;"></div>
+                           <div class="guarantor-suggestions" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: var(--bg-card); border: 1px solid var(--border-medium); border-radius: 0.5rem; box-shadow: var(--shadow-lg); z-index: 999999; max-height: 200px; overflow-y: auto; margin-top: 0.25rem;"></div>
                            <input type="hidden" class="guarantor-id" value="${g.member_id || ''}">
                        </div>
                        <input type="number" class="guarantor-amt" value="${g.amount || ''}" placeholder="Amount" style="height: 2.75rem; padding: 0 0.75rem; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-medium); border-radius: var(--radius-sm);">
@@ -3515,7 +4586,7 @@ async function renderLoanRequestStep() {
                         </div>
                         <div class="g-stats-display" style="display: flex; gap: 1rem; font-size: 0.7rem; color: var(--text-muted); font-weight: 500;">
                             <span class="g-active-count">Active: ${g.activeCount !== undefined ? g.activeCount : '-'}</span>
-                            <span class="g-active-sum">Total: ${g.activeSum !== undefined ? '₦' + g.activeSum.toLocaleString() : '-'}</span>
+                            <span class="g-active-sum">Total: ${g.activeSum !== undefined ? formatCurrency(g.activeSum) : '-'}</span>
                             <span class="g-overdue-count" style="color: ${g.overdueCount > 0 ? 'var(--danger)' : 'inherit'}">Overdue: ${g.overdueCount !== undefined ? g.overdueCount : '-'}</span>
                         </div>
                     </div>
@@ -3565,7 +4636,7 @@ async function renderLoanRequestStep() {
           </div>
           <div style="display: flex; justify-content: space-between; font-size: 0.9rem;">
             <span style="color: var(--text-muted);">Amount:</span>
-            <span style="font-weight: 700; color: var(--accent-primary);">₦${parseFloat(state.loanRequest.amount || 0).toLocaleString()}</span>
+            <span style="font-weight: 700; color: var(--accent-primary);">${formatCurrency(parseFloat(state.loanRequest.amount || 0))}</span>
           </div>
           <div style="display: flex; justify-content: space-between; font-size: 0.9rem;">
             <span style="color: var(--text-muted);">Duration:</span>
@@ -3576,7 +4647,7 @@ async function renderLoanRequestStep() {
             ${state.loanRequest.guarantors.map(g => `
               <div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem;">
                 <span style="font-size: 0.85rem;">${escapeHtml(g.name)}</span>
-                <span style="font-weight: 600;">₦${(g.amount || (Math.abs(state.loanRequest.amount) / (state.loanRequest.guarantors.length || 1))).toLocaleString()}</span>
+                <span style="font-weight: 600;">${formatCurrency(g.amount || (Math.abs(state.loanRequest.amount) / (state.loanRequest.guarantors.length || 1)))}</span>
               </div>
             `).join('')}
             ${state.loanRequest.guarantors.length === 0 ? '<span style="color: var(--text-muted); font-style: italic; font-size: 0.8rem;">None</span>' : ''}
@@ -3720,7 +4791,7 @@ async function setupLoanRequestListeners() {
               state.loanRequest.guarantors[currentIdx].overdueCount = stats.overdueCount;
 
               statsDiv.querySelector('.g-active-count').innerText = `Active: ${stats.activeCount}`;
-              statsDiv.querySelector('.g-active-sum').innerText = `Total: ₦${stats.activeSum.toLocaleString()}`;
+              statsDiv.querySelector('.g-active-sum').innerText = `Total: ${formatCurrency(stats.activeSum)}`;
               const odSpan = statsDiv.querySelector('.g-overdue-count');
               odSpan.innerText = `Overdue: ${stats.overdueCount}`;
               if (stats.overdueCount > 0) odSpan.style.color = 'var(--danger)';
@@ -3768,7 +4839,7 @@ async function setupLoanRequestListeners() {
           <div style="display: grid; grid-template-columns: 1fr 120px auto; gap: 0.75rem; align-items: center;">
             <div style="position: relative;">
                 <input type="text" class="guarantor-search" placeholder="Search guarantor name..." style="width: 100%; height: 2.75rem; padding: 0 0.75rem; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-medium); border-radius: var(--radius-sm);">
-                <div class="guarantor-suggestions" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: var(--bg-card); border: 1px solid var(--border-medium); border-radius: 0.5rem; box-shadow: var(--shadow-lg); z-index: 100; max-height: 200px; overflow-y: auto; margin-top: 0.25rem;"></div>
+                <div class="guarantor-suggestions" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: var(--bg-card); border: 1px solid var(--border-medium); border-radius: 0.5rem; box-shadow: var(--shadow-lg); z-index: 999999; max-height: 200px; overflow-y: auto; margin-top: 0.25rem;"></div>
                 <input type="hidden" class="guarantor-id">
             </div>
             <input type="number" class="guarantor-amt" value="0" placeholder="Amount" style="height: 2.75rem; padding: 0 0.75rem; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-medium); border-radius: var(--radius-sm);">
@@ -3991,6 +5062,8 @@ async function finalizeLoanRequest() {
     user_role: state.welcomeUser.role || 'member',
     user_roles: [state.welcomeUser.role || 'member'],
     status: status,
+    isLoanRequest: !isSavingsEnterprise,
+    isWithdrawalRequest: true,
     is_deleted: 0,
     is_synced: 0,
     created_at: new Date().toISOString(),
@@ -4045,9 +5118,6 @@ async function finalizeLoanRequest() {
     }
   };
 
-  // Go to dashboard or remittances tab to show success
-  state.activeTab = 'dashboard';
-  window.location.hash = 'dashboard';
   render();
   showToast('Withdrawal/Loan request submitted successfully!', 'success');
 }
@@ -4308,7 +5378,7 @@ async function showWithdrawalWizard() {
                 ${guarantors.map(g => `
                   <div style="display: flex; justify-content: space-between; font-size: 0.85rem;">
                     <span>${escapeHtml(g.name || 'Unknown')}</span>
-                    <span style="font-weight: 600;">₦${(g.amount || Math.abs(withdrawalAmount) / (guarantors.length || 1)).toLocaleString()}</span>
+                    <span style="font-weight: 600;">${formatCurrency(g.amount || Math.abs(withdrawalAmount) / (guarantors.length || 1))}</span>
                   </div>
                 `).join('')}
               </div>
@@ -4699,9 +5769,6 @@ async function showWithdrawalWizard() {
 
           document.getElementById('withdrawal-wizard-modal').remove();
           
-          // Go to dashboard
-          state.activeTab = 'dashboard';
-          window.location.hash = 'dashboard';
           render();
           showToast('Request submitted successfully!', 'success');
         } catch (err) {

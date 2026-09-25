@@ -1,5 +1,6 @@
 import { getDb, doc, getDoc, collection, query, where, getDocs, limit, updateDoc, serverTimestamp } from '../firebase.js'
 import { isNotDeleted } from './dataService.js'
+import { SUBSCRIPTION_BLOCKED_MSG, isSubscriptionBlocked } from './subscriptionService.js'
 import { hashPassword, isSha256Hex, needsForceChangeAfterMatch } from '../utils/formatters.js'
 import { usernameKey, normalizePhone } from '../utils/normalize.js'
 
@@ -14,8 +15,35 @@ async function qSafe(promise) {
 }
 
 const RATE_LIMIT_KEY = 'cooplog-login-attempts';
-const MAX_ATTEMPTS = 5;
-const LOCKOUT_MS = 15 * 60 * 1000;
+// Progressive back-off between failed passcode attempts (per username+coop):
+//   Attempts 1-4 -> no delay
+//   Attempt 5  -> 1 minute
+//   Attempt 6  -> 5 minutes
+//   Attempts 7-8 -> 15 minutes
+//   Attempt 9+ -> 1 hour (stays at 1 hour until a successful login clears it)
+const DELAY_1_MIN = 1 * 60 * 1000;
+const DELAY_5_MIN = 5 * 60 * 1000;
+const DELAY_15_MIN = 15 * 60 * 1000;
+const DELAY_1_HOUR = 60 * 60 * 1000;
+const RATE_LIMIT_RESET_MS = 24 * 60 * 60 * 1000; // stale counters reset after 24h
+
+export function getDelayForAttemptCount(count) {
+    if (count >= 9) return DELAY_1_HOUR;
+    if (count >= 7) return DELAY_15_MIN;
+    if (count >= 6) return DELAY_5_MIN;
+    if (count >= 5) return DELAY_1_MIN;
+    return 0;
+}
+
+export function formatDelay(ms) {
+    const totalSec = Math.max(1, Math.ceil(ms / 1000));
+    if (totalSec < 60) return `${totalSec} second(s)`;
+    const mins = Math.ceil(totalSec / 60);
+    if (mins < 60) return `${mins} minute(s)`;
+    const hrs = Math.floor(mins / 60);
+    const rem = mins % 60;
+    return rem ? `${hrs} hour(s) ${rem} minute(s)` : `${hrs} hour(s)`;
+}
 
 function getRateLimitKey(username, cooperativeId) {
     return `${username.toLowerCase()}|${cooperativeId}`;
@@ -24,20 +52,38 @@ function getRateLimitKey(username, cooperativeId) {
 export function checkRateLimit(username, cooperativeId) {
     try {
         const raw = localStorage.getItem(RATE_LIMIT_KEY);
-        if (!raw) return { allowed: true, remaining: MAX_ATTEMPTS };
+        if (!raw) return { allowed: true, remaining: 5, attempts: 0, lockoutUntil: 0, retryAfterMs: 0 };
         const data = JSON.parse(raw);
         const key = getRateLimitKey(username, cooperativeId);
         const entry = data[key];
-        if (!entry) return { allowed: true, remaining: MAX_ATTEMPTS };
-        if (Date.now() > entry.lockoutUntil) {
+        if (!entry) return { allowed: true, remaining: 5, attempts: 0, lockoutUntil: 0, retryAfterMs: 0 };
+        const now = Date.now();
+        // Stale counters (no failure in 24h) reset so old mistakes don't haunt users.
+        if (entry.lastAttemptTs && now - entry.lastAttemptTs > RATE_LIMIT_RESET_MS) {
             delete data[key];
-            localStorage.setItem(RATE_LIMIT_KEY, JSON.stringify(data));
-            return { allowed: true, remaining: MAX_ATTEMPTS };
+            try { localStorage.setItem(RATE_LIMIT_KEY, JSON.stringify(data)); } catch {}
+            return { allowed: true, remaining: 5, attempts: 0, lockoutUntil: 0, retryAfterMs: 0 };
         }
-        const remaining = Math.max(0, MAX_ATTEMPTS - entry.count);
-        return { allowed: entry.count < MAX_ATTEMPTS, remaining, lockoutUntil: entry.lockoutUntil };
+        // An active lockout blocks the attempt. Keep the failure count so the
+        // next failure after expiry escalates (5->1min, 6->5min, 7-8->15min, 9+->1h).
+        if (entry.lockoutUntil && now < entry.lockoutUntil) {
+            return {
+                allowed: false,
+                remaining: 0,
+                attempts: entry.count || 0,
+                lockoutUntil: entry.lockoutUntil,
+                retryAfterMs: entry.lockoutUntil - now,
+            };
+        }
+        // Lock expired: clear the lock but keep the count for escalation.
+        if (entry.lockoutUntil && now >= entry.lockoutUntil) {
+            entry.lockoutUntil = 0;
+            data[key] = entry;
+            try { localStorage.setItem(RATE_LIMIT_KEY, JSON.stringify(data)); } catch {}
+        }
+        return { allowed: true, remaining: Math.max(0, 5 - (entry.count || 0)), attempts: entry.count || 0, lockoutUntil: 0, retryAfterMs: 0 };
     } catch {
-        return { allowed: true, remaining: MAX_ATTEMPTS };
+        return { allowed: true, remaining: 5, attempts: 0, lockoutUntil: 0, retryAfterMs: 0 };
     }
 }
 
@@ -46,14 +92,17 @@ export function recordFailedAttempt(username, cooperativeId) {
         const raw = localStorage.getItem(RATE_LIMIT_KEY);
         const data = raw ? JSON.parse(raw) : {};
         const key = getRateLimitKey(username, cooperativeId);
-        const entry = data[key] || { count: 0, lockoutUntil: 0 };
-        entry.count += 1;
-        if (entry.count >= MAX_ATTEMPTS) {
-            entry.lockoutUntil = Date.now() + LOCKOUT_MS;
+        const entry = data[key] || { count: 0, lockoutUntil: 0, lastAttemptTs: 0 };
+        entry.count = (entry.count || 0) + 1;
+        entry.lastAttemptTs = Date.now();
+        const delay = getDelayForAttemptCount(entry.count);
+        if (delay > 0) {
+            entry.lockoutUntil = Date.now() + delay;
         }
         data[key] = entry;
         localStorage.setItem(RATE_LIMIT_KEY, JSON.stringify(data));
-    } catch { }
+        return entry;
+    } catch { return null }
 }
 
 export function clearRateLimit(username, cooperativeId) {
@@ -92,6 +141,20 @@ async function fetchCooperativeName(db, cooperativeId) {
         console.warn('[authService] Cooperative name lookup failed:', e?.message || e);
     }
     return String(cooperativeId);
+}
+
+/** Check if a cooperative's database has been extracted (logins blocked). */
+async function isCooperativeExtracted(db, cooperativeId) {
+    try {
+        const snap = await getDoc(doc(db, 'cooperatives', String(cooperativeId)));
+        if (snap.exists()) {
+            const data = snap.data();
+            return data.is_extracted === true;
+        }
+    } catch (e) {
+        console.warn('[authService] Cooperative extracted check failed:', e?.message || e);
+    }
+    return false;
 }
 
 export async function discoverLoginCooperatives(username) {
@@ -341,6 +404,16 @@ export async function validateGoogleLogin(email, cooperativeId) {
   if (foundDoc) {
     clearRateLimit(key, normalizedCooperativeId);
 
+    // Check if the cooperative's database has been extracted (logins blocked)
+    if (await isCooperativeExtracted(db, normalizedCooperativeId)) {
+      throw new Error('This cooperative\'s data has been extracted. Please contact your administrator for assistance.');
+    }
+
+    // Block unsubscribed/expired accounts completely (admin exempt).
+    if (isSubscriptionBlocked(foundDoc)) {
+      throw new Error(SUBSCRIPTION_BLOCKED_MSG);
+    }
+
     const stored = foundDoc.password_hash || '';
     // Google flow has no typed password: force on explicit flag or non-hash storage.
     // Grandfathered legacy-complex hashes pass without a change.
@@ -390,6 +463,119 @@ export async function validateGoogleLogin(email, cooperativeId) {
   return null;
 }
 
+/** Normalize a person name for link comparison (case-insensitive, trimmed). */
+export function normalizeLinkName(val) {
+  return String(val ?? '').trim().toLowerCase();
+}
+
+/**
+ * Score a member doc against typed identity details.
+ * Rule: mobile MUST match (normalized) AND (last_name OR first_name must match).
+ * Returns { mobileOk, lastOk, firstOk, matched } where matched = mobileOk && (lastOk || firstOk).
+ */
+export function verifyMemberLinkCandidate(memberDoc, { mobile, firstName, lastName }) {
+  const expectedMobile = normalizePhone(mobile);
+  const mobileOk = !!expectedMobile && normalizePhone(memberDoc?.mobile) === expectedMobile;
+  const lastOk = !!normalizeLinkName(lastName) && normalizeLinkName(memberDoc?.last_name) === normalizeLinkName(lastName);
+  const firstOk = !!normalizeLinkName(firstName) && normalizeLinkName(memberDoc?.first_name) === normalizeLinkName(firstName);
+  return { mobileOk, lastOk, firstOk, matched: mobileOk && (lastOk || firstOk) };
+}
+
+/**
+ * Find all cooperatives that have a member with this mobile number.
+ * Bounded single-field query on `mobile` — no composite index needed.
+ * Returns [{ id, name }] sorted by name.
+ */
+export async function discoverCooperativesByMobile(mobile) {
+  const db = getDb();
+  const phoneKey = normalizePhone(mobile);
+  if (!phoneKey) return [];
+  const rawDigits = String(mobile ?? '').replace(/\D/g, '');
+
+  const queries = [qSafe(getDocs(query(collection(db, 'members'), where('mobile', '==', phoneKey), limit(50))))];
+  if (rawDigits && rawDigits !== phoneKey) {
+    queries.push(qSafe(getDocs(query(collection(db, 'members'), where('mobile', '==', rawDigits), limit(50)))));
+  }
+  const snaps = await Promise.all(queries);
+  const cooperativeIds = new Set();
+  for (const snap of snaps) {
+    for (const d of snap.docs) {
+      const data = d.data();
+      if (!isNotDeleted(data) || !data.cooperative_id) continue;
+      // Client-side re-check: stored value must normalize to the same key.
+      if (normalizePhone(data.mobile) === phoneKey) cooperativeIds.add(data.cooperative_id);
+    }
+  }
+  const cooperatives = await fetchCooperativeNames([...cooperativeIds]);
+  return cooperatives.sort((left, right) => left.name.localeCompare(right.name));
+}
+
+/**
+ * Fetch non-deleted member docs in one cooperative whose mobile matches.
+ * Used by the Google-link step to run the 2-of-3 name check + duplicate guard.
+ */
+export async function fetchMemberCandidatesByMobileForCoop(mobile, cooperativeId) {
+  const db = getDb();
+  const phoneKey = normalizePhone(mobile);
+  const normalizedCooperativeId = String(cooperativeId || '').trim();
+  if (!phoneKey || !normalizedCooperativeId) return [];
+  const rawDigits = String(mobile ?? '').replace(/\D/g, '');
+
+  const attempts = [qSafe(getDocs(query(
+    collection(db, 'members'),
+    where('cooperative_id', '==', normalizedCooperativeId),
+    where('mobile', '==', phoneKey),
+    limit(10)
+  )))];
+  if (rawDigits && rawDigits !== phoneKey) {
+    attempts.push(qSafe(getDocs(query(
+      collection(db, 'members'),
+      where('cooperative_id', '==', normalizedCooperativeId),
+      where('mobile', '==', rawDigits),
+      limit(10)
+    ))));
+  }
+  const snaps = await Promise.all(attempts);
+  const out = [];
+  const seen = new Set();
+  for (const snap of snaps) {
+    for (const d of snap.docs) {
+      if (seen.has(d.id)) continue;
+      seen.add(d.id);
+      const data = d.data();
+      if (!isNotDeleted(data)) continue;
+      if (String(data.cooperative_id || '') !== normalizedCooperativeId) continue;
+      if (normalizePhone(data.mobile) !== phoneKey) continue;
+      out.push({ id: d.id, ...data });
+    }
+  }
+  return out;
+}
+
+/**
+ * Link a Google-verified email onto a member doc (overwrite policy).
+ * Stores both `email` and `email_lower` so the next Google sign-in
+ * hits the fast path in discoverLoginCooperativesByEmail/validateGoogleLogin.
+ */
+export async function linkGoogleEmailToMember(memberId, cooperativeId, verifiedEmail) {
+  const db = getDb();
+  const email = String(verifiedEmail || '').trim().toLowerCase();
+  const normalizedCooperativeId = String(cooperativeId || '').trim();
+  if (!memberId || !normalizedCooperativeId || !email || !email.includes('@')) {
+    throw new Error('A valid email and cooperative are required to link this account.');
+  }
+  const nowIso = new Date().toISOString();
+  await updateDoc(doc(db, 'members', String(memberId)), {
+    cooperative_id: normalizedCooperativeId,
+    email,
+    email_lower: email,
+    modified_at: nowIso,
+    modified_by: 'google-link',
+    sync_at: serverTimestamp(),
+  });
+  return email;
+}
+
 export async function validateLogin(username, password, cooperativeId) {
   const db = getDb()
   const key = usernameKey(username);
@@ -400,8 +586,7 @@ export async function validateLogin(username, password, cooperativeId) {
 
   const rateLimit = checkRateLimit(key, normalizedCooperativeId);
   if (!rateLimit.allowed) {
-    const minutes = Math.ceil((rateLimit.lockoutUntil - Date.now()) / 60000);
-    throw new Error(`Too many attempts. Try again in ${minutes} minute(s).`);
+    throw new Error(`Too many failed attempts. Try again in ${formatDelay(rateLimit.retryAfterMs)}.`);
   }
 
   const hashedInput = await hashPassword(normalizedPassword);
@@ -557,6 +742,16 @@ export async function validateLogin(username, password, cooperativeId) {
 
     if (isMatch) {
       clearRateLimit(key, normalizedCooperativeId);
+
+      // Check if the cooperative's database has been extracted (logins blocked)
+      if (await isCooperativeExtracted(db, normalizedCooperativeId)) {
+        throw new Error('This cooperative\'s data has been extracted. Please contact your administrator for assistance.');
+      }
+
+      // Block unsubscribed/expired accounts completely (admin exempt).
+      if (isSubscriptionBlocked(foundDoc)) {
+        throw new Error(SUBSCRIPTION_BLOCKED_MSG);
+      }
 
       // Force-change is decided AFTER the password verifies, using the typed
       // input: 6-digit PINs pass, grandfathered legacy-complex passwords
