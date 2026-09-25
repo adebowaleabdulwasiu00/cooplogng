@@ -79,6 +79,9 @@ export async function findDuplicateMembers(cooperativeId) {
     const all = await getAllForCoop(String(cooperativeId), 'members')
     const byMobile = new Map()
     const bySpecial = new Map()
+    const byName = new Map()
+    const byEmail = new Map()
+    const byRegNo = new Map()
     for (const m of all) {
         const mk = normalizePhone(m.mobile || '')
         if (mk) {
@@ -90,6 +93,21 @@ export async function findDuplicateMembers(cooperativeId) {
             if (!bySpecial.has(sk)) bySpecial.set(sk, [])
             bySpecial.get(sk).push(m)
         }
+        const nk = `${String(m.last_name || '').trim().toLowerCase()}|${String(m.first_name || '').trim().toLowerCase()}|${String(m.middle_name || '').trim().toLowerCase()}`
+        if (nk !== '||') {
+            if (!byName.has(nk)) byName.set(nk, [])
+            byName.get(nk).push(m)
+        }
+        const ek = String(m.email || '').trim().toLowerCase()
+        if (ek) {
+            if (!byEmail.has(ek)) byEmail.set(ek, [])
+            byEmail.get(ek).push(m)
+        }
+        const rnk = String(m.registration_no || '').toString().trim()
+        if (rnk && rnk !== '0') {
+            if (!byRegNo.has(rnk)) byRegNo.set(rnk, [])
+            byRegNo.get(rnk).push(m)
+        }
     }
     const groups = []
     for (const [key, members] of byMobile) {
@@ -97,6 +115,15 @@ export async function findDuplicateMembers(cooperativeId) {
     }
     for (const [key, members] of bySpecial) {
         if (members.length > 1) groups.push({ type: 'special_id', key, members })
+    }
+    for (const [key, members] of byName) {
+        if (members.length > 1) groups.push({ type: 'name', key: key.split('|').filter(Boolean).join(' ') || 'Unknown', members })
+    }
+    for (const [key, members] of byEmail) {
+        if (members.length > 1) groups.push({ type: 'email', key, members })
+    }
+    for (const [key, members] of byRegNo) {
+        if (members.length > 1) groups.push({ type: 'registration_no', key, members })
     }
     return groups
 }
@@ -308,7 +335,7 @@ export async function mergeDuplicateMembers(survivorId, loserId, modifiedBy) {
 export async function updateMemberPaymentAdvice(memberId, paymentAdvice, modifiedBy, cooperativeId) {
     if (!memberId || !cooperativeId) return
     const now = new Date().toISOString()
-    const { loadDoc, enqueueWrite } = await import('../sqliteService.js')
+    const { loadDoc } = await import('../sqliteService.js')
     const member = await loadDoc('members', memberId, cooperativeId)
     if (member) {
         member.payment_advise = paymentAdvice
@@ -317,9 +344,4 @@ export async function updateMemberPaymentAdvice(memberId, paymentAdvice, modifie
         member.is_synced = 0
         await saveDoc('members', member)
     }
-    await enqueueWrite(cooperativeId, 'members', memberId, 'update', {
-        payment_advise: paymentAdvice,
-        modified_at: now,
-        modified_by: modifiedBy || 'system'
-    })
 }

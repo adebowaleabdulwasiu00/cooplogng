@@ -1,7 +1,7 @@
 import { generateId } from '../../utils/formatters.js'
 import {
-    getDocById_Global, queryRows, saveDoc, enqueueWrite,
-    getTransactionTypes, runSql
+    getDocById_Global, queryRows, saveDoc,
+    getTransactionTypes
 } from '../sqliteService.js'
 import { addRemittance } from './remittances.js'
 
@@ -15,46 +15,58 @@ export async function fetchPendingGuarantorRequests(memberId) {
     return getPendingGuarantorRequestsLocal(memberId)
 }
 
-export async function approveGuarantorRequest(loanId, guarantorId, approvedBy) {
+export async function fetchMyGuarantorRequests(memberId) {
+    const { getMyGuarantorRequestsLocal } = await import('../sqliteService.js')
+    return getMyGuarantorRequestsLocal(memberId)
+}
+
+export async function setGuarantorDecision(loanId, guarantorId, approved, decidedBy) {
     const now = new Date().toISOString()
+    const value = approved ? 1 : 0
+    const existing = await getDocById_Global('loan_guarantors', guarantorId)
+    if (!existing) throw new Error('Guarantor record not found.')
+    await saveDoc('loan_guarantors', {
+        ...existing,
+        guarantor_approval: value,
+        approved_at: approved ? now : (existing.approved_at || null),
+        modified_at: now,
+        modified_by: decidedBy || 'system',
+        is_synced: 0,
+    })
+    // Keep the embedded guarantors[] on the parent loan in sync for
+    // offline reads (saveDoc on loans rebuilds the child table).
     try {
-        await runSql(
-            'UPDATE loan_guarantors SET guarantor_approval = ?, modified_at = ?, modified_by = ? WHERE id = ?',
-            [1, now, approvedBy, guarantorId]
+        const loans = await queryRows(
+            'SELECT * FROM loans WHERE remittance_id = ? AND is_deleted = 0',
+            [loanId]
         )
-    } catch (e) {
-        console.warn('[dataService] Failed to update local loan_guarantors table:', e.message)
-    }
-    const loans = await queryRows(
-        'SELECT * FROM loans WHERE remittance_id = ? AND is_deleted = 0',
-        [loanId]
-    )
-    let found = false
-    for (const loan of loans) {
-        const guarantors = (await queryRows(
-            'SELECT * FROM loan_guarantors WHERE loan_id = ? AND is_deleted = 0',
-            [loan.id]
-        )).map(g => {
-            if (String(g.id) === String(guarantorId)) {
-                found = true
-                return { ...g, guarantor_approval: 1, modified_at: now, modified_by: approvedBy, approved_at: now }
-            }
-            return g
-        })
-        if (found) {
-            await saveDoc('loans', { ...loan, guarantors, modified_at: now, modified_by: approvedBy })
-            const remittance = await getDocById_Global('remittance', loan.remittance_id)
-            if (remittance) {
-                await enqueueWrite(remittance.cooperative_id, 'remittance', loan.remittance_id, 'update', {
-                    loans: [{ ...loan, guarantors }],
-                    modified_at: now,
-                    modified_by: approvedBy
-                })
-            }
-            break
+        for (const loan of loans || []) {
+            const guarantors = await queryRows(
+                'SELECT * FROM loan_guarantors WHERE loan_id = ? AND is_deleted = 0',
+                [loan.id]
+            )
+            await saveDoc('loans', { ...loan, guarantors, modified_at: now, modified_by: decidedBy || 'system' })
         }
+    } catch (e) {
+        console.warn('[dataService] Failed to sync parent loan guarantors:', e.message)
     }
-    if (!found) throw new Error('No matching guarantor found for this loan record.')
+}
+
+export async function approveGuarantorRequest(loanId, guarantorId, approvedOrBy, maybeBy) {
+    // Backward compatible:
+    //  - approveGuarantorRequest(loanId, guarantorId, approvedBy)
+    //  - approveGuarantorRequest(loanId, guarantorId, approved, approvedBy)
+    let approved = true
+    let decidedBy = approvedOrBy
+    if (typeof approvedOrBy === 'boolean' || approvedOrBy === 1 || approvedOrBy === 0) {
+        approved = approvedOrBy === true || approvedOrBy === 1
+        decidedBy = maybeBy
+    }
+    return setGuarantorDecision(loanId, guarantorId, approved, decidedBy)
+}
+
+export async function rejectGuarantorRequest(loanId, guarantorId, decidedBy) {
+    return setGuarantorDecision(loanId, guarantorId, false, decidedBy)
 }
 
 export async function approveLoanRequest(remittanceId, approvedBy, options = {}) {
@@ -63,7 +75,7 @@ export async function approveLoanRequest(remittanceId, approvedBy, options = {})
     if (!remittance) throw new Error('Remittance not found')
 
     const cooperativeId = remittance.cooperative_id
-    const { remittance_date, bank_name, charges: userCharges } = options
+    const { remittance_date, bank_name, charges: userCharges, details: userDetails } = options
 
     let parentCategory = remittance.category
     try {
@@ -87,17 +99,79 @@ export async function approveLoanRequest(remittanceId, approvedBy, options = {})
     }
     if (remittance_date) remitUpdate.remittance_date = remittance_date
     if (bank_name) remitUpdate.bank_name = bank_name
+    if (userDetails) remitUpdate.details = userDetails
     await saveDoc('remittance', remitUpdate)
-    await enqueueWrite(cooperativeId, 'remittance', remittanceId, 'update', {
-        status: 'Approved',
-        modified_at: now,
-        modified_by: approvedBy
-    })
 
-    const loans = await queryRows(
+    let loans = await queryRows(
         'SELECT * FROM loans WHERE (id = ? OR remittance_id = ?) AND cooperative_id = ? AND is_deleted = 0',
         [remittanceId, remittanceId, cooperativeId]
     )
+
+    // If no loan records exist yet (new request flow), create them from details[].loan_info
+    if (!loans || loans.length === 0) {
+        const details = userDetails || remittance.details || []
+        for (const detail of details) {
+            if (detail.loan_info) {
+                const lInfo = detail.loan_info
+                const loanData = lInfo.loanData || {}
+                const loanId = lInfo.id || generateId(cooperativeId)
+                const issuedDate = remittance_date || loanData.issueDate || loanData.issued_date || remittance.remittance_date || now
+                const duration = parseInt(loanData.durationMonths || loanData.duration_months || 0, 10)
+                let dueDate = loanData.dueDate || loanData.due_date || ''
+                if (!dueDate && duration > 0) {
+                    const issueD = new Date(issuedDate)
+                    if (!isNaN(issueD.getTime())) {
+                        issueD.setMonth(issueD.getMonth() + duration)
+                        dueDate = issueD.toISOString()
+                    }
+                }
+                const loanDoc = {
+                    id: loanId,
+                    cooperative_id: String(cooperativeId),
+                    member_id: remittance.member_id || '0000000000',
+                    enterprise_id: detail.enterprise_id || detail.item || '',
+                    principal_amount: Math.abs(parseFloat(loanData.principalAmount || loanData.principal_amount || 0)),
+                    issued_date: issuedDate,
+                    due_date: dueDate,
+                    status: 'Pending',
+                    notes: loanData.notes || '',
+                    remittance_id: remittanceId,
+                    duration_months: duration,
+                    admin_fee_id: null,
+                    created_at: now,
+                    created_by: approvedBy || 'system',
+                    modified_at: now,
+                    modified_by: approvedBy || 'system',
+                    is_deleted: 0,
+                    is_synced: 0
+                }
+                await saveDoc('loans', loanDoc)
+
+                // Create guarantor records
+                const guarantors = lInfo.guarantors || []
+                for (const g of guarantors) {
+                    const gId = g.id || generateId(cooperativeId)
+                    await saveDoc('loan_guarantors', {
+                        id: gId,
+                        cooperative_id: String(cooperativeId),
+                        loan_id: loanId,
+                        member_id: String(g.member_id),
+                        guarantee_amount: parseFloat(g.guarantee_amount || g.amount || 0),
+                        guarantor_approval: g.guarantor_approval !== undefined ? g.guarantor_approval : null,
+                        created_at: now,
+                        created_by: approvedBy || 'system',
+                        modified_at: now,
+                        modified_by: approvedBy || 'system',
+                        is_deleted: 0,
+                        is_synced: 0
+                    })
+                }
+
+                loans.push(loanDoc)
+            }
+        }
+    }
+
     let chargeIndex = 0
     let pickupIndex = 0
 
@@ -133,6 +207,7 @@ export async function approveLoanRequest(remittanceId, approvedBy, options = {})
         for (const g of guarantors) {
             await saveDoc('loan_guarantors', {
                 ...g,
+                guarantor_approval: 1,
                 modified_at: now,
                 modified_by: approvedBy,
                 is_synced: 0
@@ -140,16 +215,6 @@ export async function approveLoanRequest(remittanceId, approvedBy, options = {})
         }
 
         if (userCharges && Array.isArray(userCharges) && userCharges.length > 0) {
-            let chargeCategory = 'Loan Income'
-            try {
-                const types = await getTransactionTypes(String(cooperativeId))
-                const tt = types.find(t => t.transaction_type === 'Loan Charges')
-                if (tt && tt.classification) {
-                    chargeCategory = tt.classification
-                }
-            } catch (e) {
-                console.error('[approveLoanRequest] Error fetching Loan Charges classification:', e)
-            }
             const principalAmount = Math.abs(parseFloat(loan.principal_amount || 0))
             let loanChargeTotal = 0
             for (const charge of userCharges) {
@@ -168,12 +233,13 @@ export async function approveLoanRequest(remittanceId, approvedBy, options = {})
                         member_id: loan.member_id || remittance.member_id,
                         amount: -val,
                         remittance_date: chargeDate,
-                        bank_name: 'Internal Transfer',
+                        bank_name: remittance.bank_name || 'System Generated',
                         transaction_type: 'Loan Charges',
-                        category: chargeCategory,
+                        category: 'Loan Asset',
                         description: `Loan Charge: ${charge.name}`,
                         autogen: 1,
                         loan_id: loan.id || remittanceId,
+                        parent_remittance_id: remittanceId,
                         status: 'Approved',
                         details: [{
                             id: `${chargeId}_detail`,
@@ -209,6 +275,7 @@ export async function approveLoanRequest(remittanceId, approvedBy, options = {})
                     description: `Auto Loan Charges Income - ${pickupMemberName}`,
                     autogen: 1,
                     loan_id: loan.id || remittanceId,
+                    parent_remittance_id: remittanceId,
                     status: 'Approved',
                 }, approvedBy)
             }
@@ -216,7 +283,7 @@ export async function approveLoanRequest(remittanceId, approvedBy, options = {})
 
         if (loan.duration_months > 0 && loan.principal_amount > 0) {
             const { saveDoc: saveAdvice, queryRows: queryAdvice, loadDoc } = await import('../sqliteService.js')
-            const monthlyInst = Math.ceil((loan.principal_amount / loan.duration_months) / 100) * 100
+            const monthlyInst = parseFloat((loan.principal_amount / loan.duration_months).toFixed(2))
             const advises = await queryAdvice(
                 'SELECT * FROM payment_advise WHERE cooperative_id = ? AND member_id = ? AND enterprise_id = ? AND is_deleted = 0',
                 [String(cooperativeId), loan.member_id, loan.enterprise_id]
@@ -252,11 +319,6 @@ export async function declineLoanRequest(remittanceId, declinedBy) {
                 modified_at: now,
                 modified_by: declinedBy,
                 is_synced: 0
-            })
-            await enqueueWrite(target.cooperative_id, 'remittance', target.id, 'update', {
-                status: 'Declined',
-                modified_at: now,
-                modified_by: declinedBy
             })
         }
 

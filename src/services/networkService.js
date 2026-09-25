@@ -4,16 +4,19 @@ let _pingInterval = null
 const PING_INTERVAL = 30000
 
 async function checkConnectivity() {
-  const tryPing = async (url) => {
+  const tryPing = async (url, timeoutMs = 5000) => {
     const ctrl = new AbortController()
-    const t = setTimeout(() => ctrl.abort(), 5000)
+    const t = setTimeout(() => ctrl.abort(), timeoutMs)
     await fetch(url, { mode: 'no-cors', signal: ctrl.signal })
     clearTimeout(t)
   }
 
+  // Endpoints ordered by reliability: Google CDN, then general internet
   const endpoints = [
     'https://www.gstatic.com/generate_204',
     'https://www.google.com/generate_204',
+    'https://cdn.jsdelivr.com/favicon.ico',
+    'https://httpbin.org/get',
   ]
 
   for (const url of endpoints) {
@@ -29,6 +32,10 @@ async function checkConnectivity() {
     }
   }
 
+  // All pings failed — trust navigator.onLine as a safety net.
+  // navigator.onLine is reliable for detecting *loss* of connectivity;
+  // false negatives happen on captive portals but those are rare for
+  // API-only apps like this.
   if (navigator.onLine !== state.isOnline) {
     state.isOnline = navigator.onLine
     state.isSyncing = false

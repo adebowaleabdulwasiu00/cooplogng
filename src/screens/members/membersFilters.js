@@ -454,7 +454,7 @@ export function renderMembersFilters(container, user) {
               to { transform: translateY(0); opacity: 1; }
           }
 
-          @media (max-width: 768px) {
+          @media (max-width: 999px) {
               .members-filters-row {
                   display: none !important;
                   padding: 0.5rem;
@@ -710,6 +710,9 @@ async function showDuplicateReviewModal(container, user) {
         #duplicates-modal .dup-type { font-size: 0.68rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; border-radius: 999px; padding: 0.15rem 0.55rem; }
         #duplicates-modal .dup-type.mobile { background: #fef3c7; color: #92400e; }
         #duplicates-modal .dup-type.special { background: #e0e7ff; color: #3730a3; }
+        #duplicates-modal .dup-type.name { background: #dcfce7; color: #166534; }
+        #duplicates-modal .dup-type.email { background: #fef9c3; color: #854d0e; }
+        #duplicates-modal .dup-type.regno { background: #f3e8ff; color: #6b21a8; }
         #duplicates-modal .dup-key { font-family: monospace; font-weight: 700; font-size: 0.82rem; }
         #duplicates-modal .dup-row { display: flex; gap: 0.7rem; align-items: center; padding: 0.65rem 0.85rem; border-top: 1px solid var(--border-light); cursor: pointer; transition: background 0.15s; }
         #duplicates-modal .dup-row:hover { background: var(--bg-secondary); }
@@ -744,7 +747,7 @@ async function showDuplicateReviewModal(container, user) {
                     <h3 style="margin:0; color:var(--text-primary); font-size:1.05rem;">Possible duplicates</h3>
                     <span class="dup-count-badge" id="dup-count" style="display:none;"></span>
                 </div>
-                <p style="font-size:0.78rem; color:var(--text-muted); margin:0.2rem 0 0;">Same mobile or Special ID in this cooperative. Pick one to keep — the rest are archived, never deleted with history.</p>
+                <p style="font-size:0.78rem; color:var(--text-muted); margin:0.2rem 0 0;">Same mobile, Special ID, name, email, or registration number in this cooperative. Pick one to keep — the rest are archived, never deleted with history.</p>
             </div>
             <button class="modal-close" id="dup-close" aria-label="Close">✕</button>
         </div>
@@ -753,6 +756,9 @@ async function showDuplicateReviewModal(container, user) {
             <button class="dup-pill active" data-f="all">All</button>
             <button class="dup-pill" data-f="mobile">Mobile</button>
             <button class="dup-pill" data-f="special_id">Special ID</button>
+            <button class="dup-pill" data-f="name">Name</button>
+            <button class="dup-pill" data-f="email">Email</button>
+            <button class="dup-pill" data-f="registration_no">Reg No</button>
         </div>
         <div class="modal-body dup-body" id="dup-body"></div>
       </div>`
@@ -789,7 +795,7 @@ async function showDuplicateReviewModal(container, user) {
         if (!visible.length) {
             body.innerHTML = groups.length
                 ? `<div class="dup-empty"><div class="dup-empty-icon">∅</div><div style="font-weight:700;">No matches for this filter</div><div class="dup-hint">Try a different search or tab.</div></div>`
-                : `<div class="dup-empty"><div class="dup-empty-icon">✓</div><div style="font-weight:700;">All clear — no duplicates</div><div class="dup-hint">Mobile and Special IDs are unique in this cooperative.</div></div>`
+                : `<div class="dup-empty"><div class="dup-empty-icon">✓</div><div style="font-weight:700;">All clear — no duplicates</div><div class="dup-hint">Mobile, Special IDs, names, emails, and registration numbers are unique in this cooperative.</div></div>`
             return
         }
         body.innerHTML = visible.map(({ g, gi }) => {
@@ -799,7 +805,7 @@ async function showDuplicateReviewModal(container, user) {
             return `
             <div class="dup-card" data-gi="${gi}">
                 <div class="dup-card-head">
-                    <span class="dup-type ${g.type === 'mobile' ? 'mobile' : 'special'}">${g.type === 'mobile' ? 'Mobile' : 'Special ID'}</span>
+                    <span class="dup-type ${g.type === 'mobile' ? 'mobile' : g.type === 'special_id' ? 'special' : g.type === 'name' ? 'name' : g.type === 'email' ? 'email' : 'regno'}">${g.type === 'mobile' ? 'Mobile' : g.type === 'special_id' ? 'Special ID' : g.type === 'name' ? 'Name' : g.type === 'email' ? 'Email' : 'Reg No'}</span>
                     <span class="dup-key">${escapeHtml(g.key)}</span>
                     <span class="dup-hint">${g.members.length} records — tap one to keep</span>
                 </div>

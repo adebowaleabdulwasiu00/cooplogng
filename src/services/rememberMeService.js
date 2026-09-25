@@ -1,15 +1,36 @@
 /**
- * rememberMeService.js � global "Remember me" for the login screen.
+ * rememberMeService.js — global "Remember me" for the login screen.
  *
  * Stores ONE device-wide identity in localStorage so the next visit opens
- * with the username pre-filled (and the cooperative pre-selected where
- * possible). The user then only types their password/PIN.
+ * with username + cooperative pre-filled AND the password/PIN pre-filled,
+ * letting a returning user tap Next → Next → Sign In with no typing.
  *
- * Security: only the username + cooperative id/name are stored.
- * Passwords/PINs are NEVER stored locally.
+ * Cleared when the user unticks "Remember me" or taps Log Out.
+ *
+ * Security note: the PIN/password is stored obfuscated (Base64, NOT
+ * encryption) in localStorage at the user's explicit request for
+ * convenience on a personal device. Anyone with device access can decode
+ * it. Do NOT enable "Remember me" on shared devices.
  */
 
 const KEY = 'cooplog-remember-me';
+
+function encodeSecret(val) {
+  try {
+    return btoa(unescape(encodeURIComponent(String(val || ''))));
+  } catch {
+    return '';
+  }
+}
+
+function decodeSecret(val) {
+  try {
+    if (!val) return '';
+    return decodeURIComponent(escape(atob(String(val))));
+  } catch {
+    return '';
+  }
+}
 
 export function loadRememberedIdentity() {
   try {
@@ -21,13 +42,16 @@ export function loadRememberedIdentity() {
       username: String(data.username),
       cooperativeId: data.cooperativeId ? String(data.cooperativeId) : '',
       cooperativeName: data.cooperativeName ? String(data.cooperativeName) : '',
+      // Decoded for form pre-fill. Empty string when saved by older builds.
+      password: data.passwordObf ? decodeSecret(data.passwordObf)
+        : (data.password ? String(data.password) : ''),
     };
   } catch {
     return null;
   }
 }
 
-export function saveRememberedIdentity(username, cooperativeId, cooperativeName) {
+export function saveRememberedIdentity(username, cooperativeId, cooperativeName, password) {
   try {
     const u = String(username || '').trim();
     if (!u) {
@@ -38,10 +62,11 @@ export function saveRememberedIdentity(username, cooperativeId, cooperativeName)
       username: u,
       cooperativeId: cooperativeId ? String(cooperativeId) : '',
       cooperativeName: cooperativeName ? String(cooperativeName) : '',
+      passwordObf: encodeSecret(password || ''),
       updatedAt: Date.now(),
     }));
   } catch {
-    // private mode etc. � remember-me simply won't persist
+    // private mode etc. — remember-me simply won't persist
   }
 }
 

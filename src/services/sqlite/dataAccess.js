@@ -212,28 +212,55 @@ export async function getGuarantorStatsLocal(memberId, cooperativeId) {
 }
 
 export async function getPendingGuarantorRequestsLocal(memberId) {
-    const allLoans = await getAllItems('loans')
-    const allGuarantors = await getAllItems('loan_guarantors')
-    const results = []
-    for (const g of allGuarantors) {
-        if (g.member_id === String(memberId) && !g.is_deleted) {
-            const approval = g.guarantor_approval
-            if (approval === null || approval === '' || approval === 2 || approval === '2') {
-                const loan = allLoans.find(l => l.id === g.loan_id && !l.is_deleted)
-                if (loan && loan.status !== 'Declined') {
-                    results.push({
-                        ...g,
-                        loanee_id: loan.member_id,
-                        principal_amount: loan.principal_amount,
-                        issued_date: loan.issued_date,
-                        due_date: loan.due_date,
-                        remittance_id: loan.remittance_id
-                    })
-                }
-            }
-        }
+    const all = await getMyGuarantorRequestsLocal(memberId);
+    return all.filter((r) => r.approval_state === 'pending');
+}
+
+function guarantorApprovalState(g) {
+    const approval = g.guarantor_approval;
+    if (approval === 1 || approval === '1' || approval === true) return 'approved';
+    if (approval === 0 || approval === '0' || approval === false) return 'rejected';
+    return 'pending';
+}
+
+/**
+ * Full guarantor history for a member (pending + approved + rejected),
+ * newest first, with loanee / loan context resolved locally.
+ */
+export async function getMyGuarantorRequestsLocal(memberId) {
+    const [allLoans, allGuarantors, allMembers, allEnterprises] = await Promise.all([
+        getAllItems('loans').catch(() => []),
+        getAllItems('loan_guarantors').catch(() => []),
+        getAllItems('members').catch(() => []),
+        getAllItems('enterprise').catch(() => []),
+    ]);
+    const loanMap = new Map((allLoans || []).filter((l) => !l.is_deleted).map((l) => [String(l.id), l]));
+    const memberMap = new Map((allMembers || []).map((m) => [String(m.id), m]));
+    const entMap = new Map((allEnterprises || []).map((e) => [String(e.id), e.account_name || e.id]));
+    const results = [];
+    for (const g of allGuarantors || []) {
+        if (String(g.member_id) !== String(memberId) || g.is_deleted) continue;
+        const loan = loanMap.get(String(g.loan_id));
+        if (!loan || loan.status === 'Declined') continue;
+        const loanee = memberMap.get(String(loan.member_id));
+        const loaneeName = loanee
+            ? `${loanee.first_name || ''} ${loanee.last_name || ''}`.trim() || loanee.mobile || loan.member_id
+            : loan.member_id;
+        results.push({
+            ...g,
+            approval_state: guarantorApprovalState(g),
+            loanee_id: loan.member_id,
+            loanee_name: loaneeName,
+            principal_amount: loan.principal_amount,
+            loan_status: loan.status,
+            enterprise_name: entMap.get(String(loan.enterprise_id)) || loan.enterprise_id || '',
+            issued_date: loan.issued_date,
+            due_date: loan.due_date,
+            remittance_id: loan.remittance_id,
+        });
     }
-    return results
+    results.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+    return results;
 }
 
 export async function getMemberLoans(cooperativeId, memberId = null) {
@@ -311,6 +338,16 @@ export async function getMemberLoans(cooperativeId, memberId = null) {
 
         loan.outstanding_balance = loan.id === latest.id ? (entBal[k] || 0) : 0
         loan.guarantors = allGuarantors.filter(g => g.loan_id === loan.id && !g.is_deleted)
+
+        const loanCharges = allRems.filter(r =>
+            r.loan_id === loan.id &&
+            !r.is_deleted &&
+            r.status === 'Approved' &&
+            r.transaction_type === 'Loan Charges' &&
+            r.autogen === 1 &&
+            Number(r.amount) < 0
+        )
+        loan.admin_fees = loanCharges.reduce((sum, r) => sum + Math.abs(Number(r.amount) || 0), 0)
     }
 
     return loans

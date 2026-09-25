@@ -1,6 +1,6 @@
 {
   "name": "cooperative_log_app_web",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
   "main": "electron/main.js",
@@ -38,5 +38,15 @@
     "re2": true,
     "protobufjs": true,
     "@firebase/util": true
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/adebowaleabdulwasiu00/cooplogng.git"
+  },
+  "keywords": [],
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/adebowaleabdulwasiu00/cooplogng/issues"
+  },
+  "homepage": "https://github.com/adebowaleabdulwasiu00/cooplogng#readme"
 }

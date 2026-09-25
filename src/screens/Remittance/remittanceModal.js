@@ -1,4 +1,4 @@
-import { escapeHtml, generateId, wrapDateInput, formatDate, formatDateForInput } from '../../utils/formatters.js';
+import { escapeHtml, generateId, wrapDateInput, formatDate, formatDateForInput, formatCurrency } from '../../utils/formatters.js';
 import { showToast } from '../../services/toastService.js';
 
 export function showSimpleReviewModal(
@@ -61,7 +61,7 @@ export function showSimpleReviewModal(
       entName = targetEnt ? targetEnt.account_name : (detail ? (detail.notes || detail.auto_description || detail.item) : 'Savings Account');
 
       const amountVal = Math.abs(parseFloat(formData.amount || (detail ? detail.amount : 0) || 0));
-      formattedAmount = `₦${amountVal.toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
+      formattedAmount = formatCurrency(amountVal);
 
       if (isSavingsRequest && cooperativeId && formData.member_id) {
         const { buildAccountBalance } = await import('../../services/dataService.js');
@@ -89,23 +89,23 @@ export function showSimpleReviewModal(
                 </div>
                 <div>
                   <span style="font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Balance Before</span>
-                  <div style="font-weight: 600; color: var(--text-primary); margin-top: 0.15rem;">₦${balanceBefore.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
+                  <div style="font-weight: 600; color: var(--text-primary); margin-top: 0.15rem;">${formatCurrency(balanceBefore)}</div>
                 </div>
                 <div>
                   <span style="font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Balance After</span>
-                  <div style="font-weight: 700; color: ${balanceAfter < 0 ? 'var(--danger)' : 'var(--success)'}; margin-top: 0.15rem;">₦${balanceAfter.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
+                  <div style="font-weight: 700; color: ${balanceAfter < 0 ? 'var(--danger)' : 'var(--success)'}; margin-top: 0.15rem;">${formatCurrency(balanceAfter)}</div>
                 </div>
               </div>
             </div>
 
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;">
-              <div class="field" style="display: flex; flex-direction: column; gap: 0.25rem;">
-                <label style="font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Approval Date *</label>
-                <input type="date" id="simple-date-input" value="${new Date().toISOString().split('T')[0]}" style="padding: 0.5rem 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--border-medium); background: var(--bg-input); color: var(--text-primary); font-size: 0.875rem;" required>
+              <div class="field">
+                <label>Approval Date *</label>
+                <input type="date" id="simple-date-input" value="${new Date().toISOString().split('T')[0]}" required>
               </div>
-              <div class="field" style="display: flex; flex-direction: column; gap: 0.25rem;">
-                <label style="font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Bank *</label>
-                <select id="simple-bank-select" style="padding: 0.5rem; border-radius: var(--radius-sm); border: 1px solid var(--border-medium); background: var(--bg-input); color: var(--text-primary); font-size: 0.875rem;" required>
+              <div class="field">
+                <label>Bank *</label>
+                <select id="simple-bank-select" required>
                   <option value="">-- Choose Bank --</option>
                   ${(historyState?.banks || []).map(b => `<option value="${escapeHtml(b.bank_name)}" ${formData.bank_name === b.bank_name ? 'selected' : ''}>${escapeHtml(b.bank_name)}</option>`).join('')}
                 </select>
@@ -245,6 +245,39 @@ export function showLoanReviewModal(
     type: c.type || 'fixed'
   }));
 
+  // Pre-fill charges from enterprise table if no charges exist yet
+  if (modalCharges.length === 0) {
+    const detail = formData.details.find(d => d.loan_info);
+    const targetEntId = detail ? (detail.enterprise_id || detail.item) : null;
+    const enterprise = targetEntId ? (enterpriseData || []).find(e => String(e.id) === String(targetEntId)) : null;
+    if (enterprise) {
+      if (enterprise.interest_rate !== undefined && enterprise.interest_rate !== null && enterprise.interest_rate !== '') {
+        modalCharges.push({
+          id: generateId(),
+          name: 'Interest',
+          value: Math.abs(parseFloat(enterprise.interest_rate) || 0),
+          type: enterprise.interest_is_percent ? 'percentage' : 'fixed'
+        });
+      }
+      if (enterprise.form_fee !== undefined && enterprise.form_fee !== null && enterprise.form_fee !== '') {
+        modalCharges.push({
+          id: generateId(),
+          name: 'Form Fee',
+          value: Math.abs(parseFloat(enterprise.form_fee) || 0),
+          type: enterprise.form_fee_is_percent ? 'percentage' : 'fixed'
+        });
+      }
+      if (enterprise.admin_charge !== undefined && enterprise.admin_charge !== null && enterprise.admin_charge !== '') {
+        modalCharges.push({
+          id: generateId(),
+          name: 'Admin Charge',
+          value: Math.abs(parseFloat(enterprise.admin_charge) || 0),
+          type: enterprise.admin_charge_is_percent ? 'percentage' : 'fixed'
+        });
+      }
+    }
+  }
+
   const modalDiv = document.createElement('div');
   modalDiv.id = modalId;
   modalDiv.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:flex;justify-content:center;align-items:center;z-index:99999;';
@@ -275,13 +308,13 @@ export function showLoanReviewModal(
         </div>
         <div class="modal-body" style="padding:1.25rem;overflow-y:auto;max-height:70vh;">
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;margin-bottom:1rem;">
-            <div class="field" style="display:flex;flex-direction:column;gap:0.25rem;">
-              <label style="font-size:0.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;">Approval Date *</label>
-              <input type="date" class="lr-date" value="${formatDateForInput(loanData?.issueDate || formData.remittance_date || new Date())}" style="padding:0.5rem 0.75rem;border-radius:var(--radius-sm);border:1px solid var(--border-medium);background:var(--bg-input);color:var(--text-primary);font-size:0.875rem;">
+            <div class="field">
+              <label>Approval Date *</label>
+              <input type="date" class="lr-date" value="${formatDateForInput(loanData?.issueDate || formData.remittance_date || new Date())}">
             </div>
-            <div class="field" style="display:flex;flex-direction:column;gap:0.25rem;">
-              <label style="font-size:0.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;">Bank / Method *</label>
-              <select class="lr-bank" style="padding:0.5rem;border-radius:var(--radius-sm);border:1px solid var(--border-medium);background:var(--bg-input);color:var(--text-primary);font-size:0.875rem;">
+            <div class="field">
+              <label>Bank / Method *</label>
+              <select class="lr-bank">
                 <option value="">-- Select Bank --</option>
                 ${(historyState.banks || []).map(b => `<option value="${escapeHtml(b.bank_name)}">${escapeHtml(b.bank_name)}</option>`).join('')}
               </select>
@@ -291,7 +324,7 @@ export function showLoanReviewModal(
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;margin-bottom:1rem;padding:0.75rem;background:var(--bg-main);border-radius:0.5rem;">
             <div><strong>Member:</strong> ${escapeHtml(memberName)}</div>
             <div><strong>Reg No:</strong> ${escapeHtml(memberReg)}</div>
-            <div><strong>Principal:</strong> ₦${(parseFloat(loanData?.principalAmount || 0)).toLocaleString(undefined,{minimumFractionDigits:2})}</div>
+            <div><strong>Principal:</strong> ${formatCurrency(parseFloat(loanData?.principalAmount || 0))}</div>
             <div><strong>Duration:</strong> ${loanData?.durationMonths || 0} months</div>
             <div><strong>Issue Date:</strong> ${formatDate(loanData?.issueDate || formData.remittance_date)}</div>
             <div><strong>Due Date:</strong> ${formatDate(loanData?.dueDate || '—')}</div>
@@ -318,7 +351,7 @@ export function showLoanReviewModal(
                       if (c.type === 'percentage') {
                         val = (val / 100) * Math.abs(parseFloat(loanData?.principalAmount || 0));
                       }
-                      return `₦${val.toFixed(2)}`;
+                      return formatCurrency(val);
                     })()}
                   </span>
                   <button type="button" class="lr-remove-charge-btn" data-index="${ci}" style="padding:0.25rem 0.5rem;border-radius:0.3rem;border:1px solid var(--danger);background:transparent;color:var(--danger);font-weight:600;cursor:pointer;font-size:0.75rem;">&times;</button>
@@ -326,7 +359,7 @@ export function showLoanReviewModal(
               `).join('')}
             </div>
             <div style="display:flex;justify-content:flex-end;padding:0.5rem 0 0 0;font-weight:700;font-size:0.9rem;">
-              <span>Total Charges: ₦${totalCharges.toFixed(2)}</span>
+              <span>Total Charges: ${formatCurrency(totalCharges)}</span>
             </div>
           </div>
 
@@ -453,31 +486,12 @@ export function showLoanReviewModal(
           loanDetail.loan_info.charges = JSON.parse(JSON.stringify(modalCharges));
         }
 
-        const { saveDoc, getDocById_Global } = await import('../../services/sqliteService.js');
-        let remData = await getDocById_Global('remittance', formData.id);
-        if (remData) {
-          remData.details = formData.details;
-          remData.transaction_type = 'Member Loan';
-          try {
-            const { getTransactionTypes } = await import('../../services/sqliteService.js');
-            const types = await getTransactionTypes(String(remData.cooperative_id));
-            const tt = types.find(t => t.transaction_type === 'Member Loan');
-            if (tt && tt.classification) {
-              remData.category = tt.classification;
-            } else {
-              remData.category = remData.category || 'Loan Asset';
-            }
-          } catch (e) {
-            remData.category = remData.category || 'Loan Asset';
-          }
-          await saveDoc('remittance', remData);
-        }
-
         const { approveLoanRequest } = await import('../../services/dataService.js');
         await approveLoanRequest(formData.id, user?.username || 'admin', {
           remittance_date: dateVal,
           bank_name: bankVal,
-          charges: JSON.parse(JSON.stringify(modalCharges))
+          charges: JSON.parse(JSON.stringify(modalCharges)),
+          details: formData.details
         });
         showToast('Loan request approved successfully!', 'success');
         modalDiv.remove();

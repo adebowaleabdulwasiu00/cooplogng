@@ -17,7 +17,13 @@
     var SW_BUILD = /*__SW_BUILD__*/ 1;
     // Packaged shells (Electron file://, native WebViews) have no SW scope — skip.
     var __isPackagedShell = location.protocol === 'file:' || !!window.cooplog || !!window.Capacitor;
-    if ('serviceWorker' in navigator && !__isPackagedShell) {
+    // Dev servers (vite `npm run dev`) must never install the SW: with no
+    // build stamp the version churns per load and skipWaiting+claim +
+    // controllerchange turns into an infinite F5 loop. Production hosting
+    // keeps the SW auto-update behaviour unchanged.
+    var __host = (location.hostname || '').toLowerCase();
+    var __isDevHost = __host === 'localhost' || __host === '127.0.0.1' || __host === '[::1]' || __host === '';
+    if ('serviceWorker' in navigator && !__isPackagedShell && !__isDevHost) {
       window.addEventListener('load', function() {
         navigator.serviceWorker.register('/sw.js?v=' + SW_BUILD)
           .then(function(reg) {
@@ -26,6 +32,14 @@
           })
           .catch(function(err) { return console.error('[PWA] SW Failed', err); })
       })
+    }
+    // One-time cleanup for dev tabs stuck under a previously installed
+    // looping worker: drop stale localhost registrations so the F5 loop
+    // stops immediately on next visit. Production registrations untouched.
+    if ('serviceWorker' in navigator && __isDevHost && !__isPackagedShell) {
+      navigator.serviceWorker.getRegistrations().then(function(regs) {
+        regs.forEach(function(r) { r.unregister().catch(function() {}); });
+      }).catch(function() {});
     }
   </script>
 </body>

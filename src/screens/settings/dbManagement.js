@@ -1,7 +1,8 @@
-import { exportDatabase, importDatabase, getSyncQueueSummary, getSyncQueueDetails, restartAllSyncItems, resetSyncQueueAndMarkUnsynced, clearSyncQueueLogs, checkDbExists, scanAndEnqueueUnsynced, getSyncMeta, markCollectionSynced, markCollectionUnsynced } from '../../services/sqliteService.js';
+import { exportDatabase, importDatabase, getSyncQueueSummary, getSyncQueueDetails, restartAllSyncItems, resetSyncQueueAndMarkUnsynced, clearSyncQueueLogs, clearAllSyncQueueItems, checkDbExists, scanAndEnqueueUnsynced, bulkEnqueueUnsynced, getSyncMeta, markCollectionSynced, markCollectionUnsynced } from '../../services/sqliteService.js';
 import { showToast } from '../../services/toastService.js';
 import { SYNC_COLLECTIONS } from '../../services/sqlite/syncState.js';
 import { triggerFullResync } from '../../services/backgroundSyncService.js';
+import { pauseBackgroundSync, resumeBackgroundSync, waitForSyncIdle } from '../../services/backgroundSyncService.js';
 
 export function renderDbManagementSection(area) {
   area.innerHTML = `
@@ -12,7 +13,7 @@ export function renderDbManagementSection(area) {
         <div class="card" style="padding: 1.5rem; border: 1px solid var(--border-light); border-radius: var(--radius-md); background: var(--bg-card); width: 100%;">
           <h4 style="margin-top: 0; color: var(--text-primary);">Backup & Restore</h4>
           <div id="db-health-status" style="margin-bottom: 0.75rem; font-size: 0.85rem; font-weight: 600;"></div>
-          <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1.25rem;">Download a full copy of your local database or import records from a backup file.</p>
+          <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1.25rem;">Download a full copy of the active cooperative's local data or import records from a backup file.</p>
           <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
             <button id="export-db-btn" class="primary-button" style="padding: 0.6rem 1rem; font-size: 0.85rem; flex: 1;">Export Database</button>
             <button id="import-db-btn" class="secondary-button" style="padding: 0.6rem 1rem; font-size: 0.85rem; border: 1px solid var(--border-medium); background: transparent; color: var(--text-primary); flex: 1;">Import Database</button>
@@ -41,6 +42,7 @@ export function renderDbManagementSection(area) {
               <button id="retry-sync-btn" class="ghost-button" style="font-size: 0.8rem; color: var(--accent-primary); border-color: var(--accent-soft); flex: 1;">🔄 Restart All</button>
               <button id="clear-sync-logs-btn" class="ghost-button" style="font-size: 0.8rem; color: var(--text-muted); flex: 1;">🗑 Clear Logs</button>
             </div>
+            <button id="delete-all-sync-btn" class="ghost-button" style="font-size: 0.8rem; color: #e74c3c; border-color: rgba(231, 76, 60, 0.3); width: 100%; margin-top: 0.5rem;">⚠️ Delete All Sync Items</button>
             <button id="rebuild-queue-btn" class="ghost-button" style="font-size: 0.8rem; color: #e67e22; border-color: rgba(230, 126, 34, 0.3); width: 100%; margin-top: 0.5rem;">⚙️ Rebuild Sync Queue</button>
           </div>
         </div>
@@ -232,7 +234,7 @@ export function setupDbManagementListeners(user, cooperativeId, container) {
   exportBtn?.addEventListener('click', async () => {
     try {
       exportBtn.disabled = true; exportBtn.innerText = 'Exporting...';
-      const result = await exportDatabase();
+      const result = await exportDatabase(cooperativeId);
       const blob = new Blob([result.buffer], { type: 'application/x-sqlite3' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -271,6 +273,12 @@ export function setupDbManagementListeners(user, cooperativeId, container) {
 
     try {
       modal.style.display = 'flex';
+      statusText.innerText = 'Waiting for sync to finish...';
+      bar.style.width = '5%';
+
+      await waitForSyncIdle(60000);
+      pauseBackgroundSync();
+
       statusText.innerText = 'Reading file...';
       bar.style.width = '10%';
 
@@ -279,16 +287,21 @@ export function setupDbManagementListeners(user, cooperativeId, container) {
       statusText.innerText = 'Merging records...';
 
       const stats = await importDatabase(buffer, cooperativeId);
-      bar.style.width = '70%';
+      bar.style.width = '60%';
 
       const importedCount = Object.values(stats).reduce((a, b) => a + b, 0);
-      statusText.innerText = `Queuing ${importedCount} records for sync...`;
+      statusText.innerText = `Queuing records for sync...`;
 
-      const enqueued = await scanAndEnqueueUnsynced(cooperativeId);
+      const enqueued = await bulkEnqueueUnsynced(cooperativeId);
+      bar.style.width = '80%';
+      statusText.innerText = 'Resuming background sync...';
+
+      resumeBackgroundSync();
       bar.style.width = '100%';
 
-      showToast(`Import successful!\n\nRecords merged:\n${Object.entries(stats).filter(([_, v]) => v > 0).map(([k, v]) => `- ${k}: ${v}`).join('\n')}\n\nTotal records enqueued for sync: ${enqueued}`, 'success');
+      showToast(`Import successful!\n\nRecords merged:\n${Object.entries(stats).filter(([_, v]) => v > 0).map(([k, v]) => `- ${k}: ${v}`).join('\n')}\n\nTotal records enqueued for sync: ${enqueued}\nBackground sync will push changes to cloud automatically.`, 'success');
     } catch (err) {
+      resumeBackgroundSync();
       showToast('Import failed: ' + err.message, 'error');
     } finally {
       modal.style.display = 'none';
@@ -351,6 +364,26 @@ export function setupDbManagementListeners(user, cooperativeId, container) {
     await clearSyncQueueLogs();
     showToast('Sync logs cleared successfully', 'success');
     refreshStatus();
+  });
+
+  const deleteAllBtn = document.getElementById('delete-all-sync-btn');
+  deleteAllBtn?.addEventListener('click', async () => {
+    if (!confirm('This will mark all rows as synced and clear the sync queue. Continue?')) return;
+    try {
+      deleteAllBtn.disabled = true;
+      deleteAllBtn.innerHTML = '⏳ Deleting...';
+      pauseBackgroundSync();
+      await clearAllSyncQueueItems();
+      showToast('Sync queue cleared and all rows marked as synced.', 'success');
+      await refreshStatus();
+    } catch (err) {
+      console.error('[DbManagement] Delete all sync items failed:', err);
+      showToast('Delete failed: ' + err.message, 'error');
+    } finally {
+      resumeBackgroundSync();
+      deleteAllBtn.disabled = false;
+      deleteAllBtn.innerHTML = '⚠️ Delete All Sync Items';
+    }
   });
 
   const forceResyncBtn = document.getElementById('force-resync-btn');

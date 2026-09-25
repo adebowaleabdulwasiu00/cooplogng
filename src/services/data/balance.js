@@ -31,9 +31,20 @@ export async function buildAccountBalance(cooperativeId, user = null, limitRid =
         )
     const entMap = {}
     const entRevenueMap = {}
+    // Dues & penalties count toward member networth even when the enterprise
+    // is also flagged as revenue (collections there are member obligations,
+    // not pure cooperative income). Pure-revenue enterprises stay excluded.
+    const entDuePenaltyMap = {}
+    const _isDuePenalty = (ent) => {
+        if (!ent) return false
+        const due = ent.compulsory_due == 1 || ent.compulsory_due === '1' || ent.compulsory_due === 'true' || ent.compulsory_due === true
+        const pen = ent.is_penalty == 1 || ent.is_penalty === '1' || ent.is_penalty === 'true' || ent.is_penalty === true
+        return !!(due || pen)
+    }
     for (const ent of enterpriseRows) {
         entMap[ent.id] = ent.account_name
         entRevenueMap[ent.id] = (ent.revenue == 1 || ent.revenue === '1' || ent.revenue === 'true' || ent.revenue === true)
+        entDuePenaltyMap[ent.id] = _isDuePenalty(ent)
     }
     const balances = {}
     const isMemberQuery = user && user.memberId && user.memberId !== '0000000000'
@@ -45,7 +56,7 @@ export async function buildAccountBalance(cooperativeId, user = null, limitRid =
         const details = rem.details || []
         for (const d of details) {
             const eid = d.enterprise_id || d.item || ''
-            if (isMemberQuery && entRevenueMap[eid]) continue
+            if (isMemberQuery && entRevenueMap[eid] && !entDuePenaltyMap[eid]) continue
             if (!balances[eid]) balances[eid] = 0
             balances[eid] += parseFloat(d.amount || 0)
         }
@@ -66,9 +77,15 @@ export async function buildMemberLedger(cooperativeId, memberId, user = null, li
     )
     const entMap = {}
     const entRevenueMap = {}
+    // Same due/penalty rule as buildAccountBalance above: dues & penalties
+    // count toward networth even when flagged revenue; pure revenue stays out.
+    const entDuePenaltyMap = {}
     for (const ent of enterpriseRows) {
         entMap[ent.id] = ent.account_name
         entRevenueMap[ent.id] = (ent.revenue == 1 || ent.revenue === '1' || ent.revenue === 'true' || ent.revenue === true)
+        const _due = ent.compulsory_due == 1 || ent.compulsory_due === '1' || ent.compulsory_due === 'true' || ent.compulsory_due === true
+        const _pen = ent.is_penalty == 1 || ent.is_penalty === '1' || ent.is_penalty === 'true' || ent.is_penalty === true
+        entDuePenaltyMap[ent.id] = !!(_due || _pen)
     }
     const memberRemits = remittances.filter(r => r.member_id === memberId && r.status === 'Approved')
     let runningTotal = 0
@@ -79,7 +96,7 @@ export async function buildMemberLedger(cooperativeId, memberId, user = null, li
         const details = rem.details || []
         for (const d of details) {
             const eid = d.enterprise_id || d.item || ''
-            if (entRevenueMap[eid]) continue
+            if (entRevenueMap[eid] && !entDuePenaltyMap[eid]) continue
             const amount = parseFloat(d.amount || 0)
             runningTotal += amount
             ledgerEntries.push({

@@ -71,6 +71,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
+    maximized: true,
     title: 'CoopLog',
     backgroundColor: '#0f172a',
     show: false,
@@ -79,9 +80,6 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      // Pinned on: Occluded/minimized windows must throttle timers instead of
-      // running sync + dashboard refresh loops at full speed (web tabs get
-      // this from the browser automatically; Electron needs it stated).
       backgroundThrottling: true
     }
   });
@@ -104,7 +102,9 @@ function createWindow() {
   const showNow = () => {
     if (shown || !mainWindow || mainWindow.isDestroyed()) return;
     shown = true;
-    mainWindow.maximize();
+    if (!mainWindow.isMaximized()) {
+      mainWindow.maximize();
+    }
     mainWindow.show();
   };
   mainWindow.once('ready-to-show', () => {

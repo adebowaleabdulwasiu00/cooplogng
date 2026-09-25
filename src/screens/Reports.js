@@ -21,6 +21,7 @@ import { queryOne, queryRows } from '../services/sqliteService.js';
 import { escapeHtml, formatNumber, wrapDateInput } from '../utils/formatters.js';
 import { showToast } from '../services/toastService.js';
 import { showWorkspaceSpinner } from '../components/workspaceSpinner.js';
+import { save as persistState, load as loadPersisted } from '../services/statePersistence.js';
 
 export async function renderReports(container, user) {
     showWorkspaceSpinner(container);
@@ -426,8 +427,14 @@ export async function renderReports(container, user) {
     const previewBody = container.querySelector('#preview-body');
     const previewTitle = container.querySelector('#preview-title');
 
-    // Restore State Helper
-    const reportsState = user.reports || {};
+    // Restore State Helper — merge persisted state with defaults
+    const _savedReports = loadPersisted('reports-state') || {};
+    const reportsState = {
+        type: _savedReports.type || user.reports?.type || '',
+        filters: _savedReports.filters || user.reports?.filters || {},
+        selectedFields: _savedReports.selectedFields || user.reports?.selectedFields || ['full_name', 'registration_no', 'mobile', 'sex', 'status'],
+        currentReportData: null, // Don't persist large report data
+    };
     const filters = reportsState.filters || {};
     
     let selectedFieldKeys = reportsState.selectedFields || ['full_name', 'registration_no', 'mobile', 'sex', 'status'];
@@ -576,24 +583,26 @@ export async function renderReports(container, user) {
     }
 
     const updateGlobalState = () => {
+        const reportConfig = {
+            type: reportTypeSelect.value,
+            filters: {
+                dateFrom: container.querySelector('#date-from').value,
+                dateTo: container.querySelector('#date-to').value,
+                bank: container.querySelector('#bank-filter').value,
+                enterprise: container.querySelector('#ent-filter').value,
+                fiscalYear: container.querySelector('#fy-filter').value,
+                scheduleMonth: container.querySelector('#schedule-month').value,
+                scheduleYear: container.querySelector('#schedule-year').value,
+                scheduleType: container.querySelector('#schedule-type').value,
+                memberStatus: container.querySelector('#member-status').value
+            },
+            selectedFields: selectedFieldKeys,
+        };
         if (user.onReportsStateChange) {
-            user.onReportsStateChange({
-                type: reportTypeSelect.value,
-                filters: {
-                    dateFrom: container.querySelector('#date-from').value,
-                    dateTo: container.querySelector('#date-to').value,
-                    bank: container.querySelector('#bank-filter').value,
-                    enterprise: container.querySelector('#ent-filter').value,
-                    fiscalYear: container.querySelector('#fy-filter').value,
-                    scheduleMonth: container.querySelector('#schedule-month').value,
-                    scheduleYear: container.querySelector('#schedule-year').value,
-                    scheduleType: container.querySelector('#schedule-type').value,
-                    memberStatus: container.querySelector('#member-status').value
-                },
-                selectedFields: selectedFieldKeys,
-                currentReportData
-            });
+            user.onReportsStateChange({ ...reportConfig, currentReportData });
         }
+        // Persist report config (but not the large data) so refresh restores choices
+        persistState('reports-state', reportConfig);
     };
 
     // Populate Banks

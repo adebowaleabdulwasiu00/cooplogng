@@ -3,11 +3,36 @@ import { showToast } from '../../services/toastService.js';
 import { showLoanConfigModal } from './remittanceLoanConfig.js';
 import { showSimpleReviewModal, showLoanReviewModal } from './remittanceModal.js';
 import { showWithdrawalWizard } from '../../components/WithdrawalWizard.js';
+import { isMobile } from './constants.js';
+import { save as persistState, load as loadPersisted } from '../../services/statePersistence.js';
 
 export function attachEventListeners(container, deps) {
-    const { formData, enterpriseData, members, selectorMembers, openingBalances, paymentAdvise, showAllZeros, previewMode, historyState, panelSizes, user, isAdmin, isActualAdmin, cooperativeId, PANEL_SIZE_KEY, isMember, render, syncFormData, checkDirty, saveSavedForm, clearSavedForm, clearForm, loadHistoryData, handleMemberChange, handleSubmit, updateHistoryTable, updateDeleteSelectedButton, loadRemittanceToForm, attachImagePreview, trackFocus, isFormValid, restoreFocus } = deps;
+    const { formData, enterpriseData, members, selectorMembers, openingBalances, paymentAdvise, showAllZeros, previewMode, editMode, historyState, panelSizes, user, isAdmin, isActualAdmin, cooperativeId, PANEL_SIZE_KEY, isMember, render, syncFormData, checkDirty, saveSavedForm, clearSavedForm, clearForm, loadHistoryData, handleMemberChange, handleSubmit, updateHistoryTable, updateDeleteSelectedButton, loadRemittanceToForm, attachImagePreview, trackFocus, isFormValid, restoreFocus } = deps;
+    const mobile = isMobile();
+
+    // --- Mobile Tab Switching (always bind; CSS hides tabs on desktop) ---
+    const tabBtns = container.querySelectorAll('.mobile-tab-btn');
+    const unifiedContainer = container.querySelector('.unified-container');
+    if (tabBtns.length && unifiedContainer) {
+      // Restore persisted active tab
+      const savedTabVal = loadPersisted('remit-tab');
+      if (savedTabVal) {
+        unifiedContainer.setAttribute('data-mobile-tab', savedTabVal);
+        tabBtns.forEach(b => b.classList.toggle('active', b.dataset.tab === savedTabVal));
+      }
+      tabBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+          const tab = btn.dataset.tab;
+          unifiedContainer.setAttribute('data-mobile-tab', tab);
+          tabBtns.forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          persistState('remit-tab', tab);
+        });
+      });
+    }
+
     const topSection = document.getElementById('top-section');
-    if (topSection) {
+    if (topSection && !mobile) {
       if (panelSizes.topSectionHeight) {
         topSection.style.height = `${panelSizes.topSectionHeight}px`;
       } else {
@@ -45,7 +70,7 @@ export function attachEventListeners(container, deps) {
         saveSavedForm(formData);
         const nowValid = isFormValid();
         if (wasValid !== nowValid) {
-          const submitBtn = document.getElementById('submit-log-btn');
+          const submitBtn = document.getElementById('submit-log-btn') || document.getElementById('update-log-btn');
           if (submitBtn) {
             submitBtn.disabled = !nowValid;
           }
@@ -281,9 +306,16 @@ export function attachEventListeners(container, deps) {
         clearForm();
       });
       container.querySelector('#submit-log-btn')?.addEventListener('click', handleSubmit);
+      container.querySelector('#update-log-btn')?.addEventListener('click', handleSubmit);
       container.querySelector('#bulk-log-btn')?.addEventListener('click', async () => {
-        const { showBulkRemittanceModal } = await import('./remittanceBulk.js');
-        showBulkRemittanceModal(deps);
+        // Static import via deps (bundled upfront, works offline). Fallback to
+        // dynamic import only on very old cached shells.
+        if (typeof deps.showBulkRemittanceModal === 'function') {
+          deps.showBulkRemittanceModal(deps);
+        } else {
+          const { showBulkRemittanceModal } = await import('./remittanceBulk.js');
+          showBulkRemittanceModal(deps);
+        }
       });
       container.querySelector('#review-log-btn')?.addEventListener('click', async () => {
         const firstLoanDetail = formData.details.find(d => d.loan_info);
@@ -313,59 +345,91 @@ export function attachEventListeners(container, deps) {
         updateHistoryTable();
         updateDeleteSelectedButton();
         await loadRemittanceToForm(remit);
+        // Auto-open review modal for pending loan requests
+        if (formData.isLoanRequest && formData.status === 'Pending' && deps.canApprove) {
+          showLoanReviewModal(formData, enterpriseData, historyState, clearSavedForm, clearForm, loadHistoryData, render, deps);
+          return;
+        }
         row.scrollIntoView({ block: 'nearest' });
       };
 
       tbody.addEventListener('click', async (e) => {
         try {
-          // Ignore clicks on checkboxes and buttons so they don't trigger row selection logic
-          if (e.target.closest('input[type="checkbox"]') || e.target.closest('button')) {
+          // Ignore clicks on checkboxes, buttons, and expand toggles
+          if (e.target.closest('input[type="checkbox"]') || e.target.closest('button') || e.target.closest('.expand-toggle')) {
             return;
           }
           const row = e.target.closest('tr[data-id]');
-          if (row) {
-            const id = row.dataset.id;
-            const idx = parseInt(row.dataset.rowIndex, 10);
-            console.log('[RowClick] id:', id, 'idx:', idx, 'total remits:', historyState.allRemittances.length);
-            const remit = idx >= 0 && idx < historyState.allRemittances.length ? historyState.allRemittances[idx] : null;
-            if (remit) {
-              if (e.ctrlKey || e.metaKey) {
-                if (historyState.selectedRemittanceIds.has(id)) {
-                  historyState.selectedRemittanceIds.delete(id);
-                } else {
-                  historyState.selectedRemittanceIds.add(id);
+          if (!row) return;
+
+          const id = row.dataset.id;
+          const isChildRow = row.classList.contains('child-row');
+
+          // --- Child row click: load child as read-only preview ---
+          if (isChildRow) {
+            const parentId = row.dataset.parentId;
+            let childRemit = null;
+            if (parentId) {
+              const parent = historyState.allRemittances.find(r => String(r.id) === String(parentId));
+              if (parent && parent.children) {
+                childRemit = parent.children.find(c => String(c.id) === String(id));
+              }
+            }
+            if (!childRemit) {
+              for (const parent of historyState.allRemittances) {
+                if (parent.children) {
+                  childRemit = parent.children.find(c => String(c.id) === String(id));
+                  if (childRemit) break;
                 }
-                updateHistoryTable();
-                updateDeleteSelectedButton();
-              } else if (e.shiftKey && historyState.selectedRemittanceId) {
-                const anchorIdx = historyState.allRemittances.findIndex(r => r.id === historyState.selectedRemittanceId);
-                if (anchorIdx === -1) {
-                  historyState.selectedRemittanceId = id;
-                  historyState.selectedRemittanceIds.clear();
-                  historyState.selectedRemittanceIds.add(id);
-                } else {
-                  const minIdx = Math.min(anchorIdx, idx);
-                  const maxIdx = Math.max(anchorIdx, idx);
-                  historyState.selectedRemittanceIds.clear();
-                  for (let i = minIdx; i <= maxIdx; i++) {
-                    historyState.selectedRemittanceIds.add(historyState.allRemittances[i].id);
-                  }
-                }
-                updateHistoryTable();
-                updateDeleteSelectedButton();
-                await loadRemittanceToForm(remit);
+              }
+            }
+            if (childRemit) {
+              historyState.selectedRemittanceId = id;
+              historyState.selectedRemittanceIds.clear();
+              historyState.selectedRemittanceIds.add(id);
+              updateHistoryTable();
+              updateDeleteSelectedButton();
+              await loadRemittanceToForm(childRemit);
+            }
+            return;
+          }
+
+          // --- Parent row click ---
+          const idx = parseInt(row.dataset.rowIndex, 10);
+          const remit = idx >= 0 && idx < historyState.allRemittances.length ? historyState.allRemittances[idx] : null;
+          if (remit) {
+            if (e.ctrlKey || e.metaKey) {
+              if (historyState.selectedRemittanceIds.has(id)) {
+                historyState.selectedRemittanceIds.delete(id);
               } else {
+                historyState.selectedRemittanceIds.add(id);
+              }
+              updateHistoryTable();
+              updateDeleteSelectedButton();
+            } else if (e.shiftKey && historyState.selectedRemittanceId) {
+              const anchorIdx = historyState.allRemittances.findIndex(r => r.id === historyState.selectedRemittanceId);
+              if (anchorIdx === -1) {
                 historyState.selectedRemittanceId = id;
                 historyState.selectedRemittanceIds.clear();
                 historyState.selectedRemittanceIds.add(id);
-                updateHistoryTable();
-                updateDeleteSelectedButton();
-                console.log('[RowClick] Calling loadRemittanceToForm for remit id:', remit.id, 'details count:', remit.details?.length);
-                await loadRemittanceToForm(remit);
-                console.log('[RowClick] loadRemittanceToForm completed');
+              } else {
+                const minIdx = Math.min(anchorIdx, idx);
+                const maxIdx = Math.max(anchorIdx, idx);
+                historyState.selectedRemittanceIds.clear();
+                for (let i = minIdx; i <= maxIdx; i++) {
+                  historyState.selectedRemittanceIds.add(historyState.allRemittances[i].id);
+                }
               }
+              updateHistoryTable();
+              updateDeleteSelectedButton();
+              await loadRemittanceToForm(remit);
             } else {
-              console.warn('[RowClick] No remittance found at idx:', idx);
+              historyState.selectedRemittanceId = id;
+              historyState.selectedRemittanceIds.clear();
+              historyState.selectedRemittanceIds.add(id);
+              updateHistoryTable();
+              updateDeleteSelectedButton();
+              await loadRemittanceToForm(remit);
             }
           }
         } catch (err) {
@@ -419,8 +483,8 @@ export function attachEventListeners(container, deps) {
                   ${escapeHtml(e.account_name || e.id)}
                 </span>
                 ${isLoan ? `
-                  <button type="button" class="config-loan-btn ${hasLoanInfo ? 'configured' : ''}" data-entid="${e.id}" data-readonly="${previewMode}">
-                    ${hasLoanInfo ? 'View Details' : previewMode ? 'View Details' : 'Configure'}
+                  <button type="button" class="config-loan-btn ${hasLoanInfo ? 'configured' : ''}" data-entid="${e.id}" data-readonly="${previewMode && !editMode}">
+                    ${hasLoanInfo ? 'View Details' : (previewMode && !editMode) ? 'View Details' : 'Configure'}
                   </button>
                 ` : ''}
               </div>
@@ -432,7 +496,7 @@ export function attachEventListeners(container, deps) {
               ${advise === 0 ? '-' : advise.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2})}
             </td>
             <td style="padding: 0.2rem;">
-              <input type="number" step="0.01" class="detail-amt-grid clear-on-zero" data-opening="${opening}" value="${inputAmt}" data-row-index="${idx}" ${previewMode || e.compulsory_due ? 'disabled' : ''} ${!previewMode && e.compulsory_due ? 'title="Compulsory due — charged separately on save"' : ''}>
+              <input type="number" step="0.01" class="detail-amt-grid clear-on-zero" data-opening="${opening}" value="${inputAmt}" data-row-index="${idx}" ${(previewMode && !editMode) || e.compulsory_due ? 'disabled' : ''} ${!(previewMode && !editMode) && e.compulsory_due ? 'title="Compulsory due — charged separately on save"' : ''}>
             </td>
             <td class="row-closing-bal" style="padding: 0.4rem 0.6rem; font-weight: 600; color: ${closing < 0 ? 'var(--danger)' : 'inherit'}">
               ${closing === 0 ? '-' : closing.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2})}
@@ -698,74 +762,77 @@ export function attachEventListeners(container, deps) {
       }
     };
     document.addEventListener('keydown', window._remitHistKeys);
-    const resizerV = document.getElementById('resizer-v');
-    if (resizerV) {
-      let isResizing = false;
-      let startX = 0;
-      let startWidth = 0;
-      resizerV.addEventListener('mousedown', (e) => {
-        isResizing = true;
-        startX = e.clientX;
-        const breakdownPanel = document.getElementById('breakdown-panel');
-        if (breakdownPanel) {
-          startWidth = breakdownPanel.offsetWidth;
-        }
-        document.addEventListener('mousemove', onMouseMove);
-        document.addEventListener('mouseup', onMouseUp);
-      });
-      const onMouseMove = (e) => {
-        if (!isResizing) return;
-        const containerRect = container.getBoundingClientRect();
-        const delta = startX - e.clientX;
-        const newWidth = startWidth + delta;
-        const minWidth = 300;
-        const maxWidth = containerRect.width - 400;
-        const breakdownPanel = document.getElementById('breakdown-panel');
-        if (breakdownPanel && newWidth >= minWidth && newWidth <= maxWidth) {
-          breakdownPanel.style.flex = `0 0 ${newWidth}px`;
-          panelSizes.breakdownWidth = newWidth;
-        }
-      };
-      const onMouseUp = () => {
-        isResizing = false;
-        localStorage.setItem(PANEL_SIZE_KEY, JSON.stringify(panelSizes));
-        document.removeEventListener('mousemove', onMouseMove);
-        document.removeEventListener('mouseup', onMouseUp);
-      };
-    }
-    const resizerH = document.getElementById('resizer-h');
-    if (resizerH) {
-      let isResizing = false;
-      let startY = 0;
-      let startTopHeight = 0;
-      resizerH.addEventListener('mousedown', (e) => {
-        isResizing = true;
-        startY = e.clientY;
-        const topSection = document.getElementById('top-section');
-        if (topSection) {
-          startTopHeight = topSection.offsetHeight;
-        }
-        document.addEventListener('mousemove', onMouseMove);
-        document.addEventListener('mouseup', onMouseUp);
-      });
-      const onMouseMove = (e) => {
-        if (!isResizing) return;
-        const topSection = document.getElementById('top-section');
-        if (topSection) {
-          const newHeight = startTopHeight + (e.clientY - startY);
-          const minHeight = 400;
-          const maxHeight = window.innerHeight - 400;
-          if (newHeight >= minHeight && newHeight <= maxHeight) {
-            topSection.style.height = `${newHeight}px`;
-            panelSizes.topSectionHeight = newHeight;
+    // --- Resizers: desktop only ---
+    if (!mobile) {
+      const resizerV = document.getElementById('resizer-v');
+      if (resizerV) {
+        let isResizing = false;
+        let startX = 0;
+        let startWidth = 0;
+        resizerV.addEventListener('mousedown', (e) => {
+          isResizing = true;
+          startX = e.clientX;
+          const breakdownPanel = document.getElementById('breakdown-panel');
+          if (breakdownPanel) {
+            startWidth = breakdownPanel.offsetWidth;
           }
-        }
-      };
-      const onMouseUp = () => {
-        isResizing = false;
-        localStorage.setItem(PANEL_SIZE_KEY, JSON.stringify(panelSizes));
-        document.removeEventListener('mousemove', onMouseMove);
-        document.removeEventListener('mouseup', onMouseUp);
-      };
-    }
+          document.addEventListener('mousemove', onMouseMove);
+          document.addEventListener('mouseup', onMouseUp);
+        });
+        const onMouseMove = (e) => {
+          if (!isResizing) return;
+          const containerRect = container.getBoundingClientRect();
+          const delta = startX - e.clientX;
+          const newWidth = startWidth + delta;
+          const minWidth = 300;
+          const maxWidth = containerRect.width - 400;
+          const breakdownPanel = document.getElementById('breakdown-panel');
+          if (breakdownPanel && newWidth >= minWidth && newWidth <= maxWidth) {
+            breakdownPanel.style.flex = `0 0 ${newWidth}px`;
+            panelSizes.breakdownWidth = newWidth;
+          }
+        };
+        const onMouseUp = () => {
+          isResizing = false;
+          localStorage.setItem(PANEL_SIZE_KEY, JSON.stringify(panelSizes));
+          document.removeEventListener('mousemove', onMouseMove);
+          document.removeEventListener('mouseup', onMouseUp);
+        };
+      }
+      const resizerH = document.getElementById('resizer-h');
+      if (resizerH) {
+        let isResizing = false;
+        let startY = 0;
+        let startTopHeight = 0;
+        resizerH.addEventListener('mousedown', (e) => {
+          isResizing = true;
+          startY = e.clientY;
+          const topSection = document.getElementById('top-section');
+          if (topSection) {
+            startTopHeight = topSection.offsetHeight;
+          }
+          document.addEventListener('mousemove', onMouseMove);
+          document.addEventListener('mouseup', onMouseUp);
+        });
+        const onMouseMove = (e) => {
+          if (!isResizing) return;
+          const topSection = document.getElementById('top-section');
+          if (topSection) {
+            const newHeight = startTopHeight + (e.clientY - startY);
+            const minHeight = 400;
+            const maxHeight = window.innerHeight - 400;
+            if (newHeight >= minHeight && newHeight <= maxHeight) {
+              topSection.style.height = `${newHeight}px`;
+              panelSizes.topSectionHeight = newHeight;
+            }
+          }
+        };
+        const onMouseUp = () => {
+          isResizing = false;
+          localStorage.setItem(PANEL_SIZE_KEY, JSON.stringify(panelSizes));
+          document.removeEventListener('mousemove', onMouseMove);
+          document.removeEventListener('mouseup', onMouseUp);
+        };
+      }
+    } // end if (!mobile)
 }

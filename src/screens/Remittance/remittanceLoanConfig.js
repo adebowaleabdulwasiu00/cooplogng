@@ -1,17 +1,11 @@
 import { generateId, formatDateForInput, escapeHtml, formatDate, formatCurrency } from '../../utils/formatters.js';
 import { fetchGuarantorStats } from '../../services/dataService.js';
-import { showModalDialog } from './constants.js';
 import { showToast } from '../../services/toastService.js';
 
 // --- Show Loan Config Modal ---
 export function showLoanConfigModal(enterpriseId, isReadOnly = false, deps) {
     const { formData, enterpriseData, members, selectorMembers, isMember, user, historyState, loadHistoryData, clearForm, clearSavedForm, render } = deps;
-    // Non-pending remittances are always read-only
-    const nonPendingStatuses = ['Approved', 'Declined', 'Cancelled', 'Rejected', 'Completed'];
-    if (nonPendingStatuses.includes(formData.status)) {
-      isReadOnly = true;
-    }
-    const isDraft = !formData.id || formData.id === null;
+
     const existingModal = document.getElementById('loan-config-modal');
     if (existingModal) existingModal.remove();
     const loanId = formData.id || 'NEW';
@@ -88,7 +82,7 @@ export function showLoanConfigModal(enterpriseId, isReadOnly = false, deps) {
     const renderModal = () => {
       const modalContainer = document.getElementById('loan-config-modal');
       if (!modalContainer) return;
-      const principalDisabled = 'disabled';
+      const principalDisabled = isReadOnly ? 'disabled' : '';
       const dueDateReadonly = 'disabled';
       const dueDateBg = 'var(--bg-main)';
       const durationDisabled = isReadOnly ? 'disabled' : '';
@@ -120,32 +114,32 @@ export function showLoanConfigModal(enterpriseId, isReadOnly = false, deps) {
             </div>
             <div class="modal-tab-content ${tabDetailsActiveClass}" id="tab-content-details" style="display: ${detailsDisplay};">
               <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem;">
-                <div class="field" style="display: flex; flex-direction: column; gap: 0.35rem;">
-                  <label style="font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em;">Principal Amount (₦)</label>
-                  <input type="number" id="loan-principal" value="${modalState.loanData.principalAmount || 0}" step="0.01" ${principalDisabled} style="padding: 0.65rem 0.85rem; border-radius: var(--radius-sm); border: 1px solid var(--border-medium); background: var(--bg-input); color: var(--text-primary); font-size: 0.9rem;">
+                <div class="field">
+                  <label>Principal Amount (₦)</label>
+                  <input type="number" id="loan-principal" value="${modalState.loanData.principalAmount || 0}" step="0.01" ${principalDisabled}>
                 </div>
-                <div class="field" style="display: flex; flex-direction: column; gap: 0.35rem;">
-                  <label style="font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em;">Status</label>
-                  <input type="text" id="loan-status" value="${statusValue}" readonly style="padding: 0.65rem 0.85rem; border-radius: var(--radius-sm); border: 1px solid var(--border-medium); background: var(--bg-main); font-weight: 600; color: var(--accent-primary);">
+                <div class="field">
+                  <label>Status</label>
+                  <input type="text" id="loan-status" value="${statusValue}" readonly style="background: var(--bg-main); font-weight: 600; color: var(--accent-primary);">
                 </div>
-                <div class="field" style="display: flex; flex-direction: column; gap: 0.35rem;">
-                  <label style="font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em;">Issue Date</label>
-                  <input type="text" id="loan-issue-date-display" value="${formatDate(modalState.loanData.issueDate || formData.remittance_date)}" disabled style="padding: 0.65rem 0.85rem; border-radius: var(--radius-sm); border: 1px solid var(--border-medium); background: var(--bg-main);">
+                <div class="field">
+                  <label>Issue Date</label>
+                  <input type="text" id="loan-issue-date-display" value="${formatDate(modalState.loanData.issueDate || formData.remittance_date)}" disabled style="background: var(--bg-main);">
                   <input type="hidden" id="loan-issue-date" value="${formatDateForInput(modalState.loanData.issueDate || formData.remittance_date)}">
                 </div>
-                <div class="field" style="display: flex; flex-direction: column; gap: 0.35rem;">
-                  <label style="font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em;">Due Date</label>
-                  <input type="text" id="loan-due-date-display" value="${modalState.loanData.dueDate ? formatDate(modalState.loanData.dueDate) : ''}" disabled style="padding: 0.65rem 0.85rem; border-radius: var(--radius-sm); border: 1px solid var(--border-medium); background: ${dueDateBg}; color: var(--text-primary); font-size: 0.9rem;">
+                <div class="field">
+                  <label>Due Date</label>
+                  <input type="text" id="loan-due-date-display" value="${modalState.loanData.dueDate ? formatDate(modalState.loanData.dueDate) : ''}" disabled style="background: ${dueDateBg};">
                   <input type="hidden" id="loan-due-date" value="${formatDateForInput(modalState.loanData.dueDate)}">
                 </div>
-                <div class="field" style="display: flex; flex-direction: column; gap: 0.35rem;">
-                  <label style="font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em;">Duration (Months)</label>
-                  <input type="number" id="loan-duration" value="${modalState.loanData.durationMonths || 0}" min="0" ${durationDisabled} style="padding: 0.65rem 0.85rem; border-radius: var(--radius-sm); border: 1px solid var(--border-medium); background: var(--bg-input); color: var(--text-primary); font-size: 0.9rem;">
+                <div class="field">
+                  <label>Duration (Months)</label>
+                  <input type="number" id="loan-duration" value="${modalState.loanData.durationMonths || 0}" min="0" ${durationDisabled}>
                 </div>
               </div>
-              <div class="field" style="display: flex; flex-direction: column; gap: 0.35rem; margin-top: 0.5rem;">
-                <label style="font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em;">Notes / Description</label>
-                <textarea id="loan-notes" rows="2" style="width: 100%; min-height: 80px; padding: 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--border-medium); background: var(--bg-input); color: var(--text-primary); font-family: inherit; resize: vertical;" placeholder="Additional details about this loan..." ${notesDisabled}>${escapeHtml(modalState.loanData.notes || '')}</textarea>
+              <div class="field" style="margin-top: 0.5rem;">
+                <label>Notes / Description</label>
+                <textarea id="loan-notes" rows="2" style="resize: vertical;" placeholder="Additional details about this loan..." ${notesDisabled}>${escapeHtml(modalState.loanData.notes || '')}</textarea>
               </div>
             </div>
             <div class="modal-tab-content ${tabGuarantorsActiveClass}" id="tab-content-guarantors" style="display: ${guarantorsDisplay}; padding-bottom: 1rem;">
@@ -172,7 +166,7 @@ export function showLoanConfigModal(enterpriseId, isReadOnly = false, deps) {
                         <div style="display: flex; align-items: center; gap: 0.5rem; flex: 1;">
                           <div style="position: relative; flex: 1;">
                             <input type="text" class="guarantor-search" placeholder="Search guarantor name..." value="${escapeHtml(gMember?.name || '')}" style="width: 100%; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-medium); border-radius: var(--radius-sm); padding: 0.5rem;" ${isReadOnly ? 'disabled' : ''}>
-                            <div class="guarantor-suggestions" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: var(--bg-card); border: 1px solid var(--border-medium); border-radius: 0.5rem; box-shadow: var(--shadow-lg); z-index: 100; max-height: 200px; overflow-y: auto; margin-top: 0.25rem;"></div>
+                            <div class="guarantor-suggestions" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: var(--bg-card); border: 1px solid var(--border-medium); border-radius: 0.5rem; box-shadow: var(--shadow-lg); z-index: 999999; max-height: 200px; overflow-y: auto; margin-top: 0.25rem;"></div>
                             <input type="hidden" class="guarantor-id" value="${g.member_id}">
                           </div>
                           <input type="number" class="guarantor-amt" value="${g.amount || 0}" placeholder="Amount" style="width: 100px; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-medium); border-radius: var(--radius-sm); padding: 0.5rem;" ${isReadOnly ? 'disabled' : ''}>
@@ -216,20 +210,20 @@ export function showLoanConfigModal(enterpriseId, isReadOnly = false, deps) {
               <div id="charges-list" style="display: flex; flex-direction: column; gap: 0.5rem;">
                 ${modalState.charges.map((c, ci) => `
                   <div class="charge-row" data-index="${ci}" data-id="${c.id || generateId()}" style="display: grid; grid-template-columns: 2fr 1fr 1.5fr auto; gap: 0.75rem; align-items: end; background: var(--bg-main); padding: 0.75rem; border-radius: 0.5rem; border: 1px solid var(--border-medium);">
-                    <div class="field" style="display: flex; flex-direction: column; gap: 0.2rem;">
-                      <label style="font-size: 0.65rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Charge Name</label>
-                      <input type="text" class="charge-name" value="${escapeHtml(c.name || '')}" placeholder="e.g. Interest" style="width: 100%; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-medium); border-radius: var(--radius-sm); padding: 0.5rem;" ${isReadOnly ? 'disabled' : ''}>
+                    <div class="field">
+                      <label>Charge Name</label>
+                      <input type="text" class="charge-name" value="${escapeHtml(c.name || '')}" placeholder="e.g. Interest" ${isReadOnly ? 'disabled' : ''}>
                     </div>
-                    <div class="field" style="display: flex; flex-direction: column; gap: 0.2rem;">
-                      <label style="font-size: 0.65rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Type</label>
-                      <select class="charge-type" style="width: 100%; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-medium); border-radius: var(--radius-sm); padding: 0.5rem;" ${isReadOnly ? 'disabled' : ''}>
+                    <div class="field">
+                      <label>Type</label>
+                      <select class="charge-type" ${isReadOnly ? 'disabled' : ''}>
                         <option value="percentage" ${c.type === 'percentage' ? 'selected' : ''}>%</option>
                         <option value="fixed" ${c.type === 'fixed' ? 'selected' : ''}>Fixed (₦)</option>
                       </select>
                     </div>
-                    <div class="field" style="display: flex; flex-direction: column; gap: 0.2rem;">
-                      <label style="font-size: 0.65rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Value</label>
-                      <input type="number" class="charge-value" value="${c.value || 0}" step="0.01" min="0" style="width: 100%; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-medium); border-radius: var(--radius-sm); padding: 0.5rem;" ${isReadOnly ? 'disabled' : ''}>
+                    <div class="field">
+                      <label>Value</label>
+                      <input type="number" class="charge-value" value="${c.value || 0}" step="0.01" min="0" ${isReadOnly ? 'disabled' : ''}>
                     </div>
                     ${!isReadOnly ? `<button type="button" class="remove-charge-btn" data-index="${ci}" style="padding: 0.4rem; border-radius: 0.5rem; border: none; background: transparent; color: var(--danger); font-size: 1.2rem; font-weight: 800; line-height: 1; cursor: pointer; margin-bottom: 0.1rem;" title="Remove Charge">&times;</button>` : '<div style="width:24px;"></div>'}
                   </div>
@@ -250,15 +244,8 @@ export function showLoanConfigModal(enterpriseId, isReadOnly = false, deps) {
             </div>
           </div>
           <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 0.75rem; padding: 1rem; border-top: 1px solid var(--border-light);">
-            ${isDraft ? `
-            <button type="button" class="primary-button" id="modal-ok-btn" style="background: var(--accent-primary); color: white; border: none; padding: 0.6rem 2rem; border-radius: 0.5rem; font-weight: 700; cursor: pointer;">OK</button>
-            ` : `
             <button type="button" class="secondary-button" id="modal-close-btn" style="background: transparent; border: 1px solid var(--border-medium); color: var(--text-primary); padding: 0.6rem 1.2rem; border-radius: 0.5rem; font-weight: 700; cursor: pointer;">Close</button>
-            ${!isReadOnly ? `
-            <button type="button" class="secondary-button" id="modal-decline-btn" style="background: var(--danger); border: 1px solid var(--danger); color: white; padding: 0.6rem 1.2rem; border-radius: 0.5rem; font-weight: 700; cursor: pointer;">Decline</button>
-            <button type="button" class="primary-button" id="modal-approve-btn" style="background: var(--accent-primary); color: white; border: none; padding: 0.6rem 1.2rem; border-radius: 0.5rem; font-weight: 700; cursor: pointer;">Approve</button>
-            ` : ''}
-            `}
+            <button type="button" class="primary-button" id="modal-ok-btn" style="background: var(--accent-primary); color: white; border: none; padding: 0.6rem 2rem; border-radius: 0.5rem; font-weight: 700; cursor: pointer;">OK</button>
           </div>
         </div>
       `;
@@ -353,6 +340,7 @@ export function showLoanConfigModal(enterpriseId, isReadOnly = false, deps) {
         });
         document.getElementById('loan-principal')?.addEventListener('change', (e) => {
           modalState.loanData.principalAmount = parseFloat(e.target.value || 0);
+          renderModal();
         });
         document.getElementById('loan-notes')?.addEventListener('change', (e) => {
           modalState.loanData.notes = e.target.value;
@@ -412,7 +400,7 @@ export function showLoanConfigModal(enterpriseId, isReadOnly = false, deps) {
                     statsDiv.querySelector('.g-active-count').innerText = 'Loading...';
                     fetchGuarantorStats(mid, user.cooperativeId).then(stats => {
                       statsDiv.querySelector('.g-active-count').innerText = `Active: ${stats.activeCount}`;
-                      statsDiv.querySelector('.g-active-sum').innerText = `Total: ₦${stats.activeSum.toLocaleString()}`;
+                      statsDiv.querySelector('.g-active-sum').innerText = `Total: ${formatCurrency(stats.activeSum)}`;
                       const odSpan = statsDiv.querySelector('.g-overdue-count');
                       odSpan.innerText = `Overdue: ${stats.overdueCount}`;
                       if (stats.overdueCount > 0) odSpan.style.color = 'var(--danger)';
@@ -464,6 +452,7 @@ export function showLoanConfigModal(enterpriseId, isReadOnly = false, deps) {
           if (amtInput) {
             amtInput.addEventListener('change', () => {
               modalState.guarantors[idx].amount = parseFloat(amtInput.value || 0);
+              renderModal();
             });
           }
           
@@ -499,7 +488,7 @@ export function showLoanConfigModal(enterpriseId, isReadOnly = false, deps) {
           if (statsDiv) {
             fetchGuarantorStats(mid, user.cooperativeId).then(stats => {
               statsDiv.querySelector('.g-active-count').innerText = `Active: ${stats.activeCount}`;
-              statsDiv.querySelector('.g-active-sum').innerText = `Total: ₦${stats.activeSum.toLocaleString()}`;
+              statsDiv.querySelector('.g-active-sum').innerText = `Total: ${formatCurrency(stats.activeSum)}`;
               const odSpan = statsDiv.querySelector('.g-overdue-count');
               odSpan.innerText = `Overdue: ${stats.overdueCount}`;
               if (stats.overdueCount > 0) odSpan.style.color = 'var(--danger)';
@@ -546,151 +535,10 @@ export function showLoanConfigModal(enterpriseId, isReadOnly = false, deps) {
         document.getElementById('loan-config-modal').remove();
       });
 
-      // OK button (draft mode only - saves charges to formData in memory, no DB writes)
+      // OK button - saves charges to formData in memory, no DB writes
       document.getElementById('modal-ok-btn')?.addEventListener('click', () => {
         saveCharges();
         document.getElementById('loan-config-modal').remove();
-      });
-
-      // Decline button
-      document.getElementById('modal-decline-btn')?.addEventListener('click', async () => {
-        if (!formData.id) { showToast('Cannot decline a draft remittance.', 'error'); return; }
-        const reason = prompt('Enter decline reason (optional):');
-        if (reason === null) return;
-        if (!confirm('Are you sure you want to decline this remittance?')) return;
-
-        // First: SAVE the updated charges to the remittance record!
-        try {
-          const { saveDoc, getDocById_Global } = await import('../../services/sqliteService.js');
-          saveCharges();
-          // Fetch current remittance
-          let remData = await getDocById_Global('remittance', formData.id);
-          if (!remData) throw new Error("Remittance not found locally.");
-          // Update the details in remData with the formData.details (which includes the new charges!)
-          remData.details = formData.details;
-          // Save the updated remittance
-          await saveDoc('remittance', remData);
-        } catch (saveErr) {
-          console.error('Error saving updated charges before decline:', saveErr);
-          showToast('Error saving updated charges: ' + saveErr.message, 'error');
-          return;
-        }
-
-        // Now call declineRemittance!
-        try {
-          const { declineRemittance } = await import('../../services/dataService.js');
-          await declineRemittance(formData.id, user.username, reason.trim());
-          showToast('Remittance declined successfully!', 'success');
-          document.getElementById('loan-config-modal').remove();
-          clearSavedForm();
-          await loadHistoryData(true);
-          await clearForm();
-          render();
-        } catch (err) {
-          console.error(err);
-          showToast('Error declining remittance: ' + err.message, 'error');
-        }
-      });
-
-      // Approve button
-      document.getElementById('modal-approve-btn')?.addEventListener('click', async () => {
-        if (!formData.id) { showToast('Cannot approve a draft remittance.', 'error'); return; }
-        console.log('=== APPROVE BUTTON CLICKED ===');
-        // Check guarantor conditions first
-        const remit = historyState.allRemittances.find(r => r.id === formData.id);
-        console.log('Found remit:', remit);
-        let pendingGuarantors = [];
-        let declinedGuarantors = [];
-
-        if (remit?.loans && remit.loans.length > 0) {
-          for (const loan of remit.loans) {
-            console.log('Checking loan:', loan);
-            if (loan.guarantors) {
-              for (const guarantor of loan.guarantors) {
-                const gMember = historyState.membersMap[guarantor.member_id];
-                const gName = gMember?.name || gMember?.first_name || 'Unknown';
-                console.log('Guarantor:', gName, 'approval:', guarantor.guarantor_approval);
-                if (guarantor.guarantor_approval === null || guarantor.guarantor_approval === 2) {
-                  pendingGuarantors.push(gName);
-                } else if (guarantor.guarantor_approval === 0) {
-                  declinedGuarantors.push(gName);
-                }
-              }
-            }
-          }
-        }
-        console.log('Pending guarantors:', pendingGuarantors, 'Declined:', declinedGuarantors);
-
-        if (declinedGuarantors.length > 0) {
-          console.log('Declined guarantors found, showing error');
-          showModalDialog(
-            'Cannot Approve',
-            'This loan cannot be approved because one or more guarantors declined the request.',
-            [{ text: 'OK' }]
-          );
-          return;
-        }
-
-        if (pendingGuarantors.length > 0) {
-          console.log('Pending guarantors found, showing error');
-          showModalDialog(
-            'Cannot Approve',
-            [
-              'The following guarantors have not yet approved this loan request:',
-              ...pendingGuarantors.map(g => `• ${g}`),
-              '',
-              'The loan cannot be approved until all guarantors have responded (Approve).'
-            ],
-            [{ text: 'OK' }]
-          );
-          return;
-        }
-
-        if (!confirm('Are you sure you want to approve this remittance?')) {
-          console.log('User cancelled approval');
-          return;
-        }
-        console.log('Proceeding with approval');
-
-        // First: SAVE the updated charges to the remittance record!
-        try {
-          console.log('Saving charges');
-          saveCharges();
-          console.log('formData.details after saveCharges:', formData.details);
-          
-          const { saveDoc, getDocById_Global } = await import('../../services/sqliteService.js');
-          // Fetch current remittance
-          let remData = await getDocById_Global('remittance', formData.id);
-          console.log('Fetched remData before save:', remData);
-          if (!remData) throw new Error("Remittance not found locally.");
-          // Update the details in remData with the formData.details (which includes the new charges!)
-          remData.details = formData.details;
-          // Save the updated remittance
-          console.log('Saving remData with details:', remData.details);
-          await saveDoc('remittance', remData);
-          console.log('Remittance saved successfully');
-        } catch (saveErr) {
-          console.error('Error saving updated charges before approval:', saveErr);
-          showToast('Error saving updated charges: ' + saveErr.message, 'error');
-          return;
-        }
-
-        // Now call approveRemittance!
-        try {
-          console.log('Calling approveRemittance');
-          const { approveRemittance } = await import('../../services/dataService.js');
-          await approveRemittance(formData.id, user.username);
-          console.log('approveRemittance completed successfully');
-          showToast('Remittance approved successfully!', 'success');
-          document.getElementById('loan-config-modal').remove();
-          clearSavedForm();
-          await loadHistoryData(true);
-          await clearForm();
-          render();
-        } catch (err) {
-          console.error('Error in approveRemittance:', err);
-          showToast('Error approving remittance: ' + err.message, 'error');
-        }
       });
     };
 
@@ -787,13 +635,13 @@ export function showLoanReviewModal(
         </div>
         <div class="modal-body" style="padding:1.25rem;overflow-y:auto;max-height:70vh;">
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;margin-bottom:1rem;">
-            <div class="field" style="display:flex;flex-direction:column;gap:0.25rem;">
-              <label style="font-size:0.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;">Approval Date *</label>
-              <input type="date" class="lr-date" value="${formatDateForInput(loanData?.issueDate || formData.remittance_date || new Date())}" style="padding:0.5rem 0.75rem;border-radius:var(--radius-sm);border:1px solid var(--border-medium);background:var(--bg-input);color:var(--text-primary);font-size:0.875rem;">
+            <div class="field">
+              <label>Approval Date *</label>
+              <input type="date" class="lr-date" value="${formatDateForInput(loanData?.issueDate || formData.remittance_date || new Date())}">
             </div>
-            <div class="field" style="display:flex;flex-direction:column;gap:0.25rem;">
-              <label style="font-size:0.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;">Bank / Method *</label>
-              <select class="lr-bank" style="padding:0.5rem;border-radius:var(--radius-sm);border:1px solid var(--border-medium);background:var(--bg-input);color:var(--text-primary);font-size:0.875rem;">
+            <div class="field">
+              <label>Bank / Method *</label>
+              <select class="lr-bank">
                 <option value="">-- Select Bank --</option>
                 ${(historyState.banks || []).map(b => `<option value="${escapeHtml(b.bank_name)}">${escapeHtml(b.bank_name)}</option>`).join('')}
               </select>
@@ -803,7 +651,7 @@ export function showLoanReviewModal(
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;margin-bottom:1rem;padding:0.75rem;background:var(--bg-main);border-radius:0.5rem;">
             <div><strong>Member:</strong> ${escapeHtml(memberName)}</div>
             <div><strong>Reg No:</strong> ${escapeHtml(memberReg)}</div>
-            <div><strong>Principal:</strong> ₦${(parseFloat(loanData?.principalAmount || 0)).toLocaleString(undefined,{minimumFractionDigits:2})}</div>
+            <div><strong>Principal:</strong> ${formatCurrency(parseFloat(loanData?.principalAmount || 0))}</div>
             <div><strong>Duration:</strong> ${loanData?.durationMonths || 0} months</div>
             <div><strong>Issue Date:</strong> ${formatDate(loanData?.issueDate || formData.remittance_date)}</div>
             <div><strong>Due Date:</strong> ${formatDate(loanData?.dueDate || '—')}</div>
@@ -830,7 +678,7 @@ export function showLoanReviewModal(
                       if (c.type === 'percentage') {
                         val = (val / 100) * Math.abs(parseFloat(loanData?.principalAmount || 0));
                       }
-                      return `₦${val.toFixed(2)}`;
+                      return formatCurrency(val);
                     })()}
                   </span>
                   <button type="button" class="lr-remove-charge-btn" data-index="${ci}" style="padding:0.25rem 0.5rem;border-radius:0.3rem;border:1px solid var(--danger);background:transparent;color:var(--danger);font-weight:600;cursor:pointer;font-size:0.75rem;">&times;</button>
@@ -838,7 +686,7 @@ export function showLoanReviewModal(
               `).join('')}
             </div>
             <div style="display:flex;justify-content:flex-end;padding:0.5rem 0 0 0;font-weight:700;font-size:0.9rem;">
-              <span>Total Charges: ₦${totalCharges.toFixed(2)}</span>
+              <span>Total Charges: ${formatCurrency(totalCharges)}</span>
             </div>
           </div>
 
@@ -964,31 +812,12 @@ export function showLoanReviewModal(
           loanDetail.loan_info.charges = JSON.parse(JSON.stringify(modalCharges));
         }
 
-        const { saveDoc, getDocById_Global } = await import('../../services/sqliteService.js');
-        let remData = await getDocById_Global('remittance', formData.id);
-        if (remData) {
-          remData.details = formData.details;
-          remData.transaction_type = 'Member Loan';
-          try {
-            const { getTransactionTypes } = await import('../../services/sqliteService.js');
-            const types = await getTransactionTypes(String(remData.cooperative_id));
-            const tt = types.find(t => t.transaction_type === 'Member Loan');
-            if (tt && tt.classification) {
-              remData.category = tt.classification;
-            } else {
-              remData.category = remData.category || 'Loan Asset';
-            }
-          } catch (e) {
-            remData.category = remData.category || 'Loan Asset';
-          }
-          await saveDoc('remittance', remData);
-        }
-
         const { approveLoanRequest } = await import('../../services/dataService.js');
         await approveLoanRequest(formData.id, user.username || 'admin', {
           remittance_date: dateVal,
           bank_name: bankVal,
-          charges: JSON.parse(JSON.stringify(modalCharges))
+          charges: JSON.parse(JSON.stringify(modalCharges)),
+          details: formData.details
         });
         showToast('Loan request approved successfully!', 'success');
         modalDiv.remove();

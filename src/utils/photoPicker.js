@@ -1,21 +1,22 @@
 import { showToast } from '../services/toastService.js'
 
 /**
- * Shared image picker: in-app camera first, gallery always.
- * - "Take photo" uses getUserMedia when available (browser HTTPS, Electron,
- *   Android WebView with camera permission). Unavailable/denied -> falls back
- *   to a capture file input that fires the native camera intent on mobile.
- * - "Choose from gallery" uses a plain file input (no capture attribute), so
- *   the OS file/gallery chooser always appears.
- * Everything resolves to a File, so existing compressImage(file) flows work
- * unchanged on every platform (web, APK, EXE).
+ * Shared image picker — 100% OFFLINE.
+ * No network calls, no CDN, no cloud upload. Everything is local:
+ * - In-app camera  -> navigator.mediaDevices.getUserMedia (device hardware, offline)
+ * - Native camera  -> <input capture> fires the OS camera app (offline)
+ * - Gallery        -> <input type=file> opens the OS file/gallery chooser (offline)
+ * All paths resolve to a local File, so existing compressImage(file) flows
+ * work unchanged on web, APK and Electron without internet.
  */
 
 export function isInAppCameraSupported() {
     try {
         if (!navigator.mediaDevices?.getUserMedia) return false
         // getUserMedia needs a secure context (https, localhost, file://,
-        // Capacitor http://localhost). Plain-LAN http testing is excluded.
+        // Capacitor http://localhost). Plain-LAN http has no mediaDevices, so
+        // we report false and the picker falls back to the native camera app
+        // (which works everywhere, offline). We NEVER hide the camera option.
         if (typeof window !== 'undefined' && window.isSecureContext === false) return false
         return true
     } catch {
@@ -23,55 +24,97 @@ export function isInAppCameraSupported() {
     }
 }
 
-function _pickFromGallery() {
+function _singleFileInput({ capture = false } = {}) {
     return new Promise((resolve) => {
         const input = document.createElement('input')
         input.type = 'file'
         input.accept = 'image/*'
+        if (capture) input.setAttribute('capture', 'environment')
         input.style.display = 'none'
+        // capture attr must be set before click on some Android WebViews
         document.body.appendChild(input)
         let settled = false
         const done = (file) => {
             if (settled) return
             settled = true
-            input.remove()
+            try { window.removeEventListener('focus', onFocus) } catch {}
+            try { input.remove() } catch {}
             resolve(file || null)
         }
-        input.addEventListener('change', () => done(input.files?.[0] || null))
-        // Cancellable pickers don't always fire change/cancel reliably; if the
-        // user backs out, resolve null shortly after focus returns.
+        input.addEventListener('change', () => done(input.files?.[0] || null), { once: true })
+        // Modern browsers (Chrome 113+, Firefox, Safari) fire `cancel` when
+        // the user dismisses the chooser without picking. Resolve promptly.
+        try {
+            input.addEventListener('cancel', () => done(null), { once: true })
+        } catch {}
+        // Some browsers fire no cancel event when the user backs out of the
+        // picker. Resolve null shortly after focus returns, but ONLY if the
+        // user really picked nothing (avoids premature cancel on slow devices).
         const onFocus = () => {
-            window.removeEventListener('focus', onFocus)
-            setTimeout(() => done(input.files?.[0] || null), 300)
+            setTimeout(() => {
+                if (!settled && (!input.files || input.files.length === 0)) {
+                    done(null)
+                }
+            }, 800)
         }
         window.addEventListener('focus', onFocus)
-        input.click()
+        // Extra safety: if change/cancel never fire and focus never returns
+        // (some custom ROMs, or a blocked file chooser), don't leave a
+        // dangling promise/input. Always clean up and resolve null.
+        setTimeout(() => {
+            if (!settled && (!input.files || input.files.length === 0)) {
+                done(null)
+            }
+        }, 60000)
+        try {
+            input.click()
+        } catch {
+            done(null)
+        }
     })
 }
 
+function _pickFromGallery() {
+    return _singleFileInput({ capture: false })
+}
+
 function _pickFromCameraApp() {
-    return new Promise((resolve) => {
-        const input = document.createElement('input')
-        input.type = 'file'
-        input.accept = 'image/*'
-        input.setAttribute('capture', 'environment')
-        input.style.display = 'none'
-        document.body.appendChild(input)
-        let settled = false
-        const done = (file) => {
-            if (settled) return
-            settled = true
-            input.remove()
-            resolve(file || null)
-        }
-        input.addEventListener('change', () => done(input.files?.[0] || null))
-        const onFocus = () => {
-            window.removeEventListener('focus', onFocus)
-            setTimeout(() => done(input.files?.[0] || null), 300)
-        }
-        window.addEventListener('focus', onFocus)
-        input.click()
+    return _singleFileInput({ capture: true })
+}
+
+/**
+ * Fallback sheet shown AFTER the in-app camera fails.
+ * Why this exists: Chrome requires a live user activation to open the file
+ * chooser ("File chooser dialog can only be shown with a user activation").
+ * The original "Take photo" tap is long gone by the time getUserMedia
+ * rejects (async gap + a second modal), so calling input.click()
+ * programmatically here is blocked and the promise would hang. This sheet
+ * gives the user a fresh button to tap, restoring activation.
+ */
+function _showCameraAppFallback(done, errName = '') {
+    const overlay = document.createElement('div')
+    overlay.className = 'modal-overlay open'
+    overlay.innerHTML = `
+      <div class="modal-content" style="max-width: 340px; padding: 1.25rem; text-align: center;">
+        <h3 style="margin: 0 0 0.25rem 0;">Camera unavailable</h3>
+        <p style="font-size: 0.8rem; color: var(--text-muted); margin: 0 0 1rem 0;">${errName === 'NotAllowedError' || errName === 'SecurityError'
+            ? 'Camera access was blocked. You can use your camera app instead — tap below.'
+            : 'Could not start the in-app camera. You can use your camera app instead — tap below.'}</p>
+        <div style="display: flex; flex-direction: column; gap: 0.6rem;">
+            <button class="primary-button" id="pp-native-cam" style="min-height: 3rem;">Open camera app</button>
+            <button class="ghost-button" id="pp-fb-cancel" style="color: var(--text-muted);">Cancel</button>
+        </div>
+      </div>`
+    const close = () => overlay.remove()
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) { close(); done(null) } })
+    overlay.querySelector('#pp-fb-cancel')?.addEventListener('click', () => { close(); done(null) })
+    // This click() runs synchronously inside a real user gesture, so the
+    // file chooser is allowed. Awaiting inside keeps activation alive.
+    overlay.querySelector('#pp-native-cam')?.addEventListener('click', async () => {
+        close()
+        done(await _pickFromCameraApp())
     })
+    document.body.appendChild(overlay)
 }
 
 function _stopStream(stream) {
@@ -82,9 +125,10 @@ function _stopStream(stream) {
 
 /**
  * In-app camera: live preview -> Capture -> preview -> Use/Retake.
- * Resolves a JPEG File on "Use photo", null on cancel/close.
+ * Uses only device hardware (offline). Resolves a JPEG File on
+ * "Use photo", null on cancel/close.
  * THROWS on camera startup failure (permission denied, no device) so the
- * caller can fall back to the native camera intent.
+ * caller can fall back to the native camera intent (also offline).
  */
 export function capturePhoto() {
     return new Promise((resolve, reject) => {
@@ -104,14 +148,15 @@ export function capturePhoto() {
               <img id="pp-still" style="display: none; width: 100%; max-height: 55vh; object-fit: contain; background: #000;" />
               <div id="pp-status" style="position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 0.85rem;">Starting camera…</div>
             </div>
+            <p style="font-size: 0.72rem; color: var(--text-muted); margin: 0.6rem 0 0 0;">Works offline — photo never leaves this device until you save.</p>
             <div style="display: flex; gap: 0.6rem; margin-top: 1rem;">
               <button class="ghost-button" id="pp-close" style="flex: 1;">Cancel</button>
-              <button class="secondary-button" id="pp-flip" style="flex: 1; display: none;">🔄 Flip</button>
-              <button class="primary-button" id="pp-shoot" style="flex: 1;" disabled>Capture</button>
+              <button class="secondary-button" id="pp-flip" style="flex: 1; display: none; min-height: 2.75rem;">Flip</button>
+              <button class="primary-button" id="pp-shoot" style="flex: 1; min-height: 2.75rem;" disabled>Capture</button>
             </div>
             <div style="display: none; gap: 0.6rem; margin-top: 1rem;" id="pp-confirm-row">
-              <button class="secondary-button" id="pp-retake" style="flex: 1;">Retake</button>
-              <button class="primary-button" id="pp-use" style="flex: 1;">Use photo</button>
+              <button class="secondary-button" id="pp-retake" style="flex: 1; min-height: 2.75rem;">Retake</button>
+              <button class="primary-button" id="pp-use" style="flex: 1; min-height: 2.75rem;">Use photo</button>
             </div>
           </div>`
 
@@ -151,6 +196,7 @@ export function capturePhoto() {
             status.textContent = 'Starting camera…'
             shootBtn.disabled = true
             try {
+                // Local hardware only — no network involved.
                 const constraints = facing === 'environment'
                     ? { video: { facingMode: { ideal: 'environment' } }, audio: false }
                     : { video: { deviceId: { exact: facing } }, audio: false }
@@ -215,7 +261,9 @@ export function capturePhoto() {
 
 /**
  * Source picker modal: "Take photo" + "Choose from gallery" + Cancel.
- * Resolves a File, or null when cancelled.
+ * Camera option is ALWAYS shown — on devices without in-app camera support
+ * it opens the native camera app directly (offline). Resolves a File,
+ * or null when cancelled. No internet required at any step.
  */
 export async function pickImageFile({ title = 'Add photo' } = {}) {
     const inApp = isInAppCameraSupported()
@@ -231,10 +279,16 @@ export async function pickImageFile({ title = 'Add photo' } = {}) {
         overlay.innerHTML = `
           <div class="modal-content" style="max-width: 340px; padding: 1.25rem; text-align: center;">
             <h3 style="margin: 0 0 0.25rem 0;">${title}</h3>
-            <p style="font-size: 0.8rem; color: var(--text-muted); margin: 0 0 1rem 0;">Camera or gallery — your choice.</p>
+            <p style="font-size: 0.8rem; color: var(--text-muted); margin: 0 0 1rem 0;">Camera or gallery — works offline.</p>
             <div style="display: flex; flex-direction: column; gap: 0.6rem;">
-                <button class="primary-button" id="pp-camera">📷 Take photo</button>
-                <button class="secondary-button" id="pp-gallery">🖼️ Choose from gallery</button>
+                <button class="primary-button" id="pp-camera" style="min-height: 3rem; display: flex; align-items: center; justify-content: center; gap: 0.5rem;">
+                  <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                  Take photo
+                </button>
+                <button class="secondary-button" id="pp-gallery" style="min-height: 3rem; display: flex; align-items: center; justify-content: center; gap: 0.5rem;">
+                  <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path stroke-linecap="round" stroke-linejoin="round" d="M21 15l-5-5L5 21"/></svg>
+                  Choose from gallery
+                </button>
                 <button class="ghost-button" id="pp-cancel" style="color: var(--text-muted);">Cancel</button>
             </div>
           </div>`
@@ -248,15 +302,33 @@ export async function pickImageFile({ title = 'Add photo' } = {}) {
         overlay.querySelector('#pp-camera')?.addEventListener('click', async () => {
             close()
             if (inApp) {
+                let file = null
                 try {
-                    done(await capturePhoto())
-                    return
+                    file = await capturePhoto()
                 } catch (err) {
-                    console.warn('[PhotoPicker] In-app camera failed, trying camera app:', err?.name || err?.message)
-                    showToast('Camera unavailable — opening camera app…', 'warning')
+                    console.warn('[PhotoPicker] In-app camera failed, showing camera-app fallback (offline):', err?.name || err?.message)
+                    const name = err?.name || ''
+                    if (name === 'NotAllowedError' || name === 'SecurityError') {
+                        showToast('Camera blocked — tap below to use the camera app.', 'warning')
+                    } else if (name === 'AbortError') {
+                        showToast('Camera was interrupted — tap below to try the camera app.', 'warning')
+                    } else {
+                        showToast('In-app camera unavailable — tap below for the camera app.', 'warning')
+                    }
+                    // Do NOT call input.click() here: transient activation has
+                    // expired and Chrome would block it. Show a sheet so the
+                    // next input.click() runs inside a fresh user gesture.
+                    _showCameraAppFallback(done, name)
+                    return
                 }
+                // User cancelled the in-app camera (resolved null): do NOT
+                // auto-open another chooser — that would also lack activation.
+                // Just finish; they can tap again if they want the camera app.
+                done(file)
+                return
             }
-            // Fallback (or non-secure contexts): native camera intent.
+            // Default on non-secure contexts / older WebViews: this click()
+            // runs synchronously inside the user's tap, so activation is valid.
             done(await _pickFromCameraApp())
         })
         document.body.appendChild(overlay)

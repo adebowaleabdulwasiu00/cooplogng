@@ -7,7 +7,7 @@
  * - Thin wrapper around backgroundSyncService for backwards compatibility
  */
 
-import { getDb, doc, setDoc, updateDoc, Timestamp, serverTimestamp, arrayUnion, writeBatch, collection, query, where, getDocs, limit } from '../firebase.js'
+import { getDb, doc, setDoc, Timestamp, serverTimestamp, writeBatch } from '../firebase.js'
 import { getAllItems } from './indexedDbService.js'
 import {
     getPendingQueue,
@@ -16,7 +16,6 @@ import {
     updateQueueStatus,
     runSql,
     hardDeleteDoc,
-    hasPendingWrites,
 } from './sqliteService.js'
 import { loadDoc } from './sqlite/mutationEngine.js'
 import { reconcileUnsyncedQueue, healChildQueueItem, CHILD_QUEUE_COLLECTIONS } from './sqlite/syncQueue.js'
@@ -238,184 +237,64 @@ const withTimeout = (promise, ms, description = 'Operation') => {
 };
 
 let _isPushing = false
+let _reconcileRanThisSession = false
 
-const FIRESTORE_BATCH_SIZE = 200
-const BATCH_CONCURRENCY = 5
-const BATCH_RATE_LIMIT_MS = 250
+const FIRESTORE_BATCH_SIZE = 500
+const PUSH_CONCURRENCY = 8
+const BATCH_RATE_LIMIT_MS = 50
+
+function _concurrencyPool(items, concurrency, fn) {
+    const results = new Array(items.length)
+    let idx = 0
+    async function worker() {
+        while (idx < items.length) {
+            const i = idx++
+            results[i] = await fn(items[i], i)
+        }
+    }
+    return Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker())).then(() => results)
+}
 
 export async function pushQueue(cooperativeId) {
     if (_isPushing) return true
     _isPushing = true
 
     try {
-        // Self-heal: rows flagged unsynced with no queue entry (offline .db
-        // edits, migrations, download corrections) must still upload.
-        try { await reconcileUnsyncedQueue(cooperativeId) } catch (e) {
-            console.warn('[Sync] reconcileUnsyncedQueue skipped:', e?.message)
+        if (!_reconcileRanThisSession) {
+            try { await reconcileUnsyncedQueue(cooperativeId) } catch (e) {
+                console.warn('[Sync] reconcileUnsyncedQueue skipped:', e?.message)
+            }
+            _reconcileRanThisSession = true
         }
+
         const queue = await getPendingQueue(cooperativeId)
         if (queue.length === 0) return true
 
-        console.log(`[Sync] Pushing ${queue.length} items in batches of ${FIRESTORE_BATCH_SIZE}...`)
+        console.log(`[Sync] Pushing ${queue.length} items (concurrency=${PUSH_CONCURRENCY}, batchSize=${FIRESTORE_BATCH_SIZE})...`)
         let successCount = 0
         let failCount = 0
         let healedCount = 0
-        // Collections with at least one Firestore-acked write this run. Their
-        // cursors are stamped with server time on success (see below).
         const pushedCols = new Set()
+        const db = getDb()
 
-        const batches = []
-        for (let i = 0; i < queue.length; i += FIRESTORE_BATCH_SIZE) {
-            batches.push(queue.slice(i, i + FIRESTORE_BATCH_SIZE))
+        const nonChildItems = []
+        for (const item of queue) {
+            if (CHILD_QUEUE_COLLECTIONS.has(item.collection_name)) {
+                try { await healChildQueueItem(item) } catch (e) {
+                    console.warn('[Sync] Child queue heal failed:', item.collection_name, e?.message)
+                }
+                healedCount++
+                continue
+            }
+            nonChildItems.push(item)
         }
 
-        const processBatch = async (batch) => {
-            const db = getDb()
-            const fbBatch = writeBatch(db)
-            const staged = []
-
-            for (const item of batch) {
-                try {
-                    // Defensive heal: legacy queue rows that target child
-                    // tables directly (remittance_detail / loans /
-                    // loan_guarantors / payment_advise) can never be pushed —
-                    // no such Firestore collection exists and the catch-all
-                    // rule denies them, poisoning the whole batch. Convert to
-                    // a parent push and drop the child row instead.
-                    if (CHILD_QUEUE_COLLECTIONS.has(item.collection_name)) {
-                        try { await healChildQueueItem(item) } catch (e) {
-                            console.warn('[Sync] Child queue heal failed:', item.collection_name, e?.message)
-                        }
-                        healedCount++
-                        continue
-                    }
-                    await updateQueueStatus(item.id, 'processing')
-
-                    // OPTION A: always reload the latest full canonical document
-                    // from IndexedDB. Legacy merged_document payloads are ignored
-                    // so partials can never downgrade a full document.
-                    const coopForDoc = item.cooperative_id || cooperativeId
-                    const payload = await loadDoc(item.collection_name, item.document_id, coopForDoc)
-
-                    if (item.operation_type === 'delete' && payload) {
-                        payload.is_deleted = 1
-                    }
-
-                    if (!payload || Object.keys(payload).length === 0) {
-                        await removeQueueItem(item.id)
-                        continue
-                    }
-
-                    const requiredCoopId = payload.cooperative_id ||
-                        (item.collection_name === 'cooperatives' ? payload.id : null)
-                    if (!requiredCoopId) {
-                        await updateQueueStatus(item.id, 'failed', 'Missing cooperative_id')
-                        failCount++
-                        continue
-                    }
-
-                    // Pre-push duplicate guard (members only, fail-open offline):
-                    // if Firestore already holds a DIFFERENT members doc with the
-                    // same coop+mobile or coop+special_id_lower, quarantine this
-                    // push instead of creating a 2nd cloud doc (2-device race).
-                    // Blank mobile / blank special_id never collide.
-                    if (item.collection_name === 'members' && !payload.is_deleted) {
-                        try {
-                            const coopStr = String(requiredCoopId)
-                            const mobKey = String(payload.mobile || '').replace(/\D/g, '').slice(-10)
-                            const specKey = String(payload.special_id_lower ?? payload.special_id ?? '').trim().toLowerCase()
-                            const conflictChecks = []
-                            if (mobKey) {
-                                conflictChecks.push(
-                                    getDocs(query(collection(db, 'members'), where('cooperative_id', '==', coopStr), where('mobile', '==', mobKey), limit(5)))
-                                        .then(snap => snap.docs.some(d => d.id !== String(item.document_id) && !d.data()?.is_deleted))
-                                )
-                            }
-                            if (specKey) {
-                                conflictChecks.push(
-                                    getDocs(query(collection(db, 'members'), where('cooperative_id', '==', coopStr), where('special_id_lower', '==', specKey), limit(5)))
-                                        .then(snap => snap.docs.some(d => d.id !== String(item.document_id) && !d.data()?.is_deleted))
-                                )
-                            }
-                            if (conflictChecks.length > 0) {
-                                const results = await Promise.all(conflictChecks)
-                                if (results.some(Boolean)) {
-                                    await updateQueueStatus(item.id, 'failed', 'Possible duplicate member (mobile/special ID already exists in cloud). Resolve in Duplicate Review.')
-                                    try { syncBus.emit(SyncEvents.SYNC_FAILED, { error: 'Duplicate member blocked from cloud push — review duplicates.', cooperativeId: coopStr, type: 'DUPLICATE_MEMBER' }) } catch {}
-                                    failCount++
-                                    continue
-                                }
-                            }
-                        } catch (guardErr) {
-                            // Fail-open: offline / permission / index errors must not block sync.
-                            console.warn('[Sync] Duplicate pre-push check skipped:', guardErr?.message)
-                        }
-                    }
-
-                    const docRef = doc(db, item.collection_name, item.document_id)
-                    const firestorePayload = {
-                        ...prepareForFirestore(payload),
-                        sync_at: serverTimestamp()
-                    }
-
-                    if (item.operation_type === 'set' || item.operation_type === 'add') {
-                        fbBatch.set(docRef, firestorePayload)
-                    } else {
-                        fbBatch.set(docRef, firestorePayload, { merge: true })
-                    }
-
-                    staged.push({ item, payload })
-                } catch (err) {
-                    console.error(`[Sync] Prep failed for ${item.collection_name}/${item.document_id}:`, err.message)
-                    await updateQueueStatus(item.id, 'failed', err.message)
-                    failCount++
-                }
-            }
-
-            if (staged.length === 0) return
-
-            let batchOk = false
-            let failedIds = new Set()
-            try {
-                await withTimeout(fbBatch.commit(), 60000, `batch of ${staged.length} writes`)
-                batchOk = true
-            } catch (batchErr) {
-                console.warn(`[Sync] Batch commit failed (${staged.length} items), falling back to individual writes:`, batchErr.message)
-                const succeeded = []
-                for (const { item, payload } of staged) {
-                    try {
-                        const docRef = doc(db, item.collection_name, item.document_id)
-                        const fp = { ...prepareForFirestore(payload), sync_at: serverTimestamp() }
-                        if (item.operation_type === 'set' || item.operation_type === 'add') {
-                            await withTimeout(setDoc(docRef, fp), 30000, `setDoc ${item.collection_name}/${item.document_id}`)
-                        } else {
-                            await withTimeout(setDoc(docRef, fp, { merge: true }), 30000, `mergeDoc ${item.collection_name}/${item.document_id}`)
-                        }
-                        succeeded.push({ item, payload })
-                    } catch (indErr) {
-                        console.error(`[Sync] Individual write failed for ${item.collection_name}/${item.document_id}:`, indErr.message)
-                        await updateQueueStatus(item.id, 'failed', indErr.message)
-                        failedIds.add(item.id)
-                        failCount++
-                        continue
-                    }
-                }
-                // Only individually-acked items may be cleaned up. Failed rows
-                // stay quarantined for retry/inspection and are never deleted.
-                await cleanupPushed(succeeded)
-                successCount += succeeded.length
-                return
-            }
-
-            if (batchOk) {
-                // Atomic batch commit => every staged item is acked.
-                await cleanupPushed(staged)
-                successCount += staged.length
-            }
-        }
+        const coopForDoc = item => item.cooperative_id || cooperativeId
+        const loadResults = await _concurrencyPool(nonChildItems, PUSH_CONCURRENCY, (item) =>
+            loadDoc(item.collection_name, item.document_id, coopForDoc(item)).then(doc => ({ ok: true, value: doc })).catch(e => ({ ok: false, error: e }))
+        )
 
         const cleanupPushed = async (acked) => {
-            // Batch local cleanup — ONLY for Firestore-acked items.
             const toRemove = []
             const toHardDelete = []
             const toMarkSynced = []
@@ -443,38 +322,132 @@ export async function pushQueue(cooperativeId) {
                     remaining.filter(q => q.status === 'pending' || q.status === 'processing')
                         .map(q => `${q.collection_name}:${q.document_id}`)
                 )
-                // Stamp server time, not PC time: the cloud copy carries
-                // serverTimestamp(), so the local mirror must carry the same
-                // clock or the two sides diverge. The estimate never exceeds
-                // true server time (see noteServerTimestamp), so this is the
-                // safe direction — worst case a harmless re-download.
                 const { getServerNowMs } = await import('./backgroundSyncService.js')
                 const ts = new Date(getServerNowMs()).toISOString()
+                const byTable = {}
                 for (const { table, id } of toMarkSynced) {
                     if (!remainingKeys.has(`${table}:${id}`)) {
-                        try { await runSql(`UPDATE ${table} SET is_synced = 1, sync_at = ? WHERE id = ?`, [ts, id]) } catch (e) { /* ignore */ }
+                        if (!byTable[table]) byTable[table] = []
+                        byTable[table].push(id)
                         pushedCols.add(table)
                     }
+                }
+                for (const [table, ids] of Object.entries(byTable)) {
+                    try {
+                        const placeholders = ids.map(() => '?').join(',')
+                        await runSql(`UPDATE ${table} SET is_synced = 1, sync_at = ? WHERE id IN (${placeholders})`, [ts, ...ids])
+                    } catch (e) { /* ignore */ }
                 }
             } else if (toHardDelete.length > 0) {
                 for (const { table } of toHardDelete) pushedCols.add(table)
             }
         }
 
-        // Process batches with controlled concurrency
-        for (let i = 0; i < batches.length; i += BATCH_CONCURRENCY) {
-            const slice = batches.slice(i, i + BATCH_CONCURRENCY)
-            await Promise.allSettled(slice.map(b => processBatch(b)))
-            if (i + BATCH_CONCURRENCY < batches.length) {
+        const processChunk = async (chunk, chunkLoadResults) => {
+            const fbBatch = writeBatch(db)
+            const staged = []
+
+            for (let i = 0; i < chunk.length; i++) {
+                const item = chunk[i]
+                try {
+                    await updateQueueStatus(item.id, 'processing')
+
+                    const lr = chunkLoadResults[i]
+                    const payload = lr.ok ? lr.value : null
+
+                    if (item.operation_type === 'delete' && payload) {
+                        payload.is_deleted = 1
+                    }
+
+                    if (!payload || Object.keys(payload).length === 0) {
+                        await removeQueueItem(item.id)
+                        continue
+                    }
+
+                    const requiredCoopId = payload.cooperative_id ||
+                        (item.collection_name === 'cooperatives' ? payload.id : null)
+                    if (!requiredCoopId) {
+                        await updateQueueStatus(item.id, 'failed', 'Missing cooperative_id')
+                        failCount++
+                        continue
+                    }
+
+                    const docRef = doc(db, item.collection_name, item.document_id)
+                    const firestorePayload = {
+                        ...prepareForFirestore(payload),
+                        sync_at: serverTimestamp()
+                    }
+
+                    if (item.operation_type === 'set' || item.operation_type === 'add') {
+                        fbBatch.set(docRef, firestorePayload)
+                    } else {
+                        fbBatch.set(docRef, firestorePayload, { merge: true })
+                    }
+
+                    staged.push({ item, payload })
+                } catch (err) {
+                    console.error(`[Sync] Prep failed for ${item.collection_name}/${item.document_id}:`, err.message)
+                    await updateQueueStatus(item.id, 'failed', err.message)
+                    failCount++
+                }
+            }
+
+            if (staged.length === 0) return
+
+            try {
+                await withTimeout(fbBatch.commit(), 60000, `batch of ${staged.length} writes`)
+                await cleanupPushed(staged)
+                successCount += staged.length
+            } catch (batchErr) {
+                console.warn(`[Sync] Batch commit failed (${staged.length} items), falling back to individual writes:`, batchErr.message)
+                const succeeded = []
+                for (const { item, payload } of staged) {
+                    try {
+                        const docRef = doc(db, item.collection_name, item.document_id)
+                        const fp = { ...prepareForFirestore(payload), sync_at: serverTimestamp() }
+                        if (item.operation_type === 'set' || item.operation_type === 'add') {
+                            await withTimeout(setDoc(docRef, fp), 30000, `setDoc ${item.collection_name}/${item.document_id}`)
+                        } else {
+                            await withTimeout(setDoc(docRef, fp, { merge: true }), 30000, `mergeDoc ${item.collection_name}/${item.document_id}`)
+                        }
+                        succeeded.push({ item, payload })
+                    } catch (indErr) {
+                        console.error(`[Sync] Individual write failed for ${item.collection_name}/${item.document_id}:`, indErr.message)
+                        await updateQueueStatus(item.id, 'failed', indErr.message)
+                        failCount++
+                    }
+                }
+                await cleanupPushed(succeeded)
+                successCount += succeeded.length
+            }
+        }
+
+        const allLoadResults = new Map()
+        nonChildItems.forEach((item, i) => allLoadResults.set(item.id, i))
+
+        const chunks = []
+        for (let i = 0; i < nonChildItems.length; i += FIRESTORE_BATCH_SIZE) {
+            chunks.push(nonChildItems.slice(i, i + FIRESTORE_BATCH_SIZE))
+        }
+
+        const chunkPairs = []
+        for (let ci = 0; ci < chunks.length; ci++) {
+            const chunk = chunks[ci]
+            const chunkLoadResults = chunk.map((item) => {
+                const origIdx = allLoadResults.get(item.id)
+                return loadResults[origIdx]
+            })
+            chunkPairs.push({ chunk, chunkLoadResults })
+        }
+
+        for (let i = 0; i < chunkPairs.length; i += PUSH_CONCURRENCY) {
+            const slice = chunkPairs.slice(i, i + PUSH_CONCURRENCY)
+            await Promise.allSettled(slice.map(({ chunk, chunkLoadResults }) => processChunk(chunk, chunkLoadResults)))
+            if (i + PUSH_CONCURRENCY < chunkPairs.length) {
                 await new Promise(r => setTimeout(r, BATCH_RATE_LIMIT_MS))
             }
         }
 
-        // Record "uploaded at server time" in the download watermarks for the
-        // pushed collections. The global last_sync_ts is deliberately left for
-        // the next pull (which re-observes server time from the downloaded
-        // docs) — the delta floor is min(cursor, last_sync_ts) − overlap, so
-        // holding last_sync_ts low keeps full coverage while the cursor moves.
         if (pushedCols.size > 0) {
             try {
                 const { stampPushWatermarks } = await import('./backgroundSyncService.js')

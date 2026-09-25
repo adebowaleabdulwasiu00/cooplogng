@@ -112,7 +112,7 @@ export async function renderMembersPage(container, user) {
               outline: 2px solid var(--accent-primary);
               outline-offset: 2px;
           }
-          @media (max-width: 768px) {
+          @media (max-width: 999px) {
               .members-stats-grid { gap: 0.4rem; }
               .members-stats-grid .stat-card { padding: 0.5rem 0.6rem; border-radius: var(--radius-md); }
               .members-stats-grid .stat-value { font-size: 1.05rem; }
@@ -195,7 +195,7 @@ export async function renderMembersPage(container, user) {
 
           /* Mobile filter toggle: hidden on desktop, reveals the filter panel */
           #members-filter-toggle { display: none; }
-          @media (max-width: 768px) {
+          @media (max-width: 999px) {
               .members-page {
                 padding: 0 !important;
                 padding-top: 0.25rem !important;

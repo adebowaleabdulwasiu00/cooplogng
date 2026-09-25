@@ -200,9 +200,17 @@ export async function getGeneralNetworthData(cooperativeId, user, dateTo) {
     const useSpecialId = localStorage.getItem('useSpecialIdInReports') === 'true';
 
     const allEnterprises = await fetchEnterprises(cooperativeId, true);
+    // Dues & penalties count toward networth even when flagged as revenue
+    // (member obligations, not pure cooperative income).
+    const _isDuePenalty = (e) => {
+        if (!e) return false;
+        const due = e.compulsory_due == 1 || e.compulsory_due === '1' || e.compulsory_due === 'true' || e.compulsory_due === true;
+        const pen = e.is_penalty == 1 || e.is_penalty === '1' || e.is_penalty === 'true' || e.is_penalty === true;
+        return !!(due || pen);
+    };
     const enterprises = allEnterprises.filter(e => {
         const isRevenue = e.revenue == 1 || e.revenue === '1' || e.revenue === 'true' || e.revenue === true;
-        return !isRevenue && !e.is_deleted;
+        return (!isRevenue || _isDuePenalty(e)) && !e.is_deleted;
     });
 
     let sql = `

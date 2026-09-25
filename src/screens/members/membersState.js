@@ -1,4 +1,5 @@
 import { fetchAllMembers, fetchCooperativeUsers, fetchEnterprises } from '../../services/dataService.js'
+import { save as persistState, load as loadPersisted } from '../../services/statePersistence.js'
 
 // Global state for the members module instance
 let _allMembers = []
@@ -12,14 +13,17 @@ export const getFilteredMembers = () => _filteredMembers
 // Pagination state
 export let visibleLimit = 50
 
+// Restore persisted filter/sort state (survives F5)
+const _saved = loadPersisted('members-state') || {}
+
 // Filter state
-export let searchTerm = ""
-export let statusFilter = "All Status"
-export let managerFilter = "All Managers"
+export let searchTerm = _saved.searchTerm || ""
+export let statusFilter = _saved.statusFilter || "All Status"
+export let managerFilter = _saved.managerFilter || "All Managers"
 
 // Column-sort state. Default 'reg' = Reg No, then Special ID (ascending).
-export let sortKey = "reg"
-export let sortDir = "asc"
+export let sortKey = _saved.sortKey || "reg"
+export let sortDir = _saved.sortDir || "asc"
 
 const sortVal = (m, key) => {
     switch (key) {
@@ -56,6 +60,10 @@ const cmpDate = (a, b, dir) => {
     return dir === 'desc' ? tb - ta : ta - tb
 }
 
+function _saveFilterState() {
+    persistState('members-state', { searchTerm, statusFilter, managerFilter, sortKey, sortDir })
+}
+
 export function applySort() {
     const dateKey = sortKey === 'created' || sortKey === 'modified'
     _filteredMembers.sort((ma, mb) => {
@@ -74,6 +82,7 @@ export function setSortExplicit(key, dir = 'asc') {
     sortKey = key
     sortDir = dir === 'desc' ? 'desc' : 'asc'
     applySort()
+    _saveFilterState()
 }
 
 // Header click: same column toggles A-Z/Z-A, new column starts at A-Z.
@@ -86,6 +95,7 @@ export function setSort(key) {
         sortDir = 'asc'
     }
     applySort()
+    _saveFilterState()
 }
 
 // Selection state
@@ -202,9 +212,20 @@ export function applyFilters() {
     
     // Reset pagination to first batch when filters change
     visibleLimit = 50
+    _saveFilterState()
 }
 
 export function setSearchTerm(term) { searchTerm = term }
 export function setStatusFilter(status) { statusFilter = status }
 export function setManagerFilter(manager) { managerFilter = manager }
 export function increaseVisibleLimit(amount = 50) { visibleLimit += amount }
+
+export function clearMembersState() {
+    searchTerm = ""
+    statusFilter = "All Status"
+    managerFilter = "All Managers"
+    sortKey = "reg"
+    sortDir = "asc"
+    visibleLimit = 50
+    persistState('members-state', { searchTerm, statusFilter, managerFilter, sortKey, sortDir })
+}

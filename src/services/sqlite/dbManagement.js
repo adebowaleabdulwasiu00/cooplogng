@@ -1,4 +1,4 @@
-import { getAllItems, clearAllStores, initIndexedDb, listStores } from '../indexedDbService.js'
+import { getAllItems, getAllByIndex, getItem, clearAllStores, initIndexedDb, listStores } from '../indexedDbService.js'
 import { TABLES, TABLE_COLUMNS } from './constants.js'
 import { colType, safeVal } from './helpers.js'
 import { upsertMany } from './mutationEngine.js'
@@ -8,9 +8,43 @@ import { upsertMany } from './mutationEngine.js'
 // backup export/import. It is dynamically imported on first use instead.
 import sqlWasmUrl from 'sql.js/dist/sql-wasm.wasm?url';
 
-export async function exportDatabase() {
+/**
+ * Reads backup rows from a store, optionally scoped to a single cooperative.
+ * Tables that carry a cooperative_id are filtered to the active coop (using the
+ * index when present, otherwise a full scan); the cooperatives table is matched
+ * by its own id; global key/value stores are returned unfiltered. Soft-deleted
+ * rows are kept so a restore preserves the original state.
+ */
+async function getRowsForCoop(table, cooperativeId) {
+    if (!cooperativeId) return getAllItems(table);
+
+    if (table === 'cooperatives') {
+        const coop = await getItem('cooperatives', cooperativeId);
+        return coop ? [coop] : [];
+    }
+
+    const cols = TABLE_COLUMNS[table] || [];
+    if (!cols.includes('cooperative_id')) {
+        // Global store (app_settings) — holds auth sessions and transient sync
+        // context, not cooperative data. Exclude it from a scoped backup.
+        return [];
+    }
+
+    try {
+        const indexed = await getAllByIndex(table, 'cooperative_id', cooperativeId);
+        if (indexed && indexed.length > 0) return indexed;
+        // Empty (or key-type mismatch) — fall through to an exact scan.
+    } catch (e) {
+        // Store has no cooperative_id index (e.g. remittance_detail) — scan.
+    }
+    const all = await getAllItems(table);
+    return all.filter(r => String(r.cooperative_id) === cooperativeId);
+}
+
+export async function exportDatabase(cooperativeId) {
     const SQL = await getSqlJs();
     const db = new SQL.Database();
+    const scopeCoopId = cooperativeId != null && cooperativeId !== '' ? String(cooperativeId) : null;
 
     // Skip stores missing from stale on-device databases instead of aborting
     // the whole backup with "object store not found". The v6 schema upgrade
@@ -31,7 +65,7 @@ export async function exportDatabase() {
             skipped.push(table);
             continue;
         }
-        const rows = await getAllItems(table);
+        const rows = await getRowsForCoop(table, scopeCoopId);
         const cols = TABLE_COLUMNS[table];
         if (!cols || cols.length === 0) continue;
 

@@ -1,19 +1,23 @@
 export function formatCurrency(amount) {
-  return new Intl.NumberFormat('en-NG', {
-    style: 'currency',
-    currency: 'NGN',
-  }).format(amount)
+  const num = Number(amount) || 0;
+  const isInteger = num % 1 === 0;
+  return '\u20A6' + new Intl.NumberFormat('en-US', {
+    minimumFractionDigits: isInteger ? 0 : 2,
+    maximumFractionDigits: 2,
+  }).format(num);
 }
 
 /**
- * Formats a number to 2 decimal places with thousands separators, no currency symbol.
+ * Formats a number with thousands separators, no currency symbol.
+ * Shows decimals only when present: 20000 -> "20,000", 20000.34 -> "20,000.34"
  */
 export function formatNumber(amount) {
-  const isInteger = amount % 1 === 0;
+  const num = Number(amount) || 0;
+  const isInteger = num % 1 === 0;
   return new Intl.NumberFormat('en-US', {
     minimumFractionDigits: isInteger ? 0 : 2,
     maximumFractionDigits: 2,
-  }).format(amount)
+  }).format(num)
 }
 
 /**
@@ -160,14 +164,15 @@ export function shortRef(id) {
     return s.length > 8 ? s.slice(-8) : s;
 }
 
-// Last 5 digits of the timestamp embedded in a remittance id, e.g.
-// COOP1-20260912143522-BX7QZ-2 -> "43522". Falls back to shortRef when
+// Display slice of a remittance id from the month character to the end,
+// e.g. CG0nA-20260913131208-RV23EN-1 -> "0913131208-RV23EN-1" and
+// CG0nA-20260913131652 -> "0913131652". Falls back to shortRef when
 // the id carries no 14-digit timestamp segment.
 export function timestampTail(id) {
     const s = String(id || '').trim();
     if (!s) return '';
     const m = s.match(/\d{14}/);
-    if (m) return m[0].slice(-5);
+    if (m && typeof m.index === 'number') return s.slice(m.index + 4);
     return shortRef(s);
 }
 

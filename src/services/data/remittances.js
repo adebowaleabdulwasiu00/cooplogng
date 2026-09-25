@@ -2,7 +2,7 @@ import { generateId, generateRemittanceId } from '../../utils/formatters.js'
 import {
     getRemittances, getRemittancesPage,
     getTransactionTypes, saveDoc, getDocById_Global,
-    queryRows, enqueueWrite
+    queryRows, enqueueWrite, upsertRow
 } from '../sqliteService.js'
 
 export async function fetchRemittances(cooperativeId, user = null) {
@@ -47,6 +47,9 @@ export async function addRemittance(data, createdBy) {
         recipient_id: data.recipient_id || '',
         loan_id: data.loan_id || null,
         autogen: data.autogen || 0,
+        parent_remittance_id: data.parent_remittance_id || data.loan_id || null,
+        isLoanRequest: data.isLoanRequest || false,
+        isWithdrawalRequest: data.isWithdrawalRequest || false,
         created_at: now,
         created_by: createdBy || 'system',
         modified_at: now,
@@ -63,6 +66,7 @@ export async function addRemittance(data, createdBy) {
             amount: parseFloat(d.amount || 0),
             notes: d.notes || '',
             auto_description: d.auto_description || '',
+            loan_info: d.loan_info || null,
             created_at: now,
             created_by: createdBy || 'system',
             modified_at: now,
@@ -72,6 +76,10 @@ export async function addRemittance(data, createdBy) {
         }))
     }
 
+    // Build loan + guarantor child records from details[].loan_info.
+    // These are saved to the loans/loan_guarantors tables via mutationEngine.
+    // Charges (autogen remittances) and payment_advise are NOT created here -
+    // they are created during approval in approveLoanRequest().
     let loansList = data.loans;
     if (!loansList && data.details) {
         loansList = [];
@@ -147,6 +155,7 @@ export async function updateRemittance(id, data, modifiedBy) {
         ...existing,
         ...data,
         id: existing.id,
+        is_deleted: 0,
         modified_at: now,
         modified_by: modifiedBy || 'system',
         is_synced: 0
@@ -162,6 +171,7 @@ export async function updateRemittance(id, data, modifiedBy) {
             amount: parseFloat(d.amount || 0),
             notes: d.notes || '',
             auto_description: d.auto_description || '',
+            loan_info: d.loan_info || null,
             created_at: d.created_at || now,
             created_by: d.created_by || modifiedBy || 'system',
             modified_at: now,
@@ -171,6 +181,7 @@ export async function updateRemittance(id, data, modifiedBy) {
         }))
     }
 
+    // Build loan + guarantor child records from details[].loan_info.
     let loansList = data.loans;
     if (!loansList && data.details) {
         loansList = [];
@@ -199,8 +210,8 @@ export async function updateRemittance(id, data, modifiedBy) {
         });
     }
 
-    if (loansList && loansList.length > 0) {
-        doc.loans = loansList.map(l => ({
+    // Always set doc.loans (even []) so saveDoc cleans up old loans/guarantors
+    doc.loans = (loansList || []).map(l => ({
             id: l.id || generateId(String(existing.cooperative_id)),
             cooperative_id: String(existing.cooperative_id),
             member_id: l.member_id || existing.member_id || data.member_id || '0000000000',
@@ -233,7 +244,6 @@ export async function updateRemittance(id, data, modifiedBy) {
                 is_synced: 0
             }))
         }))
-    }
     await saveDoc('remittance', doc)
 }
 
@@ -248,6 +258,88 @@ export async function deleteRemittance(id, modifiedBy) {
         modified_by: modifiedBy || 'system',
         is_synced: 0
     })
+}
+
+export async function cleanupRemittanceFamily(remittanceId, modifiedBy) {
+    const now = new Date().toISOString()
+
+    // Use upsertRow (not saveDoc) to soft-delete children — saveDoc's cascade
+    // logic would detect the child's loan_id pointing at the parent and
+    // cascade-delete the parent itself, which we do NOT want during an edit.
+    // Enqueue each soft-delete so deletions propagate to cloud/sync.
+    // Find children via parent_remittance_id (new), loan_id (legacy), or ID prefix.
+    const children = await queryRows(
+        'SELECT * FROM remittance WHERE (parent_remittance_id = ? OR loan_id = ?) AND autogen = 1 AND is_deleted = 0',
+        [remittanceId, remittanceId]
+    ).catch(() => [])
+    // ID-prefix fallback: old loan charges may have loan_id = loan record id
+    // (not parent remittance id). Match by id prefix (e.g. "PARENT-CHARGE-1").
+    const prefixChildren = await queryRows(
+        "SELECT * FROM remittance WHERE id LIKE ? || '-%' AND autogen = 1 AND is_deleted = 0",
+        [remittanceId]
+    ).catch(() => [])
+    const childIds = new Set((children || []).map(c => c.id));
+    const allChildren = [...(children || [])];
+    for (const c of (prefixChildren || [])) {
+        if (!childIds.has(c.id)) allChildren.push(c);
+    }
+    for (const child of allChildren) {
+        await upsertRow('remittance', {
+            ...child,
+            is_deleted: 1,
+            modified_at: now,
+            modified_by: modifiedBy || 'system',
+            is_synced: 0
+        })
+        // Enqueue so cloud/sync sees the deletion
+        if (child.cooperative_id) {
+            await enqueueWrite(child.cooperative_id, 'remittance', child.id, 'delete', {
+                ...child,
+                is_deleted: 1,
+                modified_at: now,
+                modified_by: modifiedBy || 'system'
+            }).catch(() => {})
+        }
+    }
+
+    const loans = await queryRows(
+        'SELECT * FROM loans WHERE remittance_id = ? AND is_deleted = 0',
+        [remittanceId]
+    ).catch(() => [])
+    for (const loan of (loans || [])) {
+        // Soft-delete and sync guarantors first
+        const guarantors = await queryRows(
+            'SELECT * FROM loan_guarantors WHERE loan_id = ? AND is_deleted = 0',
+            [loan.id]
+        ).catch(() => [])
+        for (const g of (guarantors || [])) {
+            await upsertRow('loan_guarantors', {
+                ...g,
+                is_deleted: 1,
+                modified_at: now,
+                modified_by: modifiedBy || 'system',
+                is_synced: 0
+            })
+        }
+        // Soft-delete and sync the loan itself
+        await upsertRow('loans', {
+            ...loan,
+            is_deleted: 1,
+            modified_at: now,
+            modified_by: modifiedBy || 'system',
+            is_synced: 0
+        })
+        // Enqueue the parent remittance for sync so cloud sees the full family change
+        if (loan.cooperative_id && loan.remittance_id) {
+            await enqueueWrite(loan.cooperative_id, 'remittance', loan.remittance_id, 'update', {
+                id: loan.remittance_id,
+                cooperative_id: loan.cooperative_id,
+                modified_at: now,
+                modified_by: modifiedBy || 'system',
+                is_synced: 0
+            }).catch(() => {})
+        }
+    }
 }
 
 export async function approveRemittance(remittanceId, approvedBy, bankName, remittanceDate) {
@@ -266,17 +358,6 @@ export async function approveRemittance(remittanceId, approvedBy, bankName, remi
 
     await saveDoc('remittance', updateData)
 
-    const queuePayload = {
-        ...remittance,
-        status: 'Approved',
-        modified_at: now,
-        modified_by: approvedBy
-    }
-    if (bankName) queuePayload.bank_name = bankName
-    if (remittanceDate) queuePayload.remittance_date = remittanceDate
-
-    await enqueueWrite(remittance.cooperative_id, 'remittance', remittanceId, 'update', queuePayload)
-
     // Bidirectional approve cascade for dues/penalty groups (parent <->
     // children <-> siblings). Only Pending members move; Declined stays.
     // Loan flows untouched: loan-charge children carry loan_id = loan id,
@@ -290,28 +371,27 @@ export async function approveRemittance(remittanceId, approvedBy, bankName, remi
             modified_by: approvedBy,
             is_synced: 0
         }
-        const qp = { status: 'Approved', modified_at: now, modified_by: approvedBy }
         if (propagateFields) {
-            if (bankName) { next.bank_name = bankName; qp.bank_name = bankName }
-            if (remittanceDate) { next.remittance_date = remittanceDate; qp.remittance_date = remittanceDate }
+            if (bankName) next.bank_name = bankName
+            if (remittanceDate) next.remittance_date = remittanceDate
         }
         await saveDoc('remittance', next)
-        await enqueueWrite(r.cooperative_id, 'remittance', r.id, 'update', qp)
     }
     // Downward: parent approved => its direct autogen children approve too.
     const directKids = await queryRows(
-        'SELECT * FROM remittance WHERE loan_id = ? AND autogen = 1 AND is_deleted = 0',
-        [remittanceId]
+        'SELECT * FROM remittance WHERE (parent_remittance_id = ? OR loan_id = ?) AND autogen = 1 AND is_deleted = 0',
+        [remittanceId, remittanceId]
     ).catch(() => [])
     for (const kid of directKids || []) await approveOne(kid, true)
     // Upward + sideways: a dues-style child approved => parent + siblings approve.
-    if (remittance.autogen === 1 && remittance.loan_id) {
-        const parentRem = await getDocById_Global('remittance', remittance.loan_id).catch(() => null)
+    if (remittance.autogen === 1 && (remittance.parent_remittance_id || remittance.loan_id)) {
+        const parentRemId = remittance.parent_remittance_id || remittance.loan_id
+        const parentRem = await getDocById_Global('remittance', parentRemId).catch(() => null)
         if (parentRem && !parentRem.is_deleted && String(parentRem.id) !== String(remittanceId)) {
             await approveOne(parentRem, false)
             const siblings = await queryRows(
-                'SELECT * FROM remittance WHERE loan_id = ? AND autogen = 1 AND is_deleted = 0',
-                [parentRem.id]
+                'SELECT * FROM remittance WHERE (parent_remittance_id = ? OR loan_id = ?) AND autogen = 1 AND is_deleted = 0',
+                [parentRem.id, parentRem.id]
             ).catch(() => [])
             for (const sib of siblings || []) await approveOne(sib, false)
         }
@@ -334,11 +414,6 @@ export async function declineRemittance(remittanceId, declinedBy) {
                 modified_by: declinedBy,
                 is_synced: 0
             })
-            await enqueueWrite(target.cooperative_id, 'remittance', target.id, 'update', {
-                status: 'Declined',
-                modified_at: now,
-                modified_by: declinedBy
-            })
         }
 
         const loans = await queryRows(
@@ -346,7 +421,7 @@ export async function declineRemittance(remittanceId, declinedBy) {
             [sid]
         )
         const ts = new Date().toISOString()
-        const { runSql, saveDoc: saveLoanDoc, loadDoc: loadParentDoc, enqueueWrite: enqueueParent } = await import('../sqliteService.js')
+        const { runSql, saveDoc: saveLoanDoc, loadDoc: loadParentDoc } = await import('../sqliteService.js')
         let loanChanged = false
         for (const loan of loans) {
             if (loan.status === 'Declined') continue
@@ -387,11 +462,6 @@ export async function declineRemittance(remittanceId, declinedBy) {
                     modified_by: declinedBy,
                     is_synced: 0
                 })
-                await enqueueWrite(autorem.cooperative_id, 'remittance', autorem.id, 'update', {
-                    status: 'Declined',
-                    modified_at: now,
-                    modified_by: declinedBy
-                })
             }
         }
 
@@ -406,28 +476,24 @@ export async function declineRemittance(remittanceId, declinedBy) {
                 modified_by: declinedBy,
                 is_synced: 0
             })
-            await enqueueWrite(r.cooperative_id, 'remittance', r.id, 'update', {
-                status: 'Declined',
-                modified_at: now,
-                modified_by: declinedBy
-            })
         }
         const directKids = await queryRows(
-            'SELECT * FROM remittance WHERE loan_id = ? AND autogen = 1 AND is_deleted = 0',
-            [sid]
+            'SELECT * FROM remittance WHERE (parent_remittance_id = ? OR loan_id = ?) AND autogen = 1 AND is_deleted = 0',
+            [sid, sid]
         ).catch(() => [])
         for (const kid of directKids || []) await declineOne(kid)
 
         // Upward + sideways: a dues-style child declined => parent + siblings go too.
         // Loan-charge children are untouched: their loan_id is a loan id, so the
         // remittance lookup below finds nothing and this block no-ops.
-        if (target.autogen === 1 && target.loan_id) {
-            const parentRem = await getDocById_Global('remittance', target.loan_id).catch(() => null)
+        if (target.autogen === 1 && (target.parent_remittance_id || target.loan_id)) {
+            const parentRemId = target.parent_remittance_id || target.loan_id
+            const parentRem = await getDocById_Global('remittance', parentRemId).catch(() => null)
             if (parentRem && !parentRem.is_deleted && String(parentRem.id) !== String(sid)) {
                 await declineOne(parentRem)
                 const siblings = await queryRows(
-                    'SELECT * FROM remittance WHERE loan_id = ? AND autogen = 1 AND is_deleted = 0',
-                    [parentRem.id]
+                    'SELECT * FROM remittance WHERE (parent_remittance_id = ? OR loan_id = ?) AND autogen = 1 AND is_deleted = 0',
+                    [parentRem.id, parentRem.id]
                 ).catch(() => [])
                 for (const sib of siblings || []) await declineOne(sib)
             }

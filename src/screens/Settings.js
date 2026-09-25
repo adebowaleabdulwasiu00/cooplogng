@@ -1,5 +1,6 @@
 import { hasPermission } from '../services/permissionService.js'
 import { showToast } from '../services/toastService.js'
+import { save as persistState, load as loadPersisted } from '../services/statePersistence.js'
 import {
   renderPasswordSection,
   setupPasswordListeners,
@@ -7,8 +8,6 @@ import {
   setupFeedbackListeners,
   renderGuarantorSection,
   setupGuarantorListeners,
-  renderAdviceSection,
-  setupAdviceListeners,
   renderCooperativeSection,
   setupCooperativeListeners,
   renderBankSection,
@@ -19,8 +18,6 @@ import {
   setupUserManagementListeners,
   renderTransactionTypesSection,
   setupTransactionTypesListeners,
-  renderDbManagementSection,
-  setupDbManagementListeners,
   renderHardRestoreSection,
   setupHardRestoreListeners,
   renderDisplaySection,
@@ -32,35 +29,33 @@ import {
   renderAboutSection,
   setupAboutListeners
 } from './settings/index.js'
+import { renderAdminDbManagementSection, setupAdminDbManagementListeners } from './settings/adminDbManagement.js'
 
 export async function renderSettings(container, user) {
   const isAdmin = user.isAdmin || hasPermission(user.permissions, 'admin') || (user.username || '').toLowerCase() === 'admin'
   const canManageSettings = isAdmin || hasPermission(user.permissions, 'settings_manage')
   const cooperativeId = user.cooperativeId
 
-  // Track active section. Always start with null (menu) for native feel.
-  let activeSection = null
+  // Track active section. Restore from persistence; always start with null
+  // (menu) on mobile for native feel.
+  let activeSection = loadPersisted('settings-section') || null
+  // Legacy migration: Payment Advice moved out of Settings to member navigation.
+  if (activeSection === 'advice') {
+    activeSection = null
+    persistState('settings-section', null)
+  }
 
   const menuItems = []
 
-  // Password change is members-only (staff/admins don't need it)
-  if ((user.role || '').toLowerCase() === 'member') {
-    menuItems.push({ id: 'password', label: '🔑 Change Password', icon: '🔑' })
-  }
+  menuItems.push({ id: 'password', label: '🔑 Change Password', icon: '🔑' })
 
-  // Guarantor and Advice only for members (anyone with a memberId) or Admins
+  // Guarantor only for members (anyone with a memberId) or Admins
   if (user.memberId || isAdmin) {
     menuItems.push({ id: 'guarantor', label: '🤝 Guarantor Requests', icon: '🤝' })
-    menuItems.push({ id: 'advice', label: '📋 Payment Advice', icon: '📋' })
     menuItems.push({ id: 'feedback', label: '💬 Give Feedback', icon: '💬' })
   } else {
     // Staff who aren't members get feedback
     menuItems.push({ id: 'feedback', label: '💬 Give Feedback', icon: '💬' })
-  }
-
-  // DB Management strictly for admin/staff (non-members)
-  if (isAdmin || (user.role || '').toLowerCase() !== 'member') {
-    menuItems.push({ id: 'db', label: '📁 DB Management', icon: '📁' })
   }
 
   menuItems.push({ id: 'restore', label: '🔄 Hard restore App', icon: '🔄' })
@@ -68,7 +63,8 @@ export async function renderSettings(container, user) {
   if (isAdmin) {
     menuItems.push(
       { id: 'cooperative', label: '🏢 Cooperative Settings', icon: '🏢' },
-      { id: 'subscription', label: '📋 Subscription Management', icon: '📋' }
+      { id: 'subscription', label: '📋 Subscription Management', icon: '📋' },
+      { id: 'adminDb', label: '💾 DB Management', icon: '💾' }
     )
   }
 
@@ -89,15 +85,11 @@ export async function renderSettings(container, user) {
   )
 
   // Default section logic
-  if ((user.role || '').toLowerCase() === 'member') {
-    if (activeSection === 'password') activeSection = 'password'
-  } else {
-    if (activeSection === 'password') activeSection = 'feedback'
-  }
+  if (activeSection === 'password') activeSection = 'password'
 
   // PC two-pane layout: open the first section immediately so the content
-  // pane is never empty. Mobile stays menu-first (native feel).
-  if (window.innerWidth > 768 && menuItems.length > 0) {
+  // pane is never empty. Mobile (<1000px) stays menu-first (native feel).
+  if (window.innerWidth >= 1000 && menuItems.length > 0) {
     activeSection = menuItems[0].id
   }
 
@@ -107,18 +99,17 @@ export async function renderSettings(container, user) {
             case 'password': renderPasswordSection(area); break
             case 'feedback': renderFeedbackSection(area); break
             case 'guarantor': renderGuarantorSection(area); break
-            case 'advice': renderAdviceSection(area); break
             case 'cooperative': renderCooperativeSection(area); break
             case 'banks': renderBankSection(area); break
             case 'enterprises': renderEnterpriseSection(area); break
             case 'users': renderUserManagementSection(area); break
             case 'transactionTypes': renderTransactionTypesSection(area); break
-            case 'db': renderDbManagementSection(area); break
             case 'restore': renderHardRestoreSection(area); break
             case 'about': renderAboutSection(area); break
             case 'theme': renderThemeSection(area); break
             case 'display': renderDisplaySection(area); break
             case 'subscription': renderSubscriptionSection(area); break
+            case 'adminDb': renderAdminDbManagementSection(area); break
             default: area.innerHTML = '<p style="color: var(--text-muted);">Section not found.</p>'
         }
         return area.innerHTML
@@ -126,8 +117,8 @@ export async function renderSettings(container, user) {
 
   const renderContent = () => {
     const showMenu = !activeSection
-    // PC shows menu + content side by side; mobile swaps between them.
-    const isDesktop = window.innerWidth > 768
+    // PC shows menu + content side by side; mobile (<1000px) swaps between them.
+    const isDesktop = window.innerWidth >= 1000
     const menuEl = document.querySelector('.settings-menu')
     const headerEl = document.querySelector('.page-header')
     const contentArea = document.getElementById('settings-content-area')
@@ -151,6 +142,7 @@ export async function renderSettings(container, user) {
 
     container.querySelector('#settings-back-btn')?.addEventListener('click', () => {
       activeSection = null
+      persistState('settings-section', null)
       renderContent()
     })
 
@@ -240,7 +232,7 @@ export async function renderSettings(container, user) {
           border: 1px solid var(--border-light);
         }
         /* ── PC two-pane settings: sticky nav left, content right ── */
-        @media (min-width: 769px) {
+        @media (min-width: 1000px) {
           .settings-layout {
             display: grid;
             grid-template-columns: 290px minmax(0, 1fr);
@@ -271,7 +263,7 @@ export async function renderSettings(container, user) {
             margin: 0 !important;
           }
         }
-        @media (max-width: 768px) {
+        @media (max-width: 999px) {
           .settings-content {
             padding: 1.25rem !important;
             border-radius: var(--radius-xl);
@@ -333,20 +325,9 @@ export async function renderSettings(container, user) {
           border: 1px solid var(--border-medium);
           margin-bottom: 1.5rem;
         }
+        /* Inline-form fields inherit the global floating-outlined .field
+           system (same as the remittance form) for app-wide consistency. */
         .inline-form .field { flex: 1; min-width: 180px; }
-        .inline-form .field label { font-size: 0.8rem; font-weight: 600; color: var(--text-muted); display: block; margin-bottom: 0.25rem; }
-        .inline-form .field input, .inline-form .field select {
-          width: 100%; box-sizing: border-box;
-          padding: 0.6rem 0.75rem; border: 1px solid var(--border-medium);
-          border-radius: 8px; font-size: 0.9rem;
-          background: var(--bg-input); color: var(--text-primary);
-          transition: border-color 0.2s, box-shadow 0.2s;
-        }
-        .inline-form .field input:focus, .inline-form .field select:focus {
-          border-color: var(--accent-primary);
-          box-shadow: 0 0 0 3px var(--accent-soft);
-          outline: none;
-        }
         .input-with-toggle {
           display: flex;
           align-items: center;
@@ -455,41 +436,9 @@ export async function renderSettings(container, user) {
           grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
           gap: 1rem 1.25rem;
         }
-        .stg-field {
-          display: flex;
-          flex-direction: column;
-          gap: 0.45rem;
-          margin-bottom: 0.25rem;
-        }
-        .stg-field > span, .stg-field > label.stg-label {
-          font-size: 0.82rem;
-          font-weight: 600;
-          color: var(--text-muted);
-        }
-        .stg-field input[type="text"],
-        .stg-field input[type="password"],
-        .stg-field input[type="number"],
-        .stg-field input[type="email"],
-        .stg-field select,
-        .stg-field textarea {
-          padding: 0.7rem 0.9rem;
-          border-radius: var(--radius-md);
-          border: 1px solid var(--border-medium);
-          font-size: 0.92rem;
-          outline: none;
-          transition: border-color 0.2s, box-shadow 0.2s;
-          background: var(--bg-input);
-          color: var(--text-primary);
-          width: 100%;
-          box-sizing: border-box;
-          min-height: 2.75rem;
-        }
-        .stg-field textarea { min-height: auto; resize: vertical; }
-        .stg-field input:focus, .stg-field select:focus, .stg-field textarea:focus {
-          border-color: var(--accent-primary);
-          box-shadow: 0 0 0 3px var(--accent-soft);
-        }
-        .stg-field input:disabled, .stg-field select:disabled {
+        /* Settings forms use the global floating-outlined .field system
+           (same as the remittance form) for app-wide consistency. */
+        .field input:disabled, .field select:disabled, .field textarea:disabled {
           opacity: 0.6; cursor: not-allowed; background: var(--bg-secondary);
         }
         .stg-helper { font-size: 0.76rem; color: var(--text-muted); line-height: 1.45; }
@@ -528,12 +477,13 @@ export async function renderSettings(container, user) {
           box-sizing: border-box;
         }
         .stg-field-option {
-          display: flex; align-items: center; gap: 0.7rem;
-          padding: 0.5rem 0.6rem; cursor: pointer; border-radius: 6px;
-          transition: background 0.2s; font-size: 0.85rem; color: var(--text-primary);
+          display: flex; align-items: center; gap: 0.75rem;
+          padding: 0.65rem 0.75rem; cursor: pointer; border-radius: 8px;
+          transition: background 0.2s; font-size: 0.88rem; color: var(--text-primary);
+          border: 1px solid transparent;
         }
-        .stg-field-option:hover { background: var(--bg-secondary); }
-        .stg-field-option input[type="checkbox"] { cursor: pointer; width: 16px !important; height: 16px !important; margin: 0; flex-shrink: 0; }
+        .stg-field-option:hover { background: var(--bg-secondary); border-color: var(--border-light); }
+        .stg-field-option input[type="checkbox"] { cursor: pointer; width: 18px !important; height: 18px !important; margin: 0; flex-shrink: 0; accent-color: var(--accent-primary); }
         .stg-notice {
           display: flex; gap: 0.6rem; align-items: flex-start;
           padding: 0.8rem 1rem; border-radius: var(--radius-md);
@@ -556,7 +506,7 @@ export async function renderSettings(container, user) {
         <p class="subtitle">Personalize your cooperative experience.</p>
       </div>
 
-      <div class="page-container" style="padding: ${window.innerWidth <= 768 ? '1rem' : '2rem'};">
+      <div class="page-container" style="padding: ${window.innerWidth < 1000 ? '1rem' : '2rem'};">
         <div class="settings-layout">
           <div class="settings-menu">
             ${menuItems.map((item, idx) => `
@@ -580,6 +530,7 @@ export async function renderSettings(container, user) {
     container.querySelectorAll('.settings-menu-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         activeSection = btn.dataset.section
+        persistState('settings-section', activeSection)
         renderContent()
       })
     })
@@ -596,21 +547,21 @@ export async function renderSettings(container, user) {
             case 'password': setupPasswordListeners(user); break
             case 'feedback': setupFeedbackListeners(user); break
             case 'guarantor': setupGuarantorListeners(user, cooperativeId); break
-            case 'advice': setupAdviceListeners(user, cooperativeId); break
             case 'cooperative': setupCooperativeListeners(user, cooperativeId, container); break
             case 'banks': setupBankListeners(user, cooperativeId); break
             case 'enterprises': setupEnterpriseListeners(user, cooperativeId); break
             case 'users': setupUserManagementListeners(user, cooperativeId); break
             case 'transactionTypes': setupTransactionTypesListeners(user, cooperativeId); break
-            case 'db': setupDbManagementListeners(user, cooperativeId, container); break
             case 'restore': setupHardRestoreListeners(user, cooperativeId, (section) => {
                 activeSection = section;
+                persistState('settings-section', section);
                 renderContent();
             }); break
             case 'about': setupAboutListeners(); break
             case 'theme': setupThemeListeners(); break
             case 'display': setupDisplayListeners(); break
             case 'subscription': setupSubscriptionListeners(user, cooperativeId); break
+            case 'adminDb': setupAdminDbManagementListeners(user, cooperativeId); break
         }
     }
 

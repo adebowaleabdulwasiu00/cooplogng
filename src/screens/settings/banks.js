@@ -10,7 +10,7 @@ export function renderBankSection(area) {
           <h3 style="margin:0;">Bank List</h3>
           <p class="section-desc" style="margin: 0.35rem 0 0 0;">Manage the list of banks and payment methods available for remittances.</p>
         </div>
-        <button id="show-add-bank-btn" class="primary-button" style="padding: 0.6rem 1.5rem; font-size: 0.85rem; border-radius: var(--radius-md); width: ${window.innerWidth <= 768 ? '100%' : 'auto'};">+ Add Bank</button>
+        <button id="show-add-bank-btn" class="primary-button" style="padding: 0.6rem 1.5rem; font-size: 0.85rem; border-radius: var(--radius-md); width: ${window.innerWidth < 1000 ? '100%' : 'auto'};">+ Add Bank</button>
       </div>
       <div id="bank-table-container" class="table-responsive"><p style="color: var(--text-muted); font-style: italic;">Loading banks...</p></div>
     `;
@@ -44,11 +44,11 @@ export function setupBankListeners(user, cooperativeId) {
             <div class="stg-section">
               <div class="stg-section-title">Bank Identity</div>
               <div class="stg-grid">
-                <div class="stg-field">
+                <div class="field">
                   <span>Bank Name *</span>
                   <input type="text" id="bank-name-input" value="${escapeHtml(bank?.bank_name || '')}" placeholder="e.g. First Bank" required ${isInUse && bank?.bank_name ? 'disabled' : ''}>
                 </div>
-                <div class="stg-field">
+                <div class="field">
                   <span>Branch Name</span>
                   <input type="text" id="bank-branch-name-input" value="${escapeHtml(bank?.branch_name || '')}" placeholder="e.g. Main Branch" ${isInUse && bank?.branch_name ? 'disabled' : ''}>
                 </div>
@@ -57,15 +57,15 @@ export function setupBankListeners(user, cooperativeId) {
             <div class="stg-section">
               <div class="stg-section-title">Account Details</div>
               <div class="stg-grid">
-                <div class="stg-field">
+                <div class="field">
                   <span>Account Name</span>
                   <input type="text" id="bank-account-name-input" value="${escapeHtml(bank?.account_name || '')}" placeholder="e.g. Cooperative Savings" ${isInUse && bank?.account_name ? 'disabled' : ''}>
                 </div>
-                <div class="stg-field">
+                <div class="field">
                   <span>Account Number</span>
                   <input type="text" id="bank-account-number-input" value="${escapeHtml(bank?.account_number || '')}" placeholder="e.g. 0123456789" inputmode="numeric" ${isInUse && bank?.account_number ? 'disabled' : ''}>
                 </div>
-                <div class="stg-field">
+                <div class="field">
                   <span>SWIFT Code</span>
                   <input type="text" id="bank-swift-code-input" value="${escapeHtml(bank?.swift_code || '')}" placeholder="Optional" ${isInUse && bank?.swift_code ? 'disabled' : ''}>
                 </div>
@@ -137,7 +137,7 @@ export function setupBankListeners(user, cooperativeId) {
           };
         }
         if (editingBank) {
-          await updateBank(bankData, user.username);
+          await updateBank(editingBank.id, bankData, user.username);
         } else {
           await addBank({ cooperative_id: cooperativeId, ...bankData }, user.username);
         }

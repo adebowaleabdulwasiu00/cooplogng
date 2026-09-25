@@ -6,7 +6,7 @@
  */
 
 const DB_NAME = 'CoopLogIDB_v3';
-const DB_VERSION = 6; // v6: self-heal — recreate any missing store/index (stale devices)
+const DB_VERSION = 7; // v7: add parent_remittance_id index for grouping autogen children
 
 // Object stores mapped to application tables
 const STORES = {
@@ -218,7 +218,7 @@ export function initIndexedDb() {
         const tx = e.target.transaction;
         const INDEXES = {
           members: ['cooperative_id'],
-          remittance: ['cooperative_id', 'member_id', 'loan_id'],
+          remittance: ['cooperative_id', 'member_id', 'loan_id', 'parent_remittance_id'],
           loans: ['cooperative_id', 'member_id', 'remittance_id'],
           remittance_detail: ['remittance_id'],
           sync_queue: ['status', 'cooperative_id'],
@@ -256,6 +256,18 @@ export function initIndexedDb() {
             }
           } catch (err) {
             console.warn(`[IndexedDB] v6 heal skipped ${storeName}:`, err && err.message);
+          }
+        }
+      }
+
+      // ── Version 7: add parent_remittance_id index on remittance ─────
+      if (oldVersion < 7) {
+        const tx = e.target.transaction;
+        if (db.objectStoreNames.contains('remittance')) {
+          const remStore = tx.objectStore('remittance');
+          if (!remStore.indexNames.contains('parent_remittance_id')) {
+            remStore.createIndex('parent_remittance_id', 'parent_remittance_id', { unique: false });
+            console.log('[IndexedDB] Added remittance.parent_remittance_id index');
           }
         }
       }

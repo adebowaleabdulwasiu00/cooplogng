@@ -1,9 +1,9 @@
 import { escapeHtml, formatCurrency, formatDate, formatDateTime, formatDateForInput, getInitials, generateId, timestampTail } from '../../utils/formatters.js';
-import { getAvatarColor } from './constants.js';
+import { getAvatarColor, isMobile } from './constants.js';
 import { attachEventListeners } from './remittanceEventListeners.js';
 
 export function render(container, deps) {
-    const { formData, historyState, enterpriseData, members, selectorMembers, banks, transactionTypes, openingBalances, paymentAdvise, showAllZeros, previewMode, isAdmin, isMember, canApprove, canDelete, canReverse, trackFocus, restoreFocus, getFormattedName, attachHistoryEventListeners } = deps;
+    const { formData, historyState, enterpriseData, members, selectorMembers, banks, transactionTypes, openingBalances, paymentAdvise, showAllZeros, previewMode, editMode, isAdmin, isMember, canApprove, canDelete, canReverse, trackFocus, restoreFocus, getFormattedName, attachHistoryEventListeners } = deps;
     trackFocus();
     const selectedMember = formData.member_id ? historyState.membersMap[formData.member_id] : null;
 
@@ -453,6 +453,23 @@ export function render(container, deps) {
           margin-top: 0.15rem;
         }
 
+        /* Child row (autogen group) */
+        .history-table tbody tr.child-row {
+          cursor: pointer;
+        }
+        .history-table tbody tr.child-row:hover {
+          background: var(--bg-secondary);
+        }
+        .expand-toggle {
+          color: var(--accent-primary);
+          font-weight: 700;
+          transition: text-shadow 0.15s ease;
+        }
+        .expand-toggle:hover {
+          color: var(--accent-primary) !important;
+          text-shadow: 0 0 4px var(--accent-primary);
+        }
+
         /* Admin Mode Row */
         .admin-mode-row {
           display: flex;
@@ -496,15 +513,121 @@ export function render(container, deps) {
           background: var(--success-bg);
           color: var(--success);
         }
+
+        /* ===== Mobile Tabbed Layout ===== */
+        .mobile-tab-bar { display: none; }
+
+        @media (max-width: 999px) {
+          .unified-container { height: auto !important; overflow: visible !important; }
+
+          .mobile-tab-bar {
+            display: flex !important; position: sticky; top: 0; z-index: 50;
+            background: var(--bg-card); border-bottom: 1px solid var(--border-light);
+          }
+          .mobile-tab-btn {
+            flex: 1; padding: 0.65rem 0.5rem; border: none; background: transparent;
+            font-size: 0.78rem; font-weight: 700; color: var(--text-muted); cursor: pointer;
+            border-bottom: 2px solid transparent; transition: color 0.15s, border-color 0.15s;
+            text-align: center; white-space: nowrap;
+          }
+          .mobile-tab-btn.active { color: var(--accent-primary); border-bottom-color: var(--accent-primary); }
+          .mobile-tab-btn:active { opacity: 0.7; }
+
+          .top-section { flex-direction: column !important; min-height: 0 !important; border-bottom: none !important; height: auto !important; }
+          .form-panel { border-right: none !important; min-height: 0; }
+          .breakdown-panel { min-width: 0 !important; min-height: 0; }
+          .resizer-v, .resizer-h { display: none !important; }
+
+          .form-panel { overflow: visible !important; }
+
+          .form-grid-3 { grid-template-columns: 1fr 1fr !important; }
+          .form-grid-3 .field:nth-child(3) { grid-column: 1 / -1; }
+          .form-actions { flex-wrap: wrap; }
+          .form-actions .btn { flex: 1; min-width: 0; }
+
+          .history-controls { flex-direction: column !important; gap: 0.5rem !important; padding: 0.5rem 0.75rem !important; }
+          .history-controls > div { width: 100%; }
+          .history-controls .search-select { width: 100%; }
+          .history-controls .search-input { width: 100%; flex: none; }
+
+          /* Compact 2x2 card layout for history on mobile */
+          .history-section .history-table tr {
+            grid-template-columns: 1fr 1fr !important;
+            gap: 0 !important;
+            padding: 0.6rem 0.75rem !important;
+            border-left: 4px solid transparent !important;
+            align-items: start !important;
+          }
+          .history-section .history-table td {
+            padding: 0.15rem 0 !important;
+            align-self: start !important;
+          }
+          /* Kill the ::before labels from global style.css */
+          .history-section .history-table td::before { display: none !important; }
+
+          /* Status color indicator */
+          .history-section .history-table tr[data-status="Approved"] { border-left-color: var(--success) !important; }
+          .history-section .history-table tr[data-status="Pending"] { border-left-color: var(--warning) !important; }
+          .history-section .history-table tr[data-status="Rejected"] { border-left-color: var(--danger) !important; }
+
+          /* Hide non-essential cells */
+          .history-section .history-table td:nth-child(1),
+          .history-section .history-table td:nth-child(3),
+          .history-section .history-table td:nth-child(6),
+          .history-section .history-table td:nth-child(8),
+          .history-section .history-table td:nth-child(9),
+          .history-section .history-table td:nth-child(10) { display: none !important; }
+
+          /* Right-aligned cells using flex: Date(4), Amount(7) */
+          .history-section .history-table td:nth-child(4),
+          .history-section .history-table td:nth-child(7) {
+            align-items: flex-end !important;
+            text-align: right !important;
+          }
+
+          /* Tab: form */
+          .unified-container[data-mobile-tab="form"] .breakdown-panel,
+          .unified-container[data-mobile-tab="form"] .resizer-v,
+          .unified-container[data-mobile-tab="form"] .resizer-h,
+          .unified-container[data-mobile-tab="form"] .history-section { display: none !important; }
+          .unified-container[data-mobile-tab="form"] .form-panel { display: flex !important; }
+
+          /* Tab: breakdown */
+          .unified-container[data-mobile-tab="breakdown"] .form-panel,
+          .unified-container[data-mobile-tab="breakdown"] .resizer-v,
+          .unified-container[data-mobile-tab="breakdown"] .resizer-h,
+          .unified-container[data-mobile-tab="breakdown"] .history-section { display: none !important; }
+          .unified-container[data-mobile-tab="breakdown"] .breakdown-panel {
+            display: flex !important; flex: none; min-height: 0; overflow: visible;
+          }
+          .unified-container[data-mobile-tab="breakdown"] .breakdown-content { display: flex !important; }
+
+          /* Tab: history */
+          .unified-container[data-mobile-tab="history"] .top-section,
+          .unified-container[data-mobile-tab="history"] .resizer-h { display: none !important; }
+          .unified-container[data-mobile-tab="history"] .history-section { display: flex !important; }
+        }
+
+        @media (max-width: 480px) {
+          .form-grid-3 { grid-template-columns: 1fr !important; }
+          .form-grid-3 .field:nth-child(3) { grid-column: auto; }
+        }
       </style>
 
-      <div class="unified-container">
+      <div class="unified-container" data-mobile-tab="form">
+        <!-- Mobile Tab Bar -->
+        <div class="mobile-tab-bar">
+          <button type="button" class="mobile-tab-btn active" data-tab="form">Form</button>
+          <button type="button" class="mobile-tab-btn" data-tab="breakdown">Breakdown</button>
+          <button type="button" class="mobile-tab-btn" data-tab="history">History</button>
+        </div>
+
         <!-- Top Section -->
         <div class="top-section" id="top-section">
           <!-- Form Panel -->
           <div class="form-panel">
             <div class="panel-header">
-              <h3 class="panel-title">${previewMode ? 'Remittance Preview' : 'Log Remittance'}</h3>
+              <h3 class="panel-title">${editMode ? 'Edit Remittance' : previewMode ? 'Remittance Preview' : 'Log Remittance'}</h3>
               ${previewMode ? '' : isAdmin && !formData.isLoanRequest ? `
                 <div class="admin-mode-row" style="padding: 0; background: transparent;">
                   <input type="checkbox" id="admin-mode-check" ${formData.member_id === '0000000000' ? 'checked' : ''}>
@@ -518,11 +641,11 @@ export function render(container, deps) {
                 <div class="form-grid-3">
                   <div class="field">
                     <label>Transaction Date</label>
-                    <input type="date" name="remittance_date" value="${formatDateForInput(formData.remittance_date)}" required ${previewMode ? 'disabled' : ''}>
+                    <input type="date" name="remittance_date" value="${formatDateForInput(formData.remittance_date)}" required ${previewMode && !editMode ? 'disabled' : ''}>
                   </div>
                   <div class="field">
                     <label>Bank or Payment Method</label>
-                    <select name="bank_name" required ${previewMode ? 'disabled' : ''}>
+                    <select name="bank_name" required ${previewMode && !editMode ? 'disabled' : ''}>
                       <option value="">-- Select Bank --</option>
                       ${(() => {
                         let bankOptions = [...banks];
@@ -535,14 +658,14 @@ export function render(container, deps) {
                   </div>
                   <div class="field">
                     <label>Total Amount (₦)</label>
-                    <input type="number" step="0.01" name="amount" id="total-amount-input" value="${formData.amount}" required style="font-size: 1.25rem; font-weight: 700;" class="clear-on-zero" ${previewMode ? 'disabled' : ''}>
+                    <input type="number" step="0.01" name="amount" id="total-amount-input" value="${formData.amount}" required style="font-size: 1.25rem; font-weight: 700;" class="clear-on-zero" ${previewMode && !editMode ? 'disabled' : ''}>
                   </div>
                 </div>
 
                 <!-- Row 2: Note -->
                 <div class="field" style="margin-top: 0.3rem;">
                   <label>Note / Description</label>
-                  <textarea name="description" rows="1" style="width: 100%; min-height: 3.25rem; height: 3.25rem; padding: 1.15rem 1rem 0.35rem 1rem; resize: none; overflow: hidden;" oninput="this.style.height='';this.style.height=this.scrollHeight+2+'px'" ${previewMode ? 'disabled' : ''}>${escapeHtml(formData.description)}</textarea>
+                  <textarea name="description" rows="1" style="width: 100%; min-height: 3.25rem; height: 3.25rem; padding: 1.15rem 1rem 0.35rem 1rem; resize: none; overflow: hidden;" oninput="this.style.height='';this.style.height=this.scrollHeight+2+'px'" ${previewMode && !editMode ? 'disabled' : ''}>${escapeHtml(formData.description)}</textarea>
                 </div>
 
                 <!-- Row 3: Member Name (full width) -->
@@ -562,8 +685,8 @@ export function render(container, deps) {
                           <input type="text" name="member_id" value="${formData.member_id}" placeholder="Enter Member ID manually" required>
                         ` : `
                           <div class="member-search-row">
-                            <input type="text" id="member-search-input" class="member-search-input" placeholder="Search by Reg No, Name, or Mobile..." value="${escapeHtml(selectedMember ? selectedMember.name : '')}" ${previewMode ? 'disabled' : ''}>
-                            ${previewMode ? '' : `<button type="button" id="reset-member-btn" class="btn btn-ghost">Reset</button>`}
+                            <input type="text" id="member-search-input" class="member-search-input" placeholder="Search by Reg No, Name, or Mobile..." value="${escapeHtml(selectedMember ? selectedMember.name : '')}" ${previewMode && !editMode ? 'disabled' : ''}>
+                            ${(previewMode && !editMode) ? '' : `<button type="button" id="reset-member-btn" class="btn btn-ghost">Reset</button>`}
                           </div>
                           <div id="member-search-suggestions" class="search-suggestions" style="display: none; background: var(--bg-card); border: 1px solid var(--border-medium); border-radius: var(--radius-sm); box-shadow: var(--shadow-xl); z-index: 999999; max-height: 200px; overflow-y: auto;"></div>
                           <input type="hidden" name="member_id" id="member-id-select" value="${formData.member_id}" required>
@@ -584,7 +707,7 @@ export function render(container, deps) {
                 <!-- Transaction Type -->
                 <div id="transaction-type-container" class="field" style="display: ${formData.member_id === '0000000000' ? 'block' : 'none'}; margin-top: 0.5rem;">
                   <label>Transaction Type</label>
-                  <select name="transaction_type" style="width: 100%;" ${previewMode ? 'disabled' : ''}>
+                  <select name="transaction_type" style="width: 100%;" ${previewMode && !editMode ? 'disabled' : ''}>
                     <option value="">-- Select Transaction Type --</option>
                     ${transactionTypes.filter(t => t.is_active).map(t => `<option value="${t.transaction_type}" ${formData.transaction_type === t.transaction_type ? 'selected' : ''}>${t.transaction_type}</option>`).join('')}
                   </select>
@@ -592,13 +715,14 @@ export function render(container, deps) {
               </form>
             </div>
             <div class="form-actions">
-              ${!previewMode && !isMember ? `<button type="button" id="bulk-log-btn" class="btn btn-secondary" style="margin-right: auto;" title="Bulk loans, deposits, dues, penalties and transfers for many members at once">Bulk Entry</button>` : ''}
+              ${!previewMode && !editMode && !isMember ? `<button type="button" id="bulk-log-btn" class="btn btn-secondary" style="margin-right: auto;" title="Bulk loans, deposits, dues, penalties and transfers for many members at once">Bulk Entry</button>` : ''}
               <button type="button" id="clear-log-btn" class="btn btn-secondary">${previewMode ? 'Add New Remittance' : 'Clear Form'}</button>
-              ${previewMode ? (canApprove && formData.status === 'Pending' ?
-                `<button type="button" id="review-log-btn" class="btn btn-primary">Review</button>`
-                : '') : `<button type="button" id="submit-log-btn" class="btn btn-primary">
-                Save Remittance
-              </button>`}
+              ${editMode ?
+                `<button type="button" id="update-log-btn" class="btn btn-primary">Update Remittance</button>` :
+                previewMode ? (canApprove && formData.status === 'Pending' ?
+                  `<button type="button" id="review-log-btn" class="btn btn-primary">Review</button>`
+                  : '') : `<button type="button" id="submit-log-btn" class="btn btn-primary">Save Remittance</button>`
+              }
             </div>
           </div>
 
@@ -654,8 +778,8 @@ export function render(container, deps) {
                                   ${escapeHtml(e.account_name || e.id)}
                                 </span>
                                 ${isLoan ? `
-                                  <button type="button" class="config-loan-btn ${hasLoanInfo ? 'configured' : ''}" data-entid="${e.id}" data-readonly="${previewMode}">
-                                    ${hasLoanInfo ? 'View Details' : previewMode ? 'View Details' : 'Configure'}
+                                  <button type="button" class="config-loan-btn ${hasLoanInfo ? 'configured' : ''}" data-entid="${e.id}" data-readonly="${previewMode && !editMode}">
+                                    ${hasLoanInfo ? 'View Details' : (previewMode && !editMode) ? 'View Details' : 'Configure'}
                                   </button>
                                 ` : ''}
                               </div>
@@ -667,7 +791,7 @@ export function render(container, deps) {
                               ${advise === 0 ? '-' : advise.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2})}
                             </td>
                             <td style="padding: 0.2rem;">
-                              <input type="number" step="0.01" class="detail-amt-grid clear-on-zero" data-opening="${opening}" value="${inputAmt}" data-row-index="${idx}" ${previewMode || e.compulsory_due ? 'disabled' : ''} ${!previewMode && e.compulsory_due ? 'title="Compulsory due — charged separately on save"' : ''}>
+                              <input type="number" step="0.01" class="detail-amt-grid clear-on-zero" data-opening="${opening}" value="${inputAmt}" data-row-index="${idx}" ${(previewMode && !editMode) || e.compulsory_due ? 'disabled' : ''} ${!(previewMode && !editMode) && e.compulsory_due ? 'title="Compulsory due — charged separately on save"' : ''}>
                             </td>
                             <td class="row-closing-bal" style="padding: 0.4rem 0.6rem; font-weight: 600; color: ${closing < 0 ? 'var(--danger)' : 'inherit'}">
                               ${closing === 0 ? '-' : closing.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2})}
@@ -704,7 +828,7 @@ export function render(container, deps) {
         <!-- History Section -->
         <div class="history-section">
           <!-- History Controls -->
-          <div class="history-controls" style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: 0 1rem 1rem 1rem; flex-wrap: wrap;">
+          <div class="history-controls" style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: 4px 1rem 4px 1rem; flex-wrap: wrap;">
             <div style="display: flex; gap: 0.5rem; align-items: center;">
               ${(() => {
                 const hasSelected = historyState.selectedRemittanceIds.size > 0;
@@ -716,8 +840,9 @@ export function render(container, deps) {
                 if (hasSelected) {
                   html += `<button type="button" id="toggle-selection-mode-btn" class="btn btn-primary" style="padding: 0.5rem 1rem;">Selected (${historyState.selectedRemittanceIds.size})</button>`;
                 }
+                // Delete shown when user has delete_remittance permission.
                 if (canDelete) {
-                  html += `<button type="button" id="delete-selected-btn" class="btn btn-danger" style="padding: 0.5rem 1rem; display: ${hasSelected ? 'inline-block' : 'none'};">Delete Selected</button>`;
+                  html += `<button type="button" id="delete-selected-btn" class="btn btn-secondary" style="padding: 0.5rem 1rem; display: ${hasSelected ? 'inline-block' : 'none'};" title="Delete the selected transaction(s)">Delete</button>`;
                 }
                 if (canReverse) {
                   html += `<button type="button" id="reverse-selected-btn" class="btn btn-secondary" style="padding: 0.5rem 1rem; display: ${hasSelected ? 'inline-block' : 'none'};" title="Mirror the selected transaction(s) with opposite amounts">Reverse</button>`;
@@ -766,43 +891,92 @@ export function render(container, deps) {
                 </tr>
               </thead>
               <tbody id="history-tbody">
-                ${historyState.allRemittances.map((remit, idx) => {
-                  const member = historyState.membersMap[remit.member_id];
-                  const isSelected = historyState.selectedRemittanceIds.has(remit.id);
-                  return `
-                  <tr class="${historyState.selectedRemittanceId === remit.id ? 'selected' : ''}" data-id="${remit.id}" data-row-index="${idx}">
-                    <td>
-                      <input type="checkbox" class="remit-checkbox" data-id="${remit.id}" ${isSelected ? 'checked' : ''}>
-                    </td>
-                    ${!isMember ? `
+                ${(() => {
+                  let rowsHtml = '';
+                  historyState.allRemittances.forEach((remit, idx) => {
+                    const member = historyState.membersMap[remit.member_id];
+                    const isSelected = historyState.selectedRemittanceIds.has(remit.id);
+                    const childCount = remit.children ? remit.children.length : 0;
+                    const isExpanded = historyState.expandedRemittanceIds.has(remit.id);
+                    rowsHtml += `
+                    <tr class="${historyState.selectedRemittanceId === remit.id ? 'selected' : ''} ${isSelected ? 'selected' : ''}" data-id="${remit.id}" data-row-index="${idx}" data-status="${remit.status || 'Pending'}">
                       <td>
-                        <div class="member-name-cell" style="color: ${remit.member_id === '0000000000' ? 'var(--accent-primary)' : 'var(--text-primary)'}">${escapeHtml(getFormattedName(remit.member_id, remit.transaction_type))}</div>
-                        <div class="member-reg-cell">${timestampTail(remit.id)}</div>
+                        <input type="checkbox" class="remit-checkbox" data-id="${remit.id}" ${isSelected ? 'checked' : ''}>
                       </td>
-                    ` : `
+                      ${!isMember ? `
+                        <td>
+                          <div class="member-name-cell" style="color: ${remit.member_id === '0000000000' ? 'var(--accent-primary)' : 'var(--text-primary)'}">
+                            ${childCount > 0 ? `<span class="expand-toggle" data-toggle-id="${remit.id}" style="cursor:pointer;margin-right:4px;color:var(--accent-primary);font-weight:700;user-select:none;">${isExpanded ? '▼' : '▶'}</span>` : ''}
+                            ${escapeHtml(getFormattedName(remit.member_id, remit.transaction_type))}
+                            ${childCount > 0 ? `<span style="font-size:0.7rem;color:var(--text-muted);margin-left:4px;">(${childCount})</span>` : ''}
+                          </div>
+                          <div class="member-reg-cell">${timestampTail(remit.id)}</div>
+                        </td>
+                      ` : `
+                        <td>
+                          <div class="member-name-cell">${timestampTail(remit.id)}</div>
+                        </td>
+                      `}
+                      <td><div style="color: var(--text-muted); font-size: 0.85rem;">${escapeHtml(member?.special_id || '—')}</div></td>
+                      <td><div>${formatDate(remit.remittance_date)}</div></td>
+                      <td><div style="font-weight: 600;">${escapeHtml(remit.bank_name || 'Direct')}</div></td>
+                      <td><div style="max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-muted);" title="${escapeHtml(remit.description || '')}">${escapeHtml(remit.description || '')}</div></td>
+                      <td class="text-right">
+                        <div style="font-family: 'Outfit', sans-serif; font-weight: 800; font-size: 1rem; color: ${remit.amount < 0 ? 'var(--danger)' : 'var(--success)'};">${formatCurrency(remit.amount)}</div>
+                      </td>
+                      <td><span class="status-badge status-${escapeHtml(remit.status || 'Pending')}">${escapeHtml(remit.status || 'Pending')}</span></td>
                       <td>
-                        <div class="member-name-cell">${timestampTail(remit.id)}</div>
+                        <div class="modified-by-name">${escapeHtml(remit.created_by || '—')}</div>
+                        <div class="modified-at-time">${formatDateTime(remit.created_at || remit.remittance_date) || '—'}</div>
                       </td>
-                    `}
-                    <td><div style="color: var(--text-muted); font-size: 0.85rem;">${escapeHtml(member?.special_id || '—')}</div></td>
-                    <td><div>${formatDate(remit.remittance_date)}</div></td>
-                    <td><div style="font-weight: 600;">${escapeHtml(remit.bank_name || 'Direct')}</div></td>
-                    <td><div style="max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-muted);" title="${escapeHtml(remit.description || '')}">${escapeHtml(remit.description || '')}</div></td>
-                    <td class="text-right">
-                      <div style="font-family: 'Outfit', sans-serif; font-weight: 800; font-size: 1rem; color: ${remit.amount < 0 ? 'var(--danger)' : 'var(--success)'};">${formatCurrency(remit.amount)}</div>
-                    </td>
-                    <td><span class="status-badge status-${escapeHtml(remit.status || 'Pending')}">${escapeHtml(remit.status || 'Pending')}</span></td>
-                    <td>
-                      <div class="modified-by-name">${escapeHtml(remit.created_by || '—')}</div>
-                      <div class="modified-at-time">${formatDateTime(remit.created_at || remit.remittance_date) || '—'}</div>
-                    </td>
-                    <td>
-                      <div class="modified-by-name">${escapeHtml(remit.modified_by || remit.created_by || '—')}</div>
-                      <div class="modified-at-time">${formatDateTime(remit.modified_at || remit.created_at || remit.remittance_date) || '—'}</div>
-                    </td>
-                  </tr>
-                  `;
-                }).join('')}
+                      <td>
+                        <div class="modified-by-name">${escapeHtml(remit.modified_by || remit.created_by || '—')}</div>
+                        <div class="modified-at-time">${formatDateTime(remit.modified_at || remit.created_at || remit.remittance_date) || '—'}</div>
+                      </td>
+                    </tr>
+                    `;
+                    if (remit.children && remit.children.length > 0 && isExpanded) {
+                      remit.children.forEach((child) => {
+                        const cMember = historyState.membersMap[child.member_id];
+                        rowsHtml += `
+                        <tr class="child-row" data-id="${child.id}" data-parent-id="${remit.id}" data-status="${child.status || 'Pending'}" style="background: var(--bg-secondary);">
+                          <td><span style="display:inline-block;width:12px;"></span></td>
+                          ${!isMember ? `
+                            <td>
+                              <div class="member-name-cell" style="color: ${child.member_id === '0000000000' ? 'var(--accent-primary)' : 'var(--text-primary)'}; font-size:0.82rem;font-weight:500;">
+                                <span style="color:var(--text-muted);margin-right:4px;">└</span>
+                                ${escapeHtml(getFormattedName(child.member_id, child.transaction_type))}
+                              </div>
+                              <div class="member-reg-cell">${timestampTail(child.id)}</div>
+                            </td>
+                          ` : `
+                            <td>
+                              <div class="member-name-cell">${timestampTail(child.id)}</div>
+                            </td>
+                          `}
+                          <td><div style="color: var(--text-muted); font-size: 0.85rem;">${escapeHtml(cMember?.special_id || '—')}</div></td>
+                          <td><div>${formatDate(child.remittance_date)}</div></td>
+                          <td><div style="font-weight: 600;">${escapeHtml(child.bank_name || 'Direct')}</div></td>
+                          <td><div style="max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-muted);" title="${escapeHtml(child.description || '')}">${escapeHtml(child.description || '')}</div></td>
+                          <td class="text-right">
+                            <div style="font-family: 'Outfit', sans-serif; font-weight: 800; font-size: 0.85rem; color: ${child.amount < 0 ? 'var(--danger)' : 'var(--success)'}; opacity:0.8;">${formatCurrency(child.amount)}</div>
+                          </td>
+                          <td><span class="status-badge status-${escapeHtml(child.status || 'Pending')}" style="font-size:0.65rem;padding:0.15rem 0.5rem;">${escapeHtml(child.status || 'Pending')}</span></td>
+                          <td>
+                            <div class="modified-by-name">${escapeHtml(child.created_by || '—')}</div>
+                            <div class="modified-at-time">${formatDateTime(child.created_at || child.remittance_date) || '—'}</div>
+                          </td>
+                          <td>
+                            <div class="modified-by-name">${escapeHtml(child.modified_by || child.created_by || '—')}</div>
+                            <div class="modified-at-time">${formatDateTime(child.modified_at || child.created_at || child.remittance_date) || '—'}</div>
+                          </td>
+                        </tr>
+                        `;
+                      });
+                    }
+                  });
+                  return rowsHtml;
+                })()}
               </tbody>
             </table>
             <div id="history-scroll-indicator" style="text-align:center;padding:1rem;color:var(--text-muted);font-size:0.85rem;display:none;">

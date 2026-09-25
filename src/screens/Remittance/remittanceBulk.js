@@ -1,5 +1,6 @@
-import { generateId, generateRemittanceId, escapeHtml, formatDateForInput } from '../../utils/formatters.js';
+import { generateId, generateRemittanceId, escapeHtml, formatDateForInput, formatCurrency, formatNumber } from '../../utils/formatters.js';
 import { addRemittance, buildAccountBalance, fetchMemberDoc, updateMemberPaymentAdvice } from '../../services/dataService.js';
+import { createDuesTransfer, resolveDueFunding, createDueFundingTransfer } from '../../services/data/duesTransfer.js';
 import { getRemittances } from '../../services/sqliteService.js';
 import { hasPermission } from '../../services/permissionService.js';
 import { showToast } from '../../services/toastService.js';
@@ -17,6 +18,7 @@ export function showBulkRemittanceModal(deps) {
     const createdBy = user.role === 'member' ? 'self' : user.username;
     const status = canApprove ? 'Approved' : 'Pending';
     const banks = historyState?.banks || [];
+    const txTypes = (historyState?.transactionTypes || []).filter(t => t == null || t.is_active === undefined || t.is_active);
     const today = new Date().toISOString().split('T')[0];
 
     const getAccountType = (acc) => (acc?.account_type || acc?.type || acc?.Account_Type || '').toLowerCase();
@@ -31,10 +33,13 @@ export function showBulkRemittanceModal(deps) {
     let direction = 'loan';
     let selectedEntId = loanEnts[0]?.id || '';
     let selectedCreditEntId = transferEnts[0]?.id || '';
+    let selectedFundingEntId = savingsEnts[0]?.id || '';
+    // Member → Admin credit side is a transaction type (House header-only).
+    let selectedTxType = (txTypes.find(t => t.transaction_type === 'Other Income') || txTypes[0])?.transaction_type || '';
     let toMemberId = '';
     let fromMemberId = '';
     let rowAmounts = {};
-    const isTransferDir = () => direction === 'transfer' || direction === 'one_to_many' || direction === 'one_to_one';
+    const isTransferDir = () => direction === 'transfer' || direction === 'one_to_many' || direction === 'one_to_one' || direction === 'to_admin';
     const showMultiList = () => direction !== 'one_to_one';
     const showFromSingle = () => direction === 'one_to_many' || direction === 'one_to_one';
     const showToSingle = () => direction === 'transfer' || direction === 'one_to_one';
@@ -109,21 +114,20 @@ export function showBulkRemittanceModal(deps) {
                 const v = parseFloat(rowAmounts[id] || 0) || 0;
                 if (v > 0) { n++; sum += v; }
             });
-            el.innerHTML = `<strong>${n}</strong> member${n === 1 ? '' : 's'} with amounts = <strong>₦${sum.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>`;
+            el.innerHTML = `<strong>${n}</strong> member${n === 1 ? '' : 's'} with amounts = <strong>${formatCurrency(sum)}</strong>`;
             return;
         }
         const n = direction === 'one_to_one' ? 1 : checkedIds.size;
         const amt = parseFloat(overlay.querySelector('#bulk-amount')?.value || 0) || 0;
-        el.innerHTML = `<strong>${n}</strong> selected &times; ₦${amt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} = <strong>₦${(n * amt).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>`;
+        el.innerHTML = `<strong>${n}</strong> selected &times; ${formatCurrency(amt)} = <strong>${formatCurrency(n * amt)}</strong>`;
     };
 
     // Searchable single-member picker (From / To). includeHouse pins the
     // House (0000000000) option on top for 1-to-1 recipient selection.
     const singlePickerHTML = (prefix, label) => `
-        <div style="display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.8rem; font-weight: 600; color: var(--text-muted);">
-          <span>${label}</span>
-          <input id="${prefix}-search" type="text" placeholder="Search Reg No, name, mobile..." autocomplete="off"
-            style="padding: 0.55rem 0.6rem; border-radius: var(--radius-sm); border: 1px solid var(--border-medium); background: var(--bg-input); color: var(--text-primary); font-size: 0.88rem;">
+        <div class="field">
+          <label>${label}</label>
+          <input id="${prefix}-search" type="text" placeholder="Search Reg No, name, mobile..." autocomplete="off">
           <div id="${prefix}-sugg" style="display: none; border: 1px solid var(--border-medium); border-radius: var(--radius-sm); max-height: 160px; overflow-y: auto; background: var(--bg-card);"></div>
           <div id="${prefix}-picked" style="font-size: 0.82rem; color: var(--text-muted); font-weight: 400;"></div>
         </div>
@@ -201,8 +205,8 @@ export function showBulkRemittanceModal(deps) {
         </div>
         <div id="bulk-body" style="padding: 1.1rem 1.25rem; overflow-y: auto; display: flex; flex-direction: column; gap: 1rem;">
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;">
-            <label style="display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.8rem; font-weight: 600; color: var(--text-muted);">Type
-              <select id="bulk-direction" style="padding: 0.55rem 0.6rem; border-radius: var(--radius-sm); border: 1px solid var(--border-medium); background: var(--bg-input); color: var(--text-primary); font-size: 0.88rem;">
+            <div class="field"><label>Type</label>
+              <select id="bulk-direction">
                 <option value="loan">Loan (disburse)</option>
                 <option value="deposit">Deposit (savings)</option>
                 <option value="due">Due (compulsory)</option>
@@ -210,34 +214,38 @@ export function showBulkRemittanceModal(deps) {
                 <option value="transfer">Transfer (many → one)</option>
                 <option value="one_to_many">Transfer (one → many)</option>
                 <option value="one_to_one">Transfer (1-to-1)</option>
+                <option value="to_admin">Collection → Admin (members → house)</option>
                 <option value="deposit_varied">Deposit (varied amounts)</option>
               </select>
-            </label>
-            <label style="display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.8rem; font-weight: 600; color: var(--text-muted);"><span id="bulk-ent-label">Enterprise</span>
-              <select id="bulk-enterprise" style="padding: 0.55rem 0.6rem; border-radius: var(--radius-sm); border: 1px solid var(--border-medium); background: var(--bg-input); color: var(--text-primary); font-size: 0.88rem;"></select>
-            </label>
-            <label id="bulk-creditent-wrap" style="display: none; flex-direction: column; gap: 0.3rem; font-size: 0.8rem; font-weight: 600; color: var(--text-muted);">Credit enterprise (to)
-              <select id="bulk-credit-enterprise" style="padding: 0.55rem 0.6rem; border-radius: var(--radius-sm); border: 1px solid var(--border-medium); background: var(--bg-input); color: var(--text-primary); font-size: 0.88rem;"></select>
-            </label>
-            <label id="bulk-amount-wrap" style="display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.8rem; font-weight: 600; color: var(--text-muted);">Amount (per member)
-              <input id="bulk-amount" type="number" step="0.01" min="0" value="0" style="padding: 0.55rem 0.6rem; border-radius: var(--radius-sm); border: 1px solid var(--border-medium); background: var(--bg-input); color: var(--text-primary); font-size: 0.88rem;">
-            </label>
-            <label style="display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.8rem; font-weight: 600; color: var(--text-muted);">Date
-              <input id="bulk-date" type="date" value="${today}" style="padding: 0.55rem 0.6rem; border-radius: var(--radius-sm); border: 1px solid var(--border-medium); background: var(--bg-input); color: var(--text-primary); font-size: 0.88rem;">
-            </label>
-            <label style="display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.8rem; font-weight: 600; color: var(--text-muted);">Bank
-              <select id="bulk-bank" style="padding: 0.55rem 0.6rem; border-radius: var(--radius-sm); border: 1px solid var(--border-medium); background: var(--bg-input); color: var(--text-primary); font-size: 0.88rem;">
+            </div>
+            <div class="field"><label id="bulk-ent-label">Enterprise</label>
+              <select id="bulk-enterprise"></select>
+            </div>
+            <div class="field" id="bulk-creditent-wrap" style="display: none;"><label id="bulk-creditent-label">Credit enterprise (to)</label>
+              <select id="bulk-credit-enterprise"></select>
+            </div>
+            <div class="field" id="bulk-fund-source-wrap" style="display: none;"><label id="bulk-fund-source-label">Fund from (savings account)</label>
+              <select id="bulk-fund-source"></select>
+            </div>
+            <div class="field" id="bulk-amount-wrap"><label>Amount (per member)</label>
+              <input id="bulk-amount" type="number" step="0.01" min="0" value="0">
+            </div>
+            <div class="field"><label>Date</label>
+              <input id="bulk-date" type="date" value="${today}">
+            </div>
+            <div class="field"><label>Bank</label>
+              <select id="bulk-bank">
                 <option value="">-- Select --</option>
                 ${banks.map(b => `<option value="${escapeHtml(b.bank_name || b.id)}">${escapeHtml(b.bank_name || b.id)}</option>`).join('')}
               </select>
-            </label>
-            <label id="bulk-duration-wrap" style="display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.8rem; font-weight: 600; color: var(--text-muted);">Duration (months)
-              <input id="bulk-duration" type="number" step="1" min="1" value="12" style="padding: 0.55rem 0.6rem; border-radius: var(--radius-sm); border: 1px solid var(--border-medium); background: var(--bg-input); color: var(--text-primary); font-size: 0.88rem;">
-            </label>
+            </div>
+            <div class="field" id="bulk-duration-wrap"><label>Duration (months)</label>
+              <input id="bulk-duration" type="number" step="1" min="1" value="12">
+            </div>
           </div>
-          <label style="display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.8rem; font-weight: 600; color: var(--text-muted);">Note / Description
-            <input id="bulk-desc" type="text" placeholder="e.g. March group loans" style="padding: 0.55rem 0.6rem; border-radius: var(--radius-sm); border: 1px solid var(--border-medium); background: var(--bg-input); color: var(--text-primary); font-size: 0.88rem;">
-          </label>
+          <div class="field"><label>Note / Description</label>
+            <input id="bulk-desc" type="text" placeholder="e.g. March group loans">
+          </div>
           <div id="bulk-charges-wrap">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem;">
               <span style="font-size: 0.8rem; font-weight: 700; color: var(--text-muted);">CHARGES (applies to every loan)</span>
@@ -287,9 +295,30 @@ export function showBulkRemittanceModal(deps) {
         refreshEntOptions();
         const list = entListFor();
         overlay.querySelector('#bulk-enterprise').innerHTML = entOptions(list, selectedEntId);
-        overlay.querySelector('#bulk-ent-label').textContent = isTransferDir() ? 'Debit enterprise (from)' : 'Enterprise';
+        const entLabel = overlay.querySelector('#bulk-ent-label');
+        if (entLabel) entLabel.textContent = isTransferDir() ? 'Debit enterprise (from)' : 'Enterprise';
         overlay.querySelector('#bulk-creditent-wrap').style.display = isTransferDir() ? 'flex' : 'none';
-        if (isTransferDir()) overlay.querySelector('#bulk-credit-enterprise').innerHTML = entOptions(list, selectedCreditEntId);
+        const creditLabel = overlay.querySelector('#bulk-creditent-label');
+        if (direction === 'to_admin') {
+            if (creditLabel) creditLabel.textContent = 'Admin transaction type (to House)';
+            overlay.querySelector('#bulk-credit-enterprise').innerHTML = txTypes.map(t =>
+                `<option value="${escapeHtml(t.transaction_type)}" ${t.transaction_type === selectedTxType ? 'selected' : ''}>${escapeHtml(t.transaction_type)}</option>`).join('')
+                || '<option value="">-- No types --</option>';
+        } else {
+            if (creditLabel) creditLabel.textContent = 'Credit enterprise (to)';
+            if (isTransferDir()) overlay.querySelector('#bulk-credit-enterprise').innerHTML = entOptions(list, selectedCreditEntId);
+        }
+        const showFundSource = direction === 'due' || direction === 'penalty';
+        const fundWrap = overlay.querySelector('#bulk-fund-source-wrap');
+        if (fundWrap) {
+            fundWrap.style.display = showFundSource ? 'flex' : 'none';
+            if (showFundSource) {
+                if (!savingsEnts.some(e => String(e.id) === String(selectedFundingEntId))) {
+                    selectedFundingEntId = savingsEnts[0]?.id || '';
+                }
+                overlay.querySelector('#bulk-fund-source').innerHTML = entOptions(savingsEnts, selectedFundingEntId);
+            }
+        }
         overlay.querySelector('#bulk-from-single-wrap').style.display = showFromSingle() ? 'block' : 'none';
         overlay.querySelector('#bulk-to-wrap').style.display = showToSingle() ? 'block' : 'none';
         overlay.querySelector('#bulk-multi-wrap').style.display = showMultiList() ? 'block' : 'none';
@@ -297,6 +326,7 @@ export function showBulkRemittanceModal(deps) {
         overlay.querySelector('#bulk-import-btn').style.display = direction === 'deposit_varied' ? 'block' : 'none';
         const fromLabel = overlay.querySelector('#bulk-from-label');
         if (fromLabel) fromLabel.textContent = direction === 'transfer' ? 'FROM MEMBERS (each debited)'
+            : direction === 'to_admin' ? 'MEMBERS (each debited → House)'
             : direction === 'one_to_many' ? 'RECIPIENTS (each credited)'
             : direction === 'deposit_varied' ? 'MEMBERS (amount each)' : 'MEMBERS';
         const isLoan = direction === 'loan';
@@ -326,7 +356,11 @@ export function showBulkRemittanceModal(deps) {
         if (direction === 'loan') { charges = defaultCharges(); renderCharges(); }
     });
     overlay.querySelector('#bulk-credit-enterprise').addEventListener('change', (e) => {
-        selectedCreditEntId = e.target.value;
+        if (direction === 'to_admin') selectedTxType = e.target.value;
+        else selectedCreditEntId = e.target.value;
+    });
+    overlay.querySelector('#bulk-fund-source').addEventListener('change', (e) => {
+        selectedFundingEntId = e.target.value;
     });
     attachSinglePicker('bulk-from', () => fromMemberId, (v) => { fromMemberId = v || ''; }, false);
     attachSinglePicker('bulk-to', () => toMemberId, (v) => { toMemberId = v || ''; }, () => direction === 'one_to_one');
@@ -398,9 +432,12 @@ export function showBulkRemittanceModal(deps) {
         const desc = overlay.querySelector('#bulk-desc').value.trim();
         const duration = Math.max(1, parseInt(overlay.querySelector('#bulk-duration').value || 0, 10) || 0);
         const ent = (enterpriseData || []).find(x => String(x.id) === String(selectedEntId));
-        const creditEnt = isTransferDir()
+        const isToAdminMode = direction === 'to_admin';
+        const creditTxType = isToAdminMode ? selectedTxType : null;
+        const creditEnt = isTransferDir() && !isToAdminMode
             ? (enterpriseData || []).find(x => String(x.id) === String(selectedCreditEntId))
             : null;
+        const fundingEntId = selectedFundingEntId;
         const isVaried = direction === 'deposit_varied';
         const is121 = direction === 'one_to_one';
         const is1MN = direction === 'one_to_many';
@@ -420,7 +457,11 @@ export function showBulkRemittanceModal(deps) {
         if (!memberIds.length) { showToast('Select at least one member.', 'error'); return; }
         if (isVaried && !variedList.length) { showToast('Enter an amount for at least one member.', 'error'); return; }
         if (isTransferDir()) {
-            if (!creditEnt) { showToast('Select a credit enterprise.', 'error'); return; }
+            if (isToAdminMode) {
+                if (!creditTxType) { showToast('Select an admin transaction type.', 'error'); return; }
+            } else {
+                if (!creditEnt) { showToast('Select a credit enterprise.', 'error'); return; }
+            }
             if (is121 || direction === 'transfer') {
                 if (!toMemberId) { showToast('Select the recipient (To).', 'error'); return; }
             }
@@ -460,15 +501,19 @@ export function showBulkRemittanceModal(deps) {
         const toNameForConfirm = (mid) => String(mid) === '0000000000' ? 'House' : (pickable.find(m => String(m.id) === String(mid))?.name || 'recipient');
         if (isVaried) {
             const sum = variedList.reduce((s, x) => s + x.amt, 0);
-            if (!confirm(`Create varied deposits for ${variedList.length} member${variedList.length === 1 ? '' : 's'} totalling ₦${sum.toLocaleString()}?`)) return;
+            if (!confirm(`Create varied deposits for ${variedList.length} member${variedList.length === 1 ? '' : 's'} totalling ${formatCurrency(sum)}?`)) return;
         } else if (isTransferDir()) {
             const pairCount = is121 ? 1 : memberIds.length;
-            const counterparts = is1MN ? `${pairCount} recipient${pairCount === 1 ? '' : 's'}`
-                : is121 ? toNameForConfirm(toMemberId)
-                : `${pairCount} sender${pairCount === 1 ? '' : 's'} → ${toNameForConfirm(toMemberId)}`;
-            if (!confirm(`Transfer ₦${amount.toLocaleString()} each (${counterparts})?`)) return;
+            if (direction === 'to_admin') {
+                if (!confirm(`Collect ${formatCurrency(amount)} each from ${pairCount} member${pairCount === 1 ? '' : 's'} → House (${creditTxType})?`)) return;
+            } else {
+                const counterparts = is1MN ? `${pairCount} recipient${pairCount === 1 ? '' : 's'}`
+                    : is121 ? toNameForConfirm(toMemberId)
+                    : `${pairCount} sender${pairCount === 1 ? '' : 's'} → ${toNameForConfirm(toMemberId)}`;
+                if (!confirm(`Transfer ${formatCurrency(amount)} each (${counterparts})?`)) return;
+            }
         } else {
-            if (!confirm(`Create ${typeLabel} of ₦${amount.toLocaleString()} for ${memberIds.length} member${memberIds.length === 1 ? '' : 's'}${duesDecision?.charge ? ' (plus dues/penalties)' : ''}?`)) return;
+            if (!confirm(`Create ${typeLabel} of ${formatCurrency(amount)} for ${memberIds.length} member${memberIds.length === 1 ? '' : 's'}${duesDecision?.charge ? ' (plus dues/penalties)' : ''}?`)) return;
         }
 
         // 1-to-many upfront total check: reject the whole batch before anything
@@ -479,16 +524,16 @@ export function showBulkRemittanceModal(deps) {
                 const bal = await buildAccountBalance(user.cooperativeId, { ...user, memberId: fromMemberId }, null, null);
                 const opening = parseFloat((bal.accountBalance || []).find(b => String(b.id) === String(ent.id))?.sum_of_amount || 0);
                 if (getAccountType(ent) !== 'loan' && total > opening) {
-                    showToast(`Insufficient balance: need ₦${total.toLocaleString()} but sender has ₦${opening.toLocaleString()}. Batch rejected.`, 'error');
+                    showToast(`Insufficient balance: need ${formatCurrency(total)} but sender has ${formatCurrency(opening)}. Batch rejected.`, 'error');
                     return;
                 }
             } catch (e) { console.warn('[Bulk] upfront balance check failed:', e?.message); }
         }
 
-        await runBulk({ ent, creditEnt, toMemberId, fromMemberId, amount, date, bank, desc, duration, memberIds, variedList, duesDecision, overlay });
+        await runBulk({ ent, creditEnt, creditTxType, toMemberId, fromMemberId, amount, date, bank, desc, duration, memberIds, variedList, duesDecision, fundingEntId, overlay });
     });
 
-    async function runBulk({ ent, creditEnt, toMemberId, fromMemberId, amount, date, bank, desc, duration, memberIds, variedList, duesDecision, overlay }) {
+    async function runBulk({ ent, creditEnt, creditTxType, toMemberId, fromMemberId, amount, date, bank, desc, duration, memberIds, variedList, duesDecision, fundingEntId, overlay }) {
         const body = overlay.querySelector('#bulk-body');
         body.innerHTML = `
           <div style="padding: 1.5rem 0.5rem; text-align: center;">
@@ -515,6 +560,7 @@ export function showBulkRemittanceModal(deps) {
         const is121 = direction === 'one_to_one';
         const is1MN = direction === 'one_to_many';
         const isMany1 = direction === 'transfer';
+        const isToAdmin = direction === 'to_admin';
         const nameOf = (mid) => String(mid) === '0000000000' ? 'House'
             : (pickable.find(m => String(m.id) === String(mid))?.name || mid || '');
         // One unit per record: transfers carry {from, to}, singles carry {mid}.
@@ -522,6 +568,7 @@ export function showBulkRemittanceModal(deps) {
         const units = is121 ? [{ mid: fromMemberId, from: fromMemberId, to: toMemberId, amt: amount }]
             : is1MN ? memberIds.map(to => ({ mid: fromMemberId, from: fromMemberId, to, amt: amount }))
             : isMany1 ? memberIds.map(mid => ({ mid, from: mid, to: toMemberId, amt: amount }))
+            : isToAdmin ? memberIds.map(mid => ({ mid, from: mid, to: '0000000000', amt: amount }))
             : isVaried ? variedList.map(x => ({ mid: x.id, amt: x.amt }))
             : memberIds.map(mid => ({ mid, amt: amount }));
         const debitIsLoan = isTransferDir() && getAccountType(ent) === 'loan';
@@ -611,6 +658,7 @@ export function showBulkRemittanceModal(deps) {
                             remittance_date: date,
                             bank_name: bank || 'System Generated',
                             transaction_type: 'Loan Charges',
+                            category: 'Loan Asset',
                             description: 'Loan Charge: ' + (c.name || 'Charge'),
                             autogen: 1,
                             loan_id: loanId,
@@ -655,6 +703,7 @@ export function showBulkRemittanceModal(deps) {
                         await addRemittance({
                             ...chargeAutos[ci],
                             id: `${parentRemId}-CHARGE-${String(ci + 1).padStart(2, '0')}`,
+                            parent_remittance_id: parentRemId,
                                 status,
                             cooperative_id: coopId,
                             user_role: user.role || 'member',
@@ -679,6 +728,7 @@ export function showBulkRemittanceModal(deps) {
                                 description: `Auto Loan Charges Income - ${nameOf(mid)}`,
                                 autogen: 1,
                                 loan_id: loanId,
+                                parent_remittance_id: parentRemId,
                                         status,
                                 user_role: user.role || 'member',
                                 user_roles: [user.role || 'member']
@@ -686,8 +736,8 @@ export function showBulkRemittanceModal(deps) {
                         }
                     }
 
-                    // Monthly advice update (same as single flow)
-                    if (duration > 0) {
+                    // Monthly advice update (same as single flow) — only on Approval
+                    if (status === 'Approved' && duration > 0) {
                         try {
                             const monthlyPayment = parseFloat((curAmt / duration).toFixed(2));
                             if (monthlyPayment > 0) {
@@ -712,12 +762,12 @@ export function showBulkRemittanceModal(deps) {
                     if (String(uFrom) === String(uTo)) throw new Error('Cannot transfer to self.');
                     const opening = parseFloat(openings[ent.id] || 0);
                     if (!debitIsLoan && curAmt > opening) {
-                        throw new Error(`Insufficient ${ent.account_name || 'enterprise'} balance (₦${opening.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}).`);
+                        throw new Error(`Insufficient ${ent.account_name || 'enterprise'} balance (${formatCurrency(opening)}).`);
                     }
                     const neg = -Math.abs(curAmt);
                     const pos = Math.abs(curAmt);
-                    const outLabel = is121 ? 'Transfer Out' : 'Bulk Transfer Out';
-                    const inLabel = is121 ? 'Transfer In' : 'Bulk Transfer In';
+                    const outLabel = is121 ? 'Transfer Out' : isToAdmin ? 'Admin Collection Out' : 'Bulk Transfer Out';
+                    const inLabel = is121 ? 'Transfer In' : isToAdmin ? 'Admin Collection In' : 'Bulk Transfer In';
                     await addRemittance({
                         id: parentRemId,
                         cooperative_id: coopId,
@@ -733,22 +783,44 @@ export function showBulkRemittanceModal(deps) {
                         loan_status: status === 'Approved' ? 'Active' : 'Pending',
                         details: [{ id: generateId(), enterprise_id: ent.id, amount: neg, notes: `To ${pairToName}` }]
                     }, createdBy);
-                    await addRemittance({
-                        id: `${parentRemId}-TR`,
-                        cooperative_id: coopId,
-                        member_id: uTo,
-                        amount: pos,
-                        remittance_date: date,
-                        bank_name: bank,
-                        transaction_type: 'Internal Transfer',
-                        description: `${inLabel} (${creditEnt.account_name || creditEnt.id}) ← ${fromName}: ${desc}`,
-                        autogen: 1,
-                        loan_id: parentRemId,
-                        status,
-                        user_role: user.role || 'member',
-                        user_roles: [user.role || 'member'],
-                        details: [{ id: generateId(), enterprise_id: creditEnt.id, amount: pos, notes: `From ${fromName}` }]
-                    }, createdBy);
+                    if (isToAdmin) {
+                        // Admin collection: House credit is header-only under
+                        // the chosen transaction type (Detail = none — same
+                        // convention as dues/loan income pickups). Category
+                        // resolves from the type inside addRemittance.
+                        await addRemittance({
+                            id: `${parentRemId}-TR`,
+                            cooperative_id: coopId,
+                            member_id: '0000000000',
+                            amount: pos,
+                            remittance_date: date,
+                            bank_name: bank,
+                            transaction_type: creditTxType,
+                            description: `${inLabel} (${creditTxType}) ← ${fromName}: ${desc}`,
+                            autogen: 1,
+                            loan_id: parentRemId,
+                            status,
+                            user_role: user.role || 'member',
+                            user_roles: [user.role || 'member']
+                        }, createdBy);
+                    } else {
+                        await addRemittance({
+                            id: `${parentRemId}-TR`,
+                            cooperative_id: coopId,
+                            member_id: uTo,
+                            amount: pos,
+                            remittance_date: date,
+                            bank_name: bank,
+                            transaction_type: 'Internal Transfer',
+                            description: `${inLabel} (${creditEnt.account_name || creditEnt.id}) ← ${fromName}: ${desc}`,
+                            autogen: 1,
+                            loan_id: parentRemId,
+                            status,
+                            user_role: user.role || 'member',
+                            user_roles: [user.role || 'member'],
+                            details: [{ id: generateId(), enterprise_id: creditEnt.id, amount: pos, notes: `From ${fromName}` }]
+                        }, createdBy);
+                    }
                 } else if (!isDuePenalty) {
                     // Deposit (fixed or varied): positive distribution, Member Deposit
                     await addRemittance({
@@ -767,9 +839,22 @@ export function showBulkRemittanceModal(deps) {
                         details: [{ id: generateId(), enterprise_id: ent.id, amount: Math.abs(curAmt) }]
                     }, createdBy);
 
-                    // Dues/penalty children (ask-once decision, per-member parents)
+                    // Dues/penalty children (ask-once decision, per-member parents).
+                    // Four records: DUE debits + header-only INCOME pickup +
+                    // zero-header settlement transfer funded from this deposit.
+                    // Rule: dues can never exceed this member's deposit — that
+                    // member is skipped with a reason (rest of batch continues).
                     if (duesDecision?.charge && Array.isArray(duesDecision.items) && duesDecision.items.length) {
                         const validItems = duesDecision.items.filter(it => parseFloat(it.amount || 0) > 0);
+                        const _bulkDueTotal = validItems.reduce((s, it) => s + Math.abs(parseFloat(it.amount || 0)), 0);
+                        const _entIsDuePen = !!ent.compulsory_due || !!ent.is_penalty;
+                        const _bulkSavLines = (!_entIsDuePen && curAmt > 0)
+                            ? [{ enterprise_id: ent.id, amount: Math.abs(curAmt) }]
+                            : [];
+                        const _bulkSavTotal = _bulkSavLines.reduce((s, l) => s + l.amount, 0);
+                        if (_bulkDueTotal > _bulkSavTotal + 1e-9) {
+                            throw new Error(`Dues & penalties (${formatCurrency(_bulkDueTotal)}) exceed this deposit (${formatCurrency(_bulkSavTotal)}).`);
+                        }
                         let di = 0;
                         for (const item of validItems) {
                             di++;
@@ -806,22 +891,47 @@ export function showBulkRemittanceModal(deps) {
                                 loan_id: parentRemId,
                                         status,
                                 user_role: user.role || 'member',
-                                user_roles: [user.role || 'member'],
-                                details: validItems.map(item => ({
-                                    id: generateId(),
-                                    enterprise_id: item.enterprise_id,
-                                    amount: Math.abs(parseFloat(item.amount || 0)),
-                                    notes: item.name
-                                }))
+                                user_roles: [user.role || 'member']
                             }, createdBy);
+                            // Settlement transfer (header 0): -side from this
+                            // deposit, +side split per due enterprise.
+                            await createDuesTransfer({
+                                cooperativeId: coopId,
+                                parentId: parentRemId,
+                                memberId: mid,
+                                memberName: nameOf(mid),
+                                date,
+                                status,
+                                actor: createdBy,
+                                role: user.role || 'member',
+                                savingsLines: _bulkSavLines,
+                                duesItems: validItems
+                            });
                         }
                     }
                 } else {
                     // Due / Penalty bulk charge (per-member pickups): the member
                     // is debited negative on the due/penalty enterprise and the
-                    // same value is credited positive to Other Income — same
-                    // signs and types as the normal remittance dues flow.
+                    // same value is credited positive to Other Income header-only
+                    // under admin 0000000000 (Detail = none — same convention as
+                    // the normal remittance dues flow and loan income pickup).
                     // No dues popup (the batch IS the charge), no advice.
+                    // Funding child (Child D): the charge must be funded from a
+                    // savings account (wizard pick, else the first funded
+                    // savings), else the first chargeable loan account. Resolved
+                    // BEFORE any record is written so an unfundable member is
+                    // skipped cleanly (no parent/income orphaned with a
+                    // negative due/penalty balance).
+                    const funding = resolveDueFunding({
+                        selectedEntId: fundingEntId,
+                        amount: Math.abs(curAmt),
+                        openings,
+                        savingsEnts,
+                        loanEnts
+                    });
+                    if (!funding) {
+                        throw new Error('No funded savings or loan account to fund this charge.');
+                    }
                     const chargeVal = -Math.abs(amount);
                     const creditVal = Math.abs(amount);
                     const kindLabel = direction === 'due' ? 'Due' : 'Penalty';
@@ -853,9 +963,26 @@ export function showBulkRemittanceModal(deps) {
                         loan_id: parentRemId,
                         status,
                         user_role: user.role || 'member',
-                        user_roles: [user.role || 'member'],
-                        details: [{ id: generateId(), enterprise_id: ent.id, amount: creditVal, notes: ent.account_name || ent.id }]
+                        user_roles: [user.role || 'member']
                     }, createdBy);
+                    // Funding transfer child (header 0): -side (full amount) on
+                    // the resolved savings/loan account, +side back onto the
+                    // charge enterprise so the due/penalty balance nets to zero.
+                    await createDueFundingTransfer({
+                        cooperativeId: coopId,
+                        parentId: parentRemId,
+                        memberId: mid,
+                        memberName: nameOf(mid),
+                        date,
+                        status,
+                        actor: createdBy,
+                        role: user.role || 'member',
+                        fundingEntId: funding.enterprise_id,
+                        fundingKind: funding.kind,
+                        amount: Math.abs(curAmt),
+                        chargeEntId: ent.id,
+                        chargeEntName: ent.account_name || ent.id
+                    });
                 }
                 successes.push({ name: memName, amt: curAmt });
             } catch (err) {
@@ -866,8 +993,8 @@ export function showBulkRemittanceModal(deps) {
 
         const postedTotal = successes.reduce((s, x) => s + (parseFloat(x.amt) || 0), 0);
         const summaryLine = isVaried
-            ? `${successes.length} created totalling <strong>₦${postedTotal.toLocaleString()}</strong>`
-            : `${successes.length} created &times; ₦${amount.toLocaleString()} = <strong>₦${postedTotal.toLocaleString()}</strong>`;
+            ? `${successes.length} created totalling <strong>${formatCurrency(postedTotal)}</strong>`
+            : `${successes.length} created &times; ${formatCurrency(amount)} = <strong>${formatCurrency(postedTotal)}</strong>`;
         body.innerHTML = `
           <div style="padding: 0.5rem;">
             <div style="font-size: 1.05rem; font-weight: 800; color: var(--text-primary); margin-bottom: 0.25rem;">Batch complete</div>

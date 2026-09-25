@@ -33,7 +33,7 @@ export function renderTransactionTypesSection(area) {
           <h3 style="margin:0;">Transaction Types</h3>
           <p class="section-desc" style="margin: 0.35rem 0 0 0;">Manage transaction types for remittances and financial tracking.</p>
         </div>
-        <button id="show-add-transaction-type-btn" class="primary-button" style="padding: 0.6rem 1.5rem; font-size: 0.85rem; border-radius: var(--radius-md); width: ${window.innerWidth <= 768 ? '100%' : 'auto'};">+ Add Transaction Type</button>
+        <button id="show-add-transaction-type-btn" class="primary-button" style="padding: 0.6rem 1.5rem; font-size: 0.85rem; border-radius: var(--radius-md); width: ${window.innerWidth < 1000 ? '100%' : 'auto'};">+ Add Transaction Type</button>
       </div>
       <div id="transaction-type-table-container" class="table-responsive"><p style="color: var(--text-muted); font-style: italic;">Loading transaction types...</p></div>
     `;
@@ -66,16 +66,16 @@ export async function setupTransactionTypesListeners(user, cooperativeId) {
             <button id="close-tt-modal-x" style="background:var(--bg-secondary); border:1px solid var(--border-light); color:var(--text-muted); font-size:1.1rem; cursor:pointer; width:32px; height:32px; border-radius:50%; flex-shrink:0; line-height:1;">&times;</button>
           </div>
           <div class="modal-body">
-            ${isSystemDefault ? '<div class="stg-notice muted" style="margin-bottom: 1.25rem;">This is a system default type. Only Active status can be changed.</div>' : ''}
+            ${isSystemDefault ? '<div class="stg-notice muted" style="margin-bottom: 1.25rem;">This is a system default type. It cannot be modified or deleted.</div>' : ''}
             ${(!isSystemDefault && isInUse) ? '<div class="stg-notice muted" style="margin-bottom: 1.25rem;">This type is already used in remittances. Only Active status can be changed.</div>' : ''}
             <div class="stg-section">
               <div class="stg-section-title">Type Details</div>
               <div style="display:flex; flex-direction:column; gap:1rem;">
-                <div class="stg-field">
+                <div class="field">
                   <span>Transaction Type Name *</span>
                   <input type="text" id="transaction-type-name-input" value="${escapeHtml(transactionType?.transaction_type || '')}" placeholder="e.g. Monthly Dues" required ${locked ? 'disabled' : ''}>
                 </div>
-                <div class="stg-field">
+                <div class="field">
                   <span>Classification</span>
                   <select id="transaction-type-classification-input" ${locked ? 'disabled' : ''}>
                     ${CLASSIFICATION_OPTIONS.map(c => `<option value="${c}" ${transactionType?.classification === c ? 'selected' : ''}>${c}</option>`).join('')}
@@ -84,17 +84,18 @@ export async function setupTransactionTypesListeners(user, cooperativeId) {
                 </div>
               </div>
             </div>
+            ${!isSystemDefault ? `
             <div class="stg-section">
               <div class="stg-section-title">Status</div>
               <label class="stg-check-card">
                 <input type="checkbox" id="transaction-type-active-input" ${(transactionType?.is_active ?? true) ? 'checked' : ''}>
                 <div><div class="stg-check-title">Active</div><div class="stg-check-desc">Inactive types are hidden from new remittances.</div></div>
               </label>
-            </div>
+            </div>` : ''}
           </div>
           <div class="modal-footer">
             <button id="cancel-transaction-type-btn" class="secondary-button" style="padding: 0.7rem 1.5rem; border-radius: var(--radius-md);">Cancel</button>
-            <button id="save-transaction-type-btn" class="primary-button" style="padding: 0.7rem 2rem; border-radius: var(--radius-md);">${transactionType ? 'Update' : 'Add Type'}</button>
+            ${!isSystemDefault ? `<button id="save-transaction-type-btn" class="primary-button" style="padding: 0.7rem 2rem; border-radius: var(--radius-md);">${transactionType ? 'Update' : 'Add Type'}</button>` : ''}
           </div>
         </div>
       `;
@@ -115,8 +116,7 @@ export async function setupTransactionTypesListeners(user, cooperativeId) {
       try {
         saveBtn.disabled = true; saveBtn.innerText = 'Saving...';
         if (editingTransactionType) {
-          if (isSystemDefault || isInUse) {
-            // Only allow changing is_active if system default or in use
+          if (isInUse) {
             await updateTransactionType(cooperativeId, editingTransactionType.id, { is_active: isActive ? 1 : 0 }, user.username);
           } else {
             await updateTransactionType(cooperativeId, editingTransactionType.id, { transaction_type: name, classification, is_active: isActive ? 1 : 0 }, user.username);
@@ -141,28 +141,40 @@ export async function setupTransactionTypesListeners(user, cooperativeId) {
         return;
       }
 
-      // Fetch which transaction types are in use
       const inUseRemittances = await queryRows('SELECT DISTINCT transaction_type FROM remittance WHERE cooperative_id = ? AND is_deleted = 0', [cooperativeId]);
       usedTransactionTypeNames = new Set(inUseRemittances.map(r => r.transaction_type?.toLowerCase()));
 
+      const defaults = transactionTypes.filter(t => t.is_system_default === 1 || t.is_system_default === true);
+      const custom = transactionTypes.filter(t => t.is_system_default !== 1 && t.is_system_default !== true);
+
       tc.innerHTML = `
           <table class="crud-table">
-            <thead><tr><th>#</th><th>Name</th><th>Classification</th><th>System Default</th><th>Active</th><th style="width: 120px;">Actions</th></tr></thead>
+            <thead><tr><th>#</th><th>Name</th><th>Classification</th><th>Type</th><th>Active</th><th style="width: 120px;">Actions</th></tr></thead>
             <tbody>
-              ${transactionTypes.map((t, i) => {
+              ${defaults.map((t, i) => `
+                  <tr style="opacity: 0.85;">
+                    <td>${i + 1}</td>
+                    <td>${escapeHtml(t.transaction_type)}</td>
+                    <td>${renderClassificationBadge(t.classification)}</td>
+                    <td><span style="font-size: 0.75rem; padding: 0.2rem 0.5rem; border-radius: 4px; background: #e2e8f0; color: #475569;">System Default</span></td>
+                    <td>Yes</td>
+                    <td><span style="font-size: 0.75rem; color: var(--text-muted);">Read Only</span></td>
+                  </tr>
+                `).join('')}
+              ${custom.map((t, i) => {
                 const isInUse = usedTransactionTypeNames.has(t.transaction_type?.toLowerCase());
-                const isSystemDefault = t.is_system_default === 1 || t.is_system_default === true;
-                const canEditDelete = !isSystemDefault && !isInUse;
+                const canEdit = !isInUse;
+                const showDelete = !isInUse;
                 return `
                     <tr>
-                      <td>${i + 1}</td>
+                      <td>${defaults.length + i + 1}</td>
                       <td>${escapeHtml(t.transaction_type)} ${isInUse ? '<span style="font-size: 0.7rem; color: var(--text-muted); font-style: italic; margin-left: 0.5rem;">(In Use)</span>' : ''}</td>
                       <td>${renderClassificationBadge(t.classification)}</td>
-                      <td>${isSystemDefault ? 'Yes' : 'No'}</td>
+                      <td><span style="font-size: 0.75rem; padding: 0.2rem 0.5rem; border-radius: 4px; background: #dbeafe; color: #1d4ed8;">Custom</span></td>
                       <td>${t.is_active ? 'Yes' : 'No'}</td>
                       <td>
-                        <button class="crud-action-btn edit" data-id="${t.id}" data-name="${escapeHtml(t.transaction_type)}" ${canEditDelete ? '' : 'disabled style="opacity:0.5; cursor:not-allowed;"'}>Edit</button>
-                        ${canEditDelete ? `<button class="crud-action-btn delete" data-id="${t.id}" data-name="${escapeHtml(t.transaction_type)}">Delete</button>` : ''}
+                        <button class="crud-action-btn edit" data-id="${t.id}" data-name="${escapeHtml(t.transaction_type)}" ${canEdit ? '' : 'disabled style="opacity:0.5; cursor:not-allowed;"'}>Edit</button>
+                        ${showDelete ? `<button class="crud-action-btn delete" data-id="${t.id}" data-name="${escapeHtml(t.transaction_type)}">Delete</button>` : ''}
                       </td>
                     </tr>
                   `;

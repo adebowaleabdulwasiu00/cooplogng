@@ -11,7 +11,7 @@ export async function renderUserManagementSection(area) {
           <h3 style="margin:0;">User Management</h3>
           <p class="section-desc" style="margin: 0.35rem 0 0 0;">Manage staff access, permissions, and enterprise rights.</p>
         </div>
-        <button id="show-add-user-btn" class="primary-button" style="padding: 0.6rem 1.5rem; font-size: 0.85rem; border-radius: var(--radius-md); width: ${window.innerWidth <= 768 ? '100%' : 'auto'};">+ Add User</button>
+        <button id="show-add-user-btn" class="primary-button" style="padding: 0.6rem 1.5rem; font-size: 0.85rem; border-radius: var(--radius-md); width: ${window.innerWidth < 1000 ? '100%' : 'auto'};">+ Add User</button>
       </div>
       <div id="user-table-container" class="table-responsive" style="margin-top: 0;"><p style="color: var(--text-muted); font-style: italic;">Loading users...</p></div>
     `;
@@ -43,9 +43,9 @@ export async function setupUserManagementListeners(user, cooperativeId) {
           </div>
           <div style="margin-bottom: 0.75rem;">
             <input type="text" class="dropdown-search" placeholder="Search..."
-              style="width: 100%; box-sizing: border-box; padding: 0.6rem 0.75rem; border-radius: var(--radius-md); border: 1px solid var(--border-medium); font-size: 0.85rem; background: var(--bg-input); color: var(--text-primary);">
+              style="width: 100%; box-sizing: border-box; padding: 0.7rem 0.85rem; border-radius: var(--radius-md); border: 1px solid var(--border-medium); font-size: 0.88rem; background: var(--bg-input); color: var(--text-primary);">
           </div>
-          <div class="items-list" style="max-height: 220px; overflow-y: auto; margin-bottom: 1rem; display: flex; flex-direction: column; gap: 0.15rem;">
+          <div class="items-list" style="max-height: 240px; overflow-y: auto; margin-bottom: 1rem; display: flex; flex-direction: column; gap: 0.35rem; padding: 0.15rem;">
             <label class="stg-field-option" data-key="${type === 'perms' ? 'admin' : 'all'}">
               <input type="checkbox" class="all-chk" ${isAllSelected() ? 'checked' : ''}>
               <span style="font-weight: 700;">${type === 'perms' ? '* ALL (Admin)' : '* ALL Enterprises'}</span>
@@ -57,9 +57,9 @@ export async function setupUserManagementListeners(user, cooperativeId) {
               </label>
             `).join('')}
           </div>
-          <div style="display: flex; gap: 0.6rem;">
-            <button type="button" class="primary-button apply-btn" style="flex: 1; padding: 0.55rem; font-size: 0.8rem; border-radius: 999px;">Apply</button>
-            <button type="button" class="secondary-button cancel-btn" style="flex: 1; padding: 0.55rem; font-size: 0.8rem; border-radius: 999px; background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-medium);">Cancel</button>
+          <div style="display: flex; gap: 0.75rem;">
+            <button type="button" class="primary-button apply-btn" style="flex: 1; min-height: 2.5rem; padding: 0.55rem; font-size: 0.85rem; border-radius: 999px;">Apply</button>
+            <button type="button" class="secondary-button cancel-btn" style="flex: 1; min-height: 2.5rem; padding: 0.55rem; font-size: 0.85rem; border-radius: 999px; background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-medium);">Cancel</button>
           </div>
         `;
 
@@ -135,12 +135,12 @@ export async function setupUserManagementListeners(user, cooperativeId) {
             <div class="stg-section">
               <div class="stg-section-title">Account Details</div>
               <div class="stg-grid">
-                <div class="stg-field">
+                <div class="field">
                   <span>Username *</span>
                   <input type="text" id="user-username-input" value="${escapeHtml(u?.username || '')}" placeholder="e.g. jdoe" ${u ? 'readonly' : ''} required>
                   <div class="stg-helper">${u ? 'Username cannot be changed after creation.' : 'Staff will log in with this username.'}</div>
                 </div>
-                <div class="stg-field">
+                <div class="field">
                   <span>Role</span>
                   <select id="user-role-input">
                     <option value="staff" ${u?.role === 'staff' ? 'selected' : ''}>Staff</option>
@@ -158,7 +158,7 @@ export async function setupUserManagementListeners(user, cooperativeId) {
             ${!u ? `
             <div class="stg-section">
               <div class="stg-section-title">Security</div>
-              <div class="stg-field">
+              <div class="field">
                 <span>Initial 6-Digit PIN</span>
                 <input type="password" id="user-password-input" placeholder="Leave blank for auto-generated PIN" inputmode="numeric" maxlength="6">
                 <div class="stg-helper">Exactly 6 numbers, or leave blank to auto-generate one.</div>
@@ -168,7 +168,7 @@ export async function setupUserManagementListeners(user, cooperativeId) {
             <div class="stg-section">
               <div class="stg-section-title">Access Control</div>
               <div style="display:flex; flex-direction:column; gap:1rem;">
-                <div class="stg-field">
+                <div class="field">
                   <span>Permissions</span>
                   <div style="position: relative;">
                     <button type="button" class="stg-dropdown-btn" id="perms-dropdown-trigger">
@@ -179,7 +179,7 @@ export async function setupUserManagementListeners(user, cooperativeId) {
                   </div>
                   <div class="stg-helper">Choose what this user can do. Select * ALL for full admin rights.</div>
                 </div>
-                <div class="stg-field">
+                <div class="field">
                   <span>Enterprise Access</span>
                   <div style="position: relative;">
                     <button type="button" class="stg-dropdown-btn" id="ents-dropdown-trigger">
@@ -339,8 +339,8 @@ export async function setupUserManagementListeners(user, cooperativeId) {
       });
       tc.querySelectorAll('.crud-action-btn.reset-pwd').forEach(btn => {
         btn.addEventListener('click', async () => {
-          const newPwd = generateRandom6Digit();
-          if (confirm(`Reset PIN for "${btn.dataset.name}" to a new random 6-digit number?`)) {
+          const newPwd = '123456';
+          if (confirm(`Reset PIN for "${btn.dataset.name}" to 123456?`)) {
             try {
               const u = usersList.find(x => x.id === btn.dataset.id);
               await updateUser(btn.dataset.id, { ...u, password_hash: newPwd, force_password_change: true }, user.username);

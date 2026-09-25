@@ -454,13 +454,13 @@ function attachRowListeners(container) {
 export function getTableStyles() {
     return `
       <style>
-        @media (max-width: 768px) {
+        @media (max-width: 999px) {
           .desktop-only { display: none !important; }
         }
 
         /* IDs live in their own columns on desktop; the stacked line under
            the name is mobile-only (the Special ID column hides there). */
-        @media (min-width: 769px) {
+        @media (min-width: 1000px) {
           .member-row-identifier { display: none !important; }
         }
 
@@ -806,7 +806,7 @@ export function getTableStyles() {
         }
 
         /* ── Mobile cell tweaks ── */
-        @media (max-width: 768px) {
+        @media (max-width: 999px) {
             .styled-table th, .styled-table td { padding: 0.9rem 0.75rem; font-size: 0.88rem; }
         }
       </style>

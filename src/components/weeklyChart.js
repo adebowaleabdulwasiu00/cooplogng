@@ -33,6 +33,14 @@ function isPenaltyEnt(entObj) {
   return !!entObj && (entObj.is_penalty == 1 || entObj.is_penalty === '1' || entObj.is_penalty === 'true' || entObj.is_penalty === true);
 }
 
+// Dues & penalties are member obligations: like the dashboard cards, they
+// count toward savings/loans buckets even when flagged as revenue.
+function isDuePenaltyEnt(entObj) {
+  if (!entObj) return false;
+  const due = entObj.compulsory_due == 1 || entObj.compulsory_due === '1' || entObj.compulsory_due === 'true' || entObj.compulsory_due === true;
+  return !!(due || isPenaltyEnt(entObj));
+}
+
 function mondayOf(d) {
   const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
   const day = (x.getDay() + 6) % 7;
@@ -97,7 +105,8 @@ export function buildWeeklyActivity(remittances, entObjMap, weekCount) {
       b.revenue += amtH;
       b.revM += amtH;
     } else if (isExpenseCat(cls)) {
-      b.expM += Math.abs(amtH);
+      // Signed, same as the cards: a +ve expense header nets off.
+      b.expM -= amtH;
     }
     (rem.details || []).forEach((d) => {
       const entObj = (entObjMap || {})[d.enterprise_id];
@@ -105,9 +114,9 @@ export function buildWeeklyActivity(remittances, entObjMap, weekCount) {
       const amt = parseFloat(d.amount || 0);
       const t = entType(entObj);
       const rev = isRevenueEnt(entObj);
-      const pen = isPenaltyEnt(entObj);
-      if (!rev && !pen && (t === 'savings' || t === 'liability')) b.savings += amt;
-      if (!rev && (t === 'loan' || t === 'asset')) b.loans += amt;
+      const duePen = isDuePenaltyEnt(entObj);
+      if ((!rev || duePen) && (t === 'savings' || t === 'liability')) b.savings += amt;
+      if ((!rev || duePen) && (t === 'loan' || t === 'asset')) b.loans += amt;
     });
   });
 

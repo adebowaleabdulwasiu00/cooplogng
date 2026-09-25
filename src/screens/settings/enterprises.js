@@ -10,7 +10,7 @@ export function renderEnterpriseSection(area) {
           <h3 style="margin:0;">Enterprise Accounts</h3>
           <p class="section-desc" style="margin: 0.35rem 0 0 0;">Configure the enterprise accounts used in remittance distribution.</p>
         </div>
-        <button id="show-add-ent-btn" class="primary-button" style="padding: 0.6rem 1.5rem; font-size: 0.85rem; border-radius: var(--radius-md); width: ${window.innerWidth <= 768 ? '100%' : 'auto'};">+ Add Account</button>
+        <button id="show-add-ent-btn" class="primary-button" style="padding: 0.6rem 1.5rem; font-size: 0.85rem; border-radius: var(--radius-md); width: ${window.innerWidth < 1000 ? '100%' : 'auto'};">+ Add Account</button>
       </div>
       <div id="ent-table-container" class="table-responsive"><p style="color: var(--text-muted); font-style: italic;">Loading enterprise accounts...</p></div>
     `;
@@ -36,11 +36,11 @@ export function setupEnterpriseListeners(user, cooperativeId) {
             <div class="stg-section">
               <div class="stg-section-title">Basic Information</div>
               <div class="stg-grid">
-                <div class="stg-field">
+                <div class="field">
                   <span>Account Name *</span>
                   <input type="text" id="ent-name-input" value="${escapeHtml(ent?.account_name || '')}" placeholder="e.g. Savings Account" required>
                 </div>
-                <div class="stg-field">
+                <div class="field">
                   <span>Account Type *</span>
                   <select id="ent-type-input">
                     <option value="Savings" ${(ent?.account_type || '') === 'Savings' ? 'selected' : ''}>Savings</option>
@@ -53,7 +53,7 @@ export function setupEnterpriseListeners(user, cooperativeId) {
             <div class="stg-section">
               <div class="stg-section-title">Charges &amp; Interest</div>
               <div class="stg-grid">
-                <div class="stg-field">
+                <div class="field">
                   <span>Interest Rate</span>
                   <div class="input-with-toggle">
                     <input type="number" step="0.01" id="ent-interest-input" value="${ent?.interest_rate ?? 0}" min="0">
@@ -63,12 +63,12 @@ export function setupEnterpriseListeners(user, cooperativeId) {
                   </div>
                   <div class="stg-helper">Tick % for percentage, else flat amount.</div>
                 </div>
-                <div class="stg-field">
+                <div class="field">
                   <span>Loan Multiplier</span>
                   <input type="number" step="0.01" id="ent-multiplier-input" value="${ent?.loan_multiplier ?? 0}" min="0">
                   <div class="stg-helper">e.g. 2 means member can borrow 2x savings.</div>
                 </div>
-                <div class="stg-field">
+                <div class="field">
                   <span>Form Fee</span>
                   <div class="input-with-toggle">
                     <input type="number" step="0.01" id="ent-formfee-input" value="${ent?.form_fee ?? 0}" min="0">
@@ -77,7 +77,7 @@ export function setupEnterpriseListeners(user, cooperativeId) {
                     </label>
                   </div>
                 </div>
-                <div class="stg-field">
+                <div class="field">
                   <span>Admin Charge</span>
                   <div class="input-with-toggle">
                     <input type="number" step="0.01" id="ent-admin-input" value="${ent?.admin_charge ?? 0}" min="0">
@@ -91,12 +91,12 @@ export function setupEnterpriseListeners(user, cooperativeId) {
             <div class="stg-section">
               <div class="stg-section-title">Distribution &amp; Rules</div>
               <div class="stg-grid" style="margin-bottom: 1rem;">
-                <div class="stg-field">
+                <div class="field">
                   <span>Distribution Priority</span>
                   <input type="number" id="ent-priority-input" value="${ent?.distribution_priority ?? 0}" min="0">
                   <div class="stg-helper">Lower numbers are settled first.</div>
                 </div>
-                <div class="stg-field">
+                <div class="field">
                   <span>Compulsory Amount</span>
                   <input type="number" step="0.01" id="ent-compulsory-amount" value="${ent?.compulsory_amount ?? 0.00}" min="0">
                 </div>

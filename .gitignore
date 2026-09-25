@@ -19,6 +19,8 @@ release/
 updates/*.exe
 updates/*.blockmap
 updates/latest.yml
+# Android APKs go to GitHub Releases, not git history
+apk/*.apk
 
 # Environment and Secrets
 .env

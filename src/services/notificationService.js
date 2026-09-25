@@ -1,5 +1,5 @@
 import { generateId } from '../utils/formatters.js'
-import { saveDoc, queryRows, runSql } from './sqliteService.js'
+import { saveDoc, loadDoc, queryRows, runSql } from './sqliteService.js'
 
 /**
  * Notification Service
@@ -60,7 +60,6 @@ export async function notifyAdmins(cooperativeId, type, title, message, data = {
 export async function markAsRead(notificationId, cooperativeId, userIdOrUsername) {
     const now = new Date().toISOString()
     const idToMark = String(userIdOrUsername).toLowerCase().trim()
-    const { loadDoc } = await import('./sqliteService.js')
     
     const n = await loadDoc('notifications', notificationId, cooperativeId)
     if (n) {
@@ -75,13 +74,6 @@ export async function markAsRead(notificationId, cooperativeId, userIdOrUsername
         n.is_synced = 0
         n.modified_at = now
         await saveDoc('notifications', n)
-        
-        // Sync change to Firestore (convert to array for array-contains matching support)
-        const { enqueueWrite } = await import('./sqliteService.js')
-        await enqueueWrite(cooperativeId, 'notifications', notificationId, 'update', { 
-            viewed: viewedList, 
-            modified_at: now 
-        })
     }
 
     // Trigger UI refresh (e.g. update bell count)
@@ -97,7 +89,6 @@ export async function markAllAsRead(cooperativeId, userId, role, username, regis
 
     const idToMark = String(role === 'member' ? (userId || username) : username).toLowerCase().trim()
     const now = new Date().toISOString()
-    const { enqueueWrite, loadDoc } = await import('./sqliteService.js')
 
     for (const item of unread) {
         const n = await loadDoc('notifications', item.id, cooperativeId)
@@ -116,11 +107,6 @@ export async function markAllAsRead(cooperativeId, userId, role, username, regis
             n.is_synced = 0
             n.modified_at = now
             await saveDoc('notifications', n)
-            
-            await enqueueWrite(cooperativeId, 'notifications', n.id, 'update', { 
-                viewed: viewedList, 
-                modified_at: now 
-            })
         }
     }
 
@@ -176,21 +162,9 @@ export async function getUnreadNotifications(cooperativeId, userId, role, userna
  * Internal helper to save locally and enqueue for sync.
  */
 async function _persistNotification(notification) {
-    // 1. Local SQLite Write
+    // 1. Local SQLite Write (enqueueWrite happens inside saveDoc)
     await saveDoc('notifications', notification)
 
-    // 2. Enqueue for Sync (Firestore)
-    // IMPORTANT: For Firestore sync, we convert the comma-separated string back to an array 
-    // so we can use array-contains queries on the server.
-    const firestoreDoc = {
-        ...notification,
-        recipient_id: (notification.recipient_id || '').split(',').map(s => s.trim()),
-        viewed: (notification.viewed || '').split(',').map(s => s.trim()).filter(Boolean)
-    }
-
-    const { enqueueWrite } = await import('./sqliteService.js')
-    await enqueueWrite(notification.cooperative_id, 'notifications', notification.id, 'set', firestoreDoc)
-
-    // 3. Trigger immediate UI refresh
+    // 2. Trigger immediate UI refresh
     window.dispatchEvent(new CustomEvent('notification-received'))
 }

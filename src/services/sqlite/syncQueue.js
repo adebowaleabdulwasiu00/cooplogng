@@ -1,4 +1,4 @@
-import { getAllItems, getAllByIndex, getItem, putItem, deleteItem, deleteItemsBatch } from '../indexedDbService.js'
+import { getAllItems, getAllByIndex, getAllByIndexRange, getItem, putItem, putItemsBatch, deleteItem, deleteItemsBatch, clearStore } from '../indexedDbService.js'
 import { runSql } from './sqlExecutor.js'
 import { loadDoc } from './mutationEngine.js'
 
@@ -128,8 +128,17 @@ export async function reconcileUnsyncedQueue(cooperativeId) {
                 .map(q => `${q.collection_name}:${String(q.document_id)}`)
         );
     } catch { queued = new Set(); }
+
+    const parentQueued = new Set();
+    for (const key of queued) {
+        const [col] = key.split(':');
+        if (!CHILD_TO_PARENT[col]) parentQueued.add(key);
+    }
+
     let added = 0;
     let healed = 0;
+    let skippedParentQueued = 0;
+
     for (const col of RECONCILE_COLLECTIONS) {
         let rows = [];
         try { rows = await getAllItems(col); } catch { continue; }
@@ -137,10 +146,35 @@ export async function reconcileUnsyncedQueue(cooperativeId) {
             if (!r || r.id === undefined || r.id === null) continue;
             if (coopStr && r.cooperative_id && String(r.cooperative_id) !== coopStr) continue;
             if (r.is_synced === 1 || r.is_synced === '1' || r.is_synced === true) continue;
-            // Child rows never get their own queue entry (no such Firestore
-            // collection — pushes would be denied and poison whole batches).
-            // Route them to the parent push instead.
             if (CHILD_TO_PARENT[col]) {
+                let targetCol = CHILD_TO_PARENT[col];
+                let parentId = null;
+                if (col === 'remittance_detail' || col === 'loans') {
+                    parentId = r.remittance_id;
+                } else if (col === 'payment_advise') {
+                    parentId = r.member_id;
+                } else if (col === 'loan_guarantors') {
+                    const loanId = r.loan_id;
+                    if (loanId) {
+                        const loanKey = `loans:${String(loanId)}`;
+                        if (parentQueued.has(loanKey)) {
+                            skippedParentQueued++;
+                            continue;
+                        }
+                        const loanRow = await getItem('loans', String(loanId)).catch(() => null);
+                        if (loanRow && loanRow.remittance_id) {
+                            parentId = loanRow.remittance_id;
+                            targetCol = 'remittance';
+                        }
+                    }
+                }
+                if (parentId) {
+                    const parentKey = `${targetCol}:${String(parentId)}`;
+                    if (parentQueued.has(parentKey)) {
+                        skippedParentQueued++;
+                        continue;
+                    }
+                }
                 try {
                     await routeChildToParent(col, r, coopStr || r.cooperative_id);
                     healed++;
@@ -164,6 +198,7 @@ export async function reconcileUnsyncedQueue(cooperativeId) {
             }
         }
     }
+    if (skippedParentQueued > 0) console.log(`[Sync] reconcileUnsyncedQueue: skipped ${skippedParentQueued} child rows (parent already queued)`);
     if (healed > 0) console.log(`[Sync] reconcileUnsyncedQueue: routed ${healed} child rows to parent pushes`);
     if (added > 0) console.log(`[Sync] reconcileUnsyncedQueue: enqueued ${added} unsynced rows`);
     return added;
@@ -380,6 +415,33 @@ export async function clearSyncQueueLogs() {
     }
 }
 
+export async function clearAllSyncQueueItems() {
+    console.log('[Sync] clearAllSyncQueueItems: start')
+    const ENTITY_TABLES = [
+        'cooperatives', 'users', 'members', 'loans', 'loan_guarantors',
+        'remittance', 'remittance_detail', 'bank', 'enterprise',
+        'transaction_types', 'payment_advise', 'notifications',
+        'bank_reconciliation_summary', 'feedback'
+    ]
+    for (const table of ENTITY_TABLES) {
+        try {
+            console.log(`[Sync] Marking is_synced=1 on ${table}...`)
+            const all = await getAllItems(table)
+            const unsynced = all.filter(r => r.is_synced === 0 || r.is_synced === '0')
+            if (unsynced.length > 0) {
+                for (const r of unsynced) r.is_synced = 1
+                await putItemsBatch(table, unsynced)
+            }
+            console.log(`[Sync] ${table} done (${unsynced.length} rows)`)
+        } catch (e) {
+            console.warn(`[Sync] ${table} failed:`, e.message)
+        }
+    }
+    console.log('[Sync] clearAllSyncQueueItems: clearing sync_queue store...')
+    await clearStore('sync_queue')
+    console.log('[Sync] clearAllSyncQueueItems: done')
+}
+
 export async function resetSyncQueueAndMarkUnsynced(cooperativeId) {
     const allQueue = await getAllItems('sync_queue')
     if (allQueue.length === 0) {
@@ -455,22 +517,94 @@ export async function scanAndEnqueueUnsynced(cooperativeId) {
     return total
 }
 
+export async function bulkEnqueueUnsynced(cooperativeId) {
+    const coopStr = cooperativeId != null ? String(cooperativeId) : null;
+    const mainEntities = [
+        { table: 'cooperatives', entity: 'cooperatives', isCoopTable: true },
+        { table: 'enterprise', entity: 'enterprise' },
+        { table: 'bank', entity: 'bank' },
+        { table: 'members', entity: 'members' },
+        { table: 'users', entity: 'users' },
+        { table: 'remittance', entity: 'remittance' },
+        { table: 'transaction_types', entity: 'transaction_types' },
+        { table: 'bank_reconciliation_summary', entity: 'bank_reconciliation_summary' },
+        { table: 'feedback', entity: 'feedback' },
+        { table: 'notifications', entity: 'notifications' }
+    ]
+
+    const existingQueue = await getAllItems('sync_queue');
+    const existingSet = new Set(
+        existingQueue
+            .filter(q => q.status === 'pending' || q.status === 'processing' || q.status === 'failed')
+            .map(q => `${q.collection_name}:${q.document_id}`)
+    );
+    let nextId = existingQueue.length > 0 ? Math.max(...existingQueue.map(q => q.id || 0)) + 1 : 1;
+    const now = new Date().toISOString();
+    const newItems = [];
+
+    for (const { table, entity, isCoopTable } of mainEntities) {
+        let rows;
+        if (isCoopTable) {
+            const item = await getItem(table, String(cooperativeId));
+            rows = item && (!item.is_synced) ? [item] : [];
+        } else {
+            let items;
+            try {
+                items = await getAllByIndex(table, 'cooperative_id', String(cooperativeId));
+                if (!items || items.length === 0) {
+                    const all = await getAllItems(table);
+                    if (all.length > 0) items = all.filter(r => r.cooperative_id === String(cooperativeId));
+                }
+            } catch {
+                const all = await getAllItems(table);
+                items = all.filter(r => r.cooperative_id === String(cooperativeId));
+            }
+            rows = (items || []).filter(r => !r.is_synced);
+        }
+        for (const row of rows) {
+            const docIdStr = String(row.id);
+            const key = `${entity}:${docIdStr}`;
+            if (existingSet.has(key)) continue;
+            existingSet.add(key);
+            const op = (row.is_deleted === 1 || row.is_deleted === true) ? 'delete' : 'update';
+            newItems.push({
+                id: nextId++,
+                entity: entity,
+                entity_id: docIdStr,
+                collection_name: entity,
+                document_id: docIdStr,
+                operation_type: op,
+                merged_document: null,
+                cooperative_id: coopStr,
+                status: 'pending',
+                attempt_count: 0,
+                last_error: null,
+                next_attempt_at: null,
+                created_at: now,
+                updated_at: now
+            });
+        }
+    }
+
+    if (newItems.length > 0) {
+        await putItemsBatch('sync_queue', newItems);
+    }
+    return newItems.length;
+}
+
 export async function getPendingQueue(cooperativeId) {
-    const all = await getAllItems('sync_queue')
+    const pendingItems = await getAllByIndexRange('sync_queue', 'status', 'pending')
     const nowTs = Date.now()
-    // Respect cooperative scope. Legacy rows without cooperative_id are included
-    // so they are not stranded; new rows always carry it (see enqueueWrite).
     const scoped = cooperativeId != null
-        ? all.filter(q => !q.cooperative_id || String(q.cooperative_id) === String(cooperativeId))
-        : all
-    const pending = scoped.filter(q => {
-        if (q.status !== 'pending') return false
+        ? pendingItems.filter(q => !q.cooperative_id || String(q.cooperative_id) === String(cooperativeId))
+        : pendingItems
+    const eligible = scoped.filter(q => {
         if ((q.attempt_count || 0) >= MAX_QUEUE_ATTEMPTS) return false
         if (q.next_attempt_at && new Date(q.next_attempt_at).getTime() > nowTs) return false
         return true
     })
     const latest = {}
-    for (const q of pending) {
+    for (const q of eligible) {
         const key = `${q.collection_name}|${q.document_id}`
         if (!latest[key] || String(q.created_at || '') > String(latest[key].created_at || '')) {
             latest[key] = q

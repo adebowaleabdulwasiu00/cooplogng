@@ -180,6 +180,7 @@ function _startBackgroundLoop() {
             console.error('[BgSync] Loop error:', e)
         } finally {
             _isLooping = false
+            _notifyIdle()
             _adjustLoopTiming()
         }
     }
@@ -303,7 +304,7 @@ async function _deltaSync() {
         const unsynced = await getUnsyncedCollections(cooperativeId)
         if (unsynced.length > 0) {
             console.log(`[BgSync] Resuming incomplete sync. Collections remaining: ${unsynced.join(', ')}`)
-            const resumeCursors = { ...((meta.collection_cursors && typeof meta.collection_cursors === 'object') ? meta.collection_cursors : {}) }
+            const resumeCursors = { ...((meta?.collection_cursors && typeof meta.collection_cursors === 'object') ? meta.collection_cursors : {}) }
             let resumeObsMax = 0
             for (const col of unsynced) {
                 try {
@@ -334,7 +335,7 @@ async function _deltaSync() {
             if (remaining.length === 0) {
                 // Server-anchored watermark: max observed doc time (or the
                 // pre-existing value), never the local clock.
-                const prevTs = meta.last_sync_ts || 0
+                const prevTs = meta?.last_sync_ts || 0
                 await updateSyncMeta(cooperativeId, {
                     is_full_sync_complete: 1,
                     last_sync_ts: Math.max(prevTs, resumeObsMax),
@@ -671,14 +672,7 @@ async function _initialSyncInternal(forceFull = false, options = {}) {
         await syncOne('enterprise', () => _fetchCollection('enterprise', cooperativeId, 0));
         await syncOne('bank', () => _fetchCollection('bank', cooperativeId, 0));
         await syncOne('cooperatives', () => _fetchCollection('cooperatives', cooperativeId, 0));
-        await syncOne('transaction_types', () => _fetchCollection('transaction_types', cooperativeId, 0), async (transactionTypes) => {
-            if (transactionTypes.length === 0) {
-                console.log('[BgSync] transaction_types is empty. Initializing defaults...');
-                const { initializeDefaultTransactionTypes } = await import('./sqliteService.js');
-                const userId = _session.user_id || _session.member_id || _session.userId || _session.memberId;
-                await initializeDefaultTransactionTypes(cooperativeId, userId);
-            }
-        });
+        await syncOne('transaction_types', () => _fetchCollection('transaction_types', cooperativeId, 0));
         await syncOne('members', () => _fetchCollection('members', cooperativeId, 0));
 
         const { isAdmin, isStaff } = _getSyncScope(_session);
@@ -920,23 +914,31 @@ function _deltaSinceTs(colCursorTs, lastSyncTs) {
 async function _fetchCollection(collectionName, cooperativeId, sinceTs = 0) {
     const db = getDb()
     const coopStr = String(cooperativeId)
+    const MAX_RETRIES = 2
+    const RETRY_DELAYS_MS = [3000, 6000]
 
     if (collectionName === 'cooperatives') {
-        try {
-            const docRef = doc(db, 'cooperatives', coopStr)
-            const d = await withTimeout(getDoc(docRef), 15000, `getDoc cooperatives/${coopStr}`)
-            if (d.exists()) {
-                const data = _normalizeFromFirestore({ id: d.id, ...d.data() })
-                if (sinceTs > 0) {
-                    const syncAt = data.sync_at ? new Date(data.sync_at).getTime() : 0
-                    if (syncAt <= sinceTs) return []
+        for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+            try {
+                const docRef = doc(db, 'cooperatives', coopStr)
+                const d = await withTimeout(getDoc(docRef), 20000, `getDoc cooperatives/${coopStr}`)
+                if (d.exists()) {
+                    const data = _normalizeFromFirestore({ id: d.id, ...d.data() })
+                    if (sinceTs > 0) {
+                        const syncAt = data.sync_at ? new Date(data.sync_at).getTime() : 0
+                        if (syncAt <= sinceTs) return []
+                    }
+                    return [data]
                 }
-                return [data]
+                return []
+            } catch (err) {
+                if (attempt === MAX_RETRIES) {
+                    console.error(`[BgSync] fetchCollection failed for ${collectionName} after ${attempt + 1} attempt(s):`, err)
+                    throw err
+                }
+                console.warn(`[BgSync] fetchCollection attempt ${attempt + 1} failed for ${collectionName}, retrying in ${RETRY_DELAYS_MS[attempt]}ms:`, err.message)
+                await new Promise(r => setTimeout(r, RETRY_DELAYS_MS[attempt]))
             }
-            return []
-        } catch (err) {
-            console.error(`[BgSync] fetchCollection failed for ${collectionName}:`, err)
-            throw err
         }
     }
 
@@ -971,19 +973,25 @@ async function _fetchCollection(collectionName, cooperativeId, sinceTs = 0) {
             // because member documents don't carry a member_id field.
             const userId = (_session.user_id || _session.userId || _session.member_id || _session.memberId || '').toString()
             if (!userId) return []
-            try {
-                const d = await withTimeout(getDoc(doc(db, 'members', userId)), 15000, `getDoc members/${userId}`)
-                if (!d.exists()) return []
-                const data = _normalizeFromFirestore({ id: d.id, ...d.data() })
-                if (String(data.cooperative_id) !== coopStr) return []
-                if (sinceTs > 0) {
-                    const syncAt = data.sync_at ? new Date(data.sync_at).getTime() : 0
-                    if (syncAt <= sinceTs) return []
+            for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+                try {
+                    const d = await withTimeout(getDoc(doc(db, 'members', userId)), 20000, `getDoc members/${userId}`)
+                    if (!d.exists()) return []
+                    const data = _normalizeFromFirestore({ id: d.id, ...d.data() })
+                    if (String(data.cooperative_id) !== coopStr) return []
+                    if (sinceTs > 0) {
+                        const syncAt = data.sync_at ? new Date(data.sync_at).getTime() : 0
+                        if (syncAt <= sinceTs) return []
+                    }
+                    return [data]
+                } catch (err) {
+                    if (attempt === MAX_RETRIES) {
+                        console.error(`[BgSync] fetchCollection failed for ${collectionName} after ${attempt + 1} attempt(s):`, err)
+                        throw err
+                    }
+                    console.warn(`[BgSync] fetchCollection attempt ${attempt + 1} failed for ${collectionName}, retrying in ${RETRY_DELAYS_MS[attempt]}ms:`, err.message)
+                    await new Promise(r => setTimeout(r, RETRY_DELAYS_MS[attempt]))
                 }
-                return [data]
-            } catch (err) {
-                console.error(`[BgSync] fetchCollection failed for ${collectionName}:`, err)
-                throw err
             }
         }
     }
@@ -1001,32 +1009,40 @@ async function _fetchCollection(collectionName, cooperativeId, sinceTs = 0) {
     // NOTE: keep orderBy('sync_at'), orderBy('__name__') in sync with the
     // (cooperative_id, sync_at, __name__) index family (+member variants).
     const ordering = [orderBy('sync_at'), orderBy('__name__')]
-    try {
-        let docs = []
-        let lastSnap = null
-        for (;;) {
-            const pageQ = lastSnap
-                ? query(collection(db, collectionName), ...constraints, ...ordering, startAfter(lastSnap), limit(SYNC_PAGE_SIZE))
-                : query(collection(db, collectionName), ...constraints, ...ordering, limit(SYNC_PAGE_SIZE))
-            const snap = await withTimeout(getDocs(pageQ), 30000, `getDocs ${collectionName} page`)
-            if (snap.empty) break
-            snap.forEach(d => {
-                const data = { id: d.id, ...d.data() }
-                docs.push(_normalizeFromFirestore(data))
-            })
-            if (snap.size < SYNC_PAGE_SIZE) break
-            lastSnap = snap.docs[snap.docs.length - 1]
-        }
-        if (sinceTs > 0) {
-            docs = docs.filter(d => {
-                const syncAt = d.sync_at ? new Date(d.sync_at).getTime() : 0
-                return syncAt > sinceTs
-            })
-        }
-        return docs
-    } catch (err) {
-        console.error(`[BgSync] fetchCollection failed for ${collectionName}:`, err)
-        throw err
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+          let docs = []
+          let lastSnap = null
+          for (;;) {
+              const pageQ = lastSnap
+                  ? query(collection(db, collectionName), ...constraints, ...ordering, startAfter(lastSnap), limit(SYNC_PAGE_SIZE))
+                  : query(collection(db, collectionName), ...constraints, ...ordering, limit(SYNC_PAGE_SIZE))
+              const snap = await withTimeout(getDocs(pageQ), 45000, `getDocs ${collectionName} page`)
+              if (snap.empty) break
+              snap.forEach(d => {
+                  const data = { id: d.id, ...d.data() }
+                  docs.push(_normalizeFromFirestore(data))
+              })
+              if (snap.size < SYNC_PAGE_SIZE) break
+              lastSnap = snap.docs[snap.docs.length - 1]
+          }
+          if (sinceTs > 0) {
+              docs = docs.filter(d => {
+                  const syncAt = d.sync_at ? new Date(d.sync_at).getTime() : 0
+                  return syncAt > sinceTs
+              })
+          }
+          return docs
+      } catch (err) {
+          const isLast = attempt === MAX_RETRIES
+          if (isLast) {
+              console.error(`[BgSync] fetchCollection failed for ${collectionName} after ${attempt + 1} attempt(s):`, err)
+              throw err
+          }
+          console.warn(`[BgSync] fetchCollection attempt ${attempt + 1} failed for ${collectionName}, retrying in ${RETRY_DELAYS_MS[attempt]}ms:`, err.message)
+          await new Promise(r => setTimeout(r, RETRY_DELAYS_MS[attempt]))
+      }
     }
 }
 
@@ -1238,7 +1254,7 @@ function _startAuthRevalidationLoop() {
                     console.warn('[BgSync] Session invalid:', result.reason)
                     syncBus.emit(SyncEvents.SYNC_FAILED, {
                         type: SyncEvents.SYNC_FAILED,
-                        data: { error: 'Session expired', type: 'AUTH_EXPIRED' },
+                        data: { error: result.reason || 'Session expired', type: 'AUTH_EXPIRED', code: result.code || 'AUTH', reason: result.reason || 'Session expired' },
                         timestamp: Date.now()
                     })
                 }
@@ -1250,6 +1266,51 @@ function _startAuthRevalidationLoop() {
 }
 
 // ─── Lifecycle ────────────────────────────────────────────────────────────────
+
+let _pauseCount = 0
+let _idleResolve = null
+
+function _notifyIdle() {
+    if (!_isLooping && _idleResolve) {
+        const r = _idleResolve
+        _idleResolve = null
+        r()
+    }
+}
+
+export function waitForSyncIdle(timeoutMs = 30000) {
+    if (!_isLooping && _coordinator !== 'FULL_SYNCING' && _coordinator !== 'PUSHING' && _coordinator !== 'PULLING') {
+        return Promise.resolve()
+    }
+    return new Promise((resolve) => {
+        const timer = setTimeout(() => { _idleResolve = null; resolve() }, timeoutMs)
+        _idleResolve = () => { clearTimeout(timer); resolve() }
+    })
+}
+
+export function pauseBackgroundSync() {
+    _pauseCount++
+    if (_pauseCount === 1) {
+        _stopLoopTimerOnly()
+        if (_pushDebounceTimer) {
+            clearTimeout(_pushDebounceTimer)
+            _pushDebounceTimer = null
+        }
+        console.log('[BgSync] Paused')
+    }
+}
+
+export function resumeBackgroundSync() {
+    if (_pauseCount > 0) _pauseCount--
+    if (_pauseCount === 0 && _session) {
+        _startBackgroundLoop()
+        console.log('[BgSync] Resumed')
+    }
+}
+
+export function isBackgroundSyncPaused() {
+    return _pauseCount > 0
+}
 
 export function stopBackgroundSync() {
     setCoordinator('STOPPING')

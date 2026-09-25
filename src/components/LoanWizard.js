@@ -94,7 +94,7 @@ export async function renderLoanRequestStep() {
         <p style="color: var(--text-muted); font-size: 0.9rem;">Who is requesting this withdrawal?</p>
         <div style="position: relative; margin-top: 1.5rem;">
           <input type="text" id="loan-member-search" placeholder="Search member by name or ID..." value="${escapeHtml(state.loanRequest.memberName || '')}" style="width: 100%; height: 2.75rem; padding: 0 0.75rem; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-medium); border-radius: var(--radius-sm);" autocomplete="off">
-          <div id="loan-member-suggestions" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: var(--bg-card); border: 1px solid var(--border-medium); border-radius: 0.5rem; box-shadow: var(--shadow-lg); z-index: 100; max-height: 200px; overflow-y: auto; margin-top: 0.25rem;"></div>
+          <div id="loan-member-suggestions" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: var(--bg-card); border: 1px solid var(--border-medium); border-radius: 0.5rem; box-shadow: var(--shadow-lg); z-index: 999999; max-height: 200px; overflow-y: auto; margin-top: 0.25rem;"></div>
         </div>
         ${state.loanRequest.memberId ? `
           <div style="margin-top: 1rem; padding: 1rem; background: var(--bg-secondary); border-radius: 0.5rem; border: 1px solid var(--border-light);">
@@ -129,7 +129,7 @@ export async function renderLoanRequestStep() {
         ${isSavingsEnterprise && maxAmount !== null ? `
           <div style="margin-top: 1rem; padding: 0.75rem; background: var(--bg-secondary); border-radius: 0.5rem; border: 1px solid var(--border-light);">
              <span style="font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase; font-weight: 700;">Maximum Withdrawal</span>
-             <div style="font-weight: 700; color: var(--accent-primary); font-size: 1.1rem; margin-top: 0.25rem;">₦${maxAmount.toLocaleString()}</div>
+             <div style="font-weight: 700; color: var(--accent-primary); font-size: 1.1rem; margin-top: 0.25rem;">${formatCurrency(maxAmount)}</div>
           </div>
         ` : ''}
         <div class="field" style="margin-top: 1.5rem;">
@@ -164,7 +164,7 @@ export async function renderLoanRequestStep() {
                     <div style="display: grid; grid-template-columns: 1fr 120px auto; gap: 0.75rem; align-items: center;">
                        <div style="position: relative;">
                            <input type="text" class="guarantor-search" placeholder="Search guarantor name..." value="${escapeHtml(g.name || '')}" style="width: 100%; height: 2.75rem; padding: 0 0.75rem; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-medium); border-radius: var(--radius-sm);">
-                           <div class="guarantor-suggestions" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: var(--bg-card); border: 1px solid var(--border-medium); border-radius: 0.5rem; box-shadow: var(--shadow-lg); z-index: 100; max-height: 200px; overflow-y: auto; margin-top: 0.25rem;"></div>
+                           <div class="guarantor-suggestions" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: var(--bg-card); border: 1px solid var(--border-medium); border-radius: 0.5rem; box-shadow: var(--shadow-lg); z-index: 999999; max-height: 200px; overflow-y: auto; margin-top: 0.25rem;"></div>
                            <input type="hidden" class="guarantor-id" value="${g.member_id || ''}">
                        </div>
                        <input type="number" class="guarantor-amt" value="${g.amount || ''}" placeholder="Amount" style="height: 2.75rem; padding: 0 0.75rem; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-medium); border-radius: var(--radius-sm);">
@@ -176,7 +176,7 @@ export async function renderLoanRequestStep() {
                         </div>
                         <div class="g-stats-display" style="display: flex; gap: 1rem; font-size: 0.7rem; color: var(--text-muted); font-weight: 500;">
                             <span class="g-active-count">Active: ${g.activeCount !== undefined ? g.activeCount : '-'}</span>
-                            <span class="g-active-sum">Total: ${g.activeSum !== undefined ? '₦' + g.activeSum.toLocaleString() : '-'}</span>
+                            <span class="g-active-sum">Total: ${g.activeSum !== undefined ? formatCurrency(g.activeSum) : '-'}</span>
                             <span class="g-overdue-count" style="color: ${g.overdueCount > 0 ? 'var(--danger)' : 'inherit'}">Overdue: ${g.overdueCount !== undefined ? g.overdueCount : '-'}</span>
                         </div>
                     </div>
@@ -226,7 +226,7 @@ export async function renderLoanRequestStep() {
           </div>
           <div style="display: flex; justify-content: space-between; font-size: 0.9rem;">
             <span style="color: var(--text-muted);">Amount:</span>
-            <span style="font-weight: 700; color: var(--accent-primary);">₦${parseFloat(state.loanRequest.amount || 0).toLocaleString()}</span>
+            <span style="font-weight: 700; color: var(--accent-primary);">${formatCurrency(parseFloat(state.loanRequest.amount || 0))}</span>
           </div>
           <div style="display: flex; justify-content: space-between; font-size: 0.9rem;">
             <span style="color: var(--text-muted);">Duration:</span>
@@ -237,7 +237,7 @@ export async function renderLoanRequestStep() {
             ${state.loanRequest.guarantors.map(g => `
               <div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem;">
                 <span style="font-size: 0.85rem;">${escapeHtml(g.name)}</span>
-                <span style="font-weight: 600;">₦${(g.amount || (Math.abs(state.loanRequest.amount) / (state.loanRequest.guarantors.length || 1))).toLocaleString()}</span>
+                <span style="font-weight: 600;">${formatCurrency(g.amount || (Math.abs(state.loanRequest.amount) / (state.loanRequest.guarantors.length || 1)))}</span>
               </div>
             `).join('')}
             ${state.loanRequest.guarantors.length === 0 ? '<span style="color: var(--text-muted); font-style: italic; font-size: 0.8rem;">None</span>' : ''}
@@ -381,7 +381,7 @@ export async function setupLoanRequestListeners() {
               state.loanRequest.guarantors[currentIdx].overdueCount = stats.overdueCount;
 
               statsDiv.querySelector('.g-active-count').innerText = `Active: ${stats.activeCount}`;
-              statsDiv.querySelector('.g-active-sum').innerText = `Total: ₦${stats.activeSum.toLocaleString()}`;
+              statsDiv.querySelector('.g-active-sum').innerText = `Total: ${formatCurrency(stats.activeSum)}`;
               const odSpan = statsDiv.querySelector('.g-overdue-count');
               odSpan.innerText = `Overdue: ${stats.overdueCount}`;
               if (stats.overdueCount > 0) odSpan.style.color = 'var(--danger)';
@@ -429,7 +429,7 @@ export async function setupLoanRequestListeners() {
           <div style="display: grid; grid-template-columns: 1fr 120px auto; gap: 0.75rem; align-items: center;">
             <div style="position: relative;">
                 <input type="text" class="guarantor-search" placeholder="Search guarantor name..." style="width: 100%; height: 2.75rem; padding: 0 0.75rem; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-medium); border-radius: var(--radius-sm);">
-                <div class="guarantor-suggestions" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: var(--bg-card); border: 1px solid var(--border-medium); border-radius: 0.5rem; box-shadow: var(--shadow-lg); z-index: 100; max-height: 200px; overflow-y: auto; margin-top: 0.25rem;"></div>
+                <div class="guarantor-suggestions" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: var(--bg-card); border: 1px solid var(--border-medium); border-radius: 0.5rem; box-shadow: var(--shadow-lg); z-index: 999999; max-height: 200px; overflow-y: auto; margin-top: 0.25rem;"></div>
                 <input type="hidden" class="guarantor-id">
             </div>
             <input type="number" class="guarantor-amt" value="0" placeholder="Amount" style="height: 2.75rem; padding: 0 0.75rem; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-medium); border-radius: var(--radius-sm);">
@@ -652,6 +652,8 @@ export async function finalizeLoanRequest() {
     user_role: state.welcomeUser.role || 'member',
     user_roles: [state.welcomeUser.role || 'member'],
     status: status,
+    isLoanRequest: !isSavingsEnterprise,
+    isWithdrawalRequest: true,
     is_deleted: 0,
     is_synced: 0,
     created_at: new Date().toISOString(),
@@ -706,9 +708,6 @@ export async function finalizeLoanRequest() {
     }
   };
 
-  // Go to dashboard or remittances tab to show success
-  state.activeTab = 'dashboard';
-  window.location.hash = 'dashboard';
   window.__render();
   showToast('Withdrawal/Loan request submitted successfully!', 'success');
 }

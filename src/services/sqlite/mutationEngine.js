@@ -141,6 +141,13 @@ export async function saveDoc(tableName, doc, skipEnqueue = false) {
                 await upsertMany('remittance_detail', details)
             }
             if (doc.loans && Array.isArray(doc.loans)) {
+                // Delete old loans and their guarantors before recreating
+                // (cleanupRemittanceFamily soft-deleted + enqueued sync already)
+                const oldLoans = await getAllByIndex('loans', 'remittance_id', doc.id)
+                for (const oldLoan of oldLoans) {
+                    await deleteAllByIndex('loan_guarantors', 'loan_id', oldLoan.id)
+                }
+                await deleteAllByIndex('loans', 'remittance_id', doc.id)
                 for (const loan of doc.loans) {
                     loan.remittance_id = doc.id
                     await saveDoc('loans', loan, true)
@@ -155,17 +162,31 @@ export async function saveDoc(tableName, doc, skipEnqueue = false) {
                 await putItemsBatch('payment_advise', idbAdvises.map(a => ({ ...a, is_deleted: 1, is_synced: 0 })))
             }
         } else if (doc.payment_advise) {
-            await deleteAllByIndex('payment_advise', 'member_id', doc.id)
-            const advises = doc.payment_advise.map(a => ({
-                ...a,
-                member_id: String(doc.id),
-                cooperative_id: String(doc.cooperative_id),
-                id: a.id || `${doc.id}_${Math.random().toString(36).slice(2)}`,
-                is_synced: 0,
-                created_by: String(a.created_by || doc.created_by || doc.modified_by || 'system'),
-                created_at: String(a.created_at || doc.created_at || doc.modified_at || new Date().toISOString())
-            }))
-            await upsertMany('payment_advise', advises)
+            const existing = await getAllByIndex('payment_advise', 'member_id', doc.id)
+            const existingMap = {}
+            for (const e of existing) {
+                if (!e.is_deleted) existingMap[String(e.enterprise_id)] = e
+            }
+            const now = new Date().toISOString()
+            const merged = doc.payment_advise.map(a => {
+                const entId = String(a.enterprise_id)
+                const existingRow = existingMap[entId]
+                return {
+                    ...(existingRow || {}),
+                    ...a,
+                    id: existingRow?.id || a.id || `${doc.id}_${Math.random().toString(36).slice(2)}`,
+                    member_id: String(doc.id),
+                    cooperative_id: String(doc.cooperative_id),
+                    enterprise_id: entId,
+                    is_deleted: 0,
+                    is_synced: existingRow ? 0 : 0,
+                    created_by: String(existingRow?.created_by || a.created_by || doc.created_by || doc.modified_by || 'system'),
+                    created_at: String(existingRow?.created_at || a.created_at || doc.created_at || doc.modified_at || now),
+                    modified_at: now,
+                    modified_by: String(a.modified_by || doc.modified_by || doc.created_by || 'system')
+                }
+            })
+            await upsertMany('payment_advise', merged)
         }
     } else if (tableName === 'loans') {
         await upsertRow('loans', docToSave)
@@ -173,6 +194,12 @@ export async function saveDoc(tableName, doc, skipEnqueue = false) {
             const idbGuarantors = await getAllByIndex('loan_guarantors', 'loan_id', doc.id)
             if (idbGuarantors.length > 0) {
                 await putItemsBatch('loan_guarantors', idbGuarantors.map(g => ({ ...g, is_deleted: 1, is_synced: 0 })))
+            }
+            const childRems = await getAllByIndex('remittance', 'loan_id', doc.id)
+            for (const cr of childRems) {
+                if (cr.autogen === 1 && (cr.is_deleted === 0 || !cr.is_deleted)) {
+                    await saveDoc('remittance', { ...cr, is_deleted: 1 }, true)
+                }
             }
         } else if (doc.guarantors) {
             await deleteAllByIndex('loan_guarantors', 'loan_id', doc.id)
@@ -320,7 +347,19 @@ export async function saveMany(tableName, docs) {
             await deleteItem(tableName, String(doc.id))
             if (tableName === 'remittance') {
                 await deleteAllByIndex('remittance_detail', 'remittance_id', String(doc.id))
+                const deadLoans = await getAllByIndex('loans', 'remittance_id', String(doc.id))
+                for (const dl of deadLoans) {
+                    await deleteAllByIndex('loan_guarantors', 'loan_id', String(dl.id))
+                    const childRems = await getAllByIndex('remittance', 'loan_id', String(dl.id))
+                    for (const cr of childRems) {
+                        if (cr.autogen === 1) await deleteItem('remittance', String(cr.id))
+                    }
+                }
                 await deleteAllByIndex('loans', 'remittance_id', String(doc.id))
+                const directChildRems = await getAllByIndex('remittance', 'loan_id', String(doc.id))
+                for (const dcr of directChildRems) {
+                    if (dcr.autogen === 1) await deleteItem('remittance', String(dcr.id))
+                }
             } else if (tableName === 'members') {
                 await deleteAllByIndex('payment_advise', 'member_id', String(doc.id))
             } else if (tableName === 'loans') {
@@ -454,6 +493,24 @@ export async function saveMany(tableName, docs) {
                     const idbLoans = await getAllByIndex('loans', 'remittance_id', doc.id)
                     if (idbLoans.length > 0) {
                         await putItemsBatch('loans', idbLoans.map(l => ({ ...l, is_deleted: 1, is_synced: 1 })))
+                        for (const loan of idbLoans) {
+                            const idbGuarantors = await getAllByIndex('loan_guarantors', 'loan_id', loan.id)
+                            if (idbGuarantors.length > 0) {
+                                await putItemsBatch('loan_guarantors', idbGuarantors.map(g => ({ ...g, is_deleted: 1, is_synced: 1 })))
+                            }
+                            const childRems = await getAllByIndex('remittance', 'loan_id', loan.id)
+                            for (const cr of childRems) {
+                                if (cr.autogen === 1 && (cr.is_deleted === 0 || !cr.is_deleted)) {
+                                    await saveDoc('remittance', { ...cr, is_deleted: 1 }, true)
+                                }
+                            }
+                        }
+                    }
+                    const directChildRems = await getAllByIndex('remittance', 'loan_id', doc.id)
+                    for (const dcr of directChildRems) {
+                        if (dcr.autogen === 1 && (dcr.is_deleted === 0 || !dcr.is_deleted)) {
+                            await saveDoc('remittance', { ...dcr, is_deleted: 1 }, true)
+                        }
                     }
                 } else {
                     if (doc.details) {
@@ -470,6 +527,12 @@ export async function saveMany(tableName, docs) {
                         await upsertMany('remittance_detail', details)
                     }
                     if (doc.loans && Array.isArray(doc.loans)) {
+                        // Delete old loans and their guarantors before recreating
+                        const oldLoans = await getAllByIndex('loans', 'remittance_id', doc.id)
+                        for (const oldLoan of oldLoans) {
+                            await deleteAllByIndex('loan_guarantors', 'loan_id', oldLoan.id)
+                        }
+                        await deleteAllByIndex('loans', 'remittance_id', doc.id)
                         for (const loan of doc.loans) {
                             loan.remittance_id = doc.id
                             loan.is_synced = 1

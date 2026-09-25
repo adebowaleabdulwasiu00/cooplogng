@@ -1,25 +1,36 @@
-import { fetchRemittances, fetchEnterprises, fetchAllMembers, addRemittance, updateRemittance, fetchBanks, buildAccountBalance, fetchLoanById, fetchGuarantorStats, fetchMemberDoc, fetchTransactionTypes, fetchRemittancesPage, deleteRemittance, fetchMemberPaymentAdvise } from '../../services/dataService.js';
+import { fetchRemittances, fetchEnterprises, fetchAllMembers, addRemittance, updateRemittance, fetchBanks, buildAccountBalance, fetchLoanById, fetchGuarantorStats, fetchMemberDoc, fetchTransactionTypes, fetchRemittancesPage, deleteRemittance, fetchMemberPaymentAdvise, cleanupRemittanceFamily, updateMemberPaymentAdvice } from '../../services/dataService.js';
+import { createDuesTransfer } from '../../services/data/duesTransfer.js';
 import { hasPermission } from '../../services/permissionService.js';
 import { formatCurrency, formatDate, formatDateForInput, escapeHtml, getTimestampMs, generateId, generateRemittanceId, wrapDateInput, formatDateTime, getInitials, timestampTail } from '../../utils/formatters.js';
-import { getDoc, doc, getDb } from '../../firebase.js';
 import { showToast } from '../../services/toastService.js';
 import { getAllForCoop } from '../../services/sqliteService.js';
-import { getAvatarColor } from './constants.js';
+import { getAvatarColor, isMobile } from './constants.js';
 import { applyLoanRequestPrefillInternal, applyWithdrawalRequestPrefillInternal } from './remittancePrefill.js';
 import { showLoanConfigModal } from './remittanceLoanConfig.js';
 import { exportData } from './remittanceExport.js';
 import { attachEventListeners } from './remittanceEventListeners.js';
 import { render as _render } from './remittanceRender.js';
+import { showReverseModal } from './remittanceReverse.js';
+import { showBulkRemittanceModal } from './remittanceBulk.js';
 import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
+import { save as persistState, load as loadPersisted } from '../../services/statePersistence.js';
 
     export async function renderUnifiedPayment(container, user) {
     const isActualAdmin = hasPermission(user.permissions, 'admin') || (user.username || '').toLowerCase() === 'admin';
     const canApprove = isActualAdmin || hasPermission(user.permissions, 'approve_remittance');
     const canDelete = isActualAdmin || hasPermission(user.permissions, 'delete_remittance');
     const canReverse = isActualAdmin || hasPermission(user.permissions, 'reverse_remittance');
+    const canUpdate = isActualAdmin || hasPermission(user.permissions, 'update_remittance');
     const isAdmin = isActualAdmin || user.isAdmin || hasPermission(user.permissions, 'read_member');
     const isMember = user.role === 'member';
     const cooperativeId = user.cooperativeId;
+
+  // Members are never allowed to view Remittance (all devices).
+  // Staff/admin (any non-member role) always can, regardless of permission.
+  if (isMember) {
+    container.innerHTML = '<div class="alert">Access Restricted: Members cannot view the Remittance page.</div>';
+    return;
+  }
 
   if (!cooperativeId) {
     container.innerHTML = '<div class="alert">Error: Cooperative ID missing. Please log in again.</div>';
@@ -38,6 +49,7 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
   let paymentAdvise = {};
   let showAllZeros = false;
   let previewMode = false; // When true, form is read-only showing a selected history record
+  let editMode = false; // When true, form is editable for updating an existing parent remittance
 
   // --- Form State ---
   let formData = {
@@ -64,6 +76,9 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
     if (v && ['Pending', 'Approved', 'Rejected'].includes(v)) requestedHistoryStatus = v;
     sessionStorage.removeItem('cooplog-history-status');
   } catch {}
+
+  // Restore persisted history filters (survives F5)
+  const _savedRemit = loadPersisted('remit-filters') || {};
   const historyState = {
     cooperativeId,
     allRemittances: [],
@@ -73,22 +88,23 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
     lastVisibleDoc: null,
     hasMore: true,
     isLoading: false,
-    searchTerm: '',
-    searchColumn: 'All Columns',
+    searchTerm: _savedRemit.searchTerm || '',
+    searchColumn: _savedRemit.searchColumn || 'All Columns',
     selectedRemittanceId: null,
     selectedRemittanceIds: new Set(),
     filters: {
-      status: requestedHistoryStatus,
-      bank: 'All',
-      dateRange: 'All',
-      minAmount: null,
-      maxAmount: null,
-          memberId: (isActualAdmin || isAdmin) ? 'All' : (user.memberId || 'All'),
-      transactionType: 'All',
-      dateFrom: '',
-      dateTo: ''
+      status: requestedHistoryStatus !== 'All' ? requestedHistoryStatus : (_savedRemit.status || 'All'),
+      bank: _savedRemit.bank || 'All',
+      dateRange: _savedRemit.dateRange || 'All',
+      minAmount: _savedRemit.minAmount || null,
+      maxAmount: _savedRemit.maxAmount || null,
+      memberId: (isActualAdmin || isAdmin) ? (_savedRemit.memberId || 'All') : (user.memberId || 'All'),
+      transactionType: _savedRemit.transactionType || 'All',
+      dateFrom: _savedRemit.dateFrom || '',
+      dateTo: _savedRemit.dateTo || ''
     },
     selectAll: false,
+    expandedRemittanceIds: new Set(),
     stats: {
       total: 0,
       approved: 0,
@@ -324,6 +340,39 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
       }
     }
     
+    // Group autogen children under their parents to reduce table clutter.
+    // Match by parent_remittance_id (primary), loan_id fallback (legacy), or
+    // ID prefix (e.g. child id "PARENT-01" belongs to parent "PARENT").
+    const rawRemittances = [...historyState.allRemittances];
+    const parentMap = new Map();
+    const orphans = [];
+    for (const r of rawRemittances) {
+      if (r.autogen !== 1) {
+        r.children = [];
+        parentMap.set(String(r.id), r);
+      }
+    }
+    for (const r of rawRemittances) {
+      if (r.autogen !== 1) continue;
+      const childId = String(r.id);
+      const parentId = r.parent_remittance_id || r.loan_id;
+      let parent = parentMap.get(String(parentId));
+      // ID-prefix fallback: child "PARENT-01" belongs to parent "PARENT"
+      if (!parent) {
+        const dashIdx = childId.lastIndexOf('-');
+        if (dashIdx > 0) {
+          const prefix = childId.substring(0, dashIdx);
+          parent = parentMap.get(prefix);
+        }
+      }
+      if (parent) {
+        parent.children.push(r);
+      } else {
+        orphans.push(r);
+      }
+    }
+    historyState.allRemittances = [...parentMap.values(), ...orphans];
+
     // Sort: newest first by creation time, fallback to remittance_date (desc), then id.
     historyState.allRemittances.sort((a, b) => {
       const createdCmp = String(b.created_at || '').localeCompare(String(a.created_at || ''));
@@ -391,6 +440,7 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
   async function handleMemberChange(newMemberId) {
     formData.member_id = newMemberId;
     previewMode = false;
+    editMode = false;
     
     // Keep existing form data — only update member_id
     
@@ -415,9 +465,15 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
     render();
   }
 
-  // --- Load Remittance to Form for Read-Only Preview ---
+  // --- Load Remittance to Form for Read-Only Preview or Edit ---
   async function loadRemittanceToForm(remit) {
-    previewMode = true;
+    // Determine edit eligibility: only parent (non-autogen), non-reversed records
+    const isChild = !!remit.autogen;
+    const isReversed = (remit.description || '').toUpperCase().startsWith('REVERSAL:');
+    const isPendingLoanRequest = remit.status === 'Pending' && (remit.isLoanRequest || (remit.loans && remit.loans.length > 0));
+    const canEditThis = canUpdate && !isChild && !isReversed && !isPendingLoanRequest;
+    editMode = canEditThis;
+    previewMode = !canEditThis;
     
     // Create a map of loans by enterprise_id for quick lookup
     const loansByEnterprise = {};
@@ -430,9 +486,6 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
     // Process each detail and attach loan info if applicable
     const processedDetails = remit.details ? remit.details.map((detail, idx) => {
       let loan = loansByEnterprise[detail.enterprise_id] || loansByEnterprise[detail.item];
-      if (!loan && remit.loans && remit.loans.length > 0 && idx === 0) {
-        loan = remit.loans[0]; // fallback to first loan for first detail if not matched
-      }
       if (loan) {
         // Calculate due date if duration is present but due date is missing
         let dueDate = loan.due_date;
@@ -495,6 +548,10 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
             charges: charges
           }
         };
+      }
+      // Fallback: use loan_info stored in the detail record (new request flow)
+      if (detail.loan_info) {
+        return { ...detail, loan_info: detail.loan_info };
       }
       return detail;
     }) : [];
@@ -568,6 +625,7 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
   async function clearForm(isFullReset = false) {
     clearSavedForm();
     previewMode = false;
+    editMode = false;
     Object.keys(formData).forEach(k => delete formData[k]);
     Object.assign(formData, {
       id: null,
@@ -658,6 +716,29 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
               }
             } catch (e) {}
           }
+          if (loanInfo && loanInfo.loanData) {
+            const newIssueDate = formData.remittance_date || loanInfo.loanData.issueDate;
+            const newPrincipal = Math.abs(amount);
+            const dateChanged = newIssueDate !== loanInfo.loanData.issueDate;
+            const amountChanged = newPrincipal !== loanInfo.loanData.principalAmount;
+            if (dateChanged || amountChanged) {
+              loanInfo = JSON.parse(JSON.stringify(loanInfo));
+              if (dateChanged) {
+                loanInfo.loanData.issueDate = newIssueDate;
+                const duration = parseInt(loanInfo.loanData.durationMonths) || 0;
+                if (duration > 0 && newIssueDate) {
+                  const d = new Date(newIssueDate);
+                  if (!isNaN(d.getTime())) {
+                    d.setMonth(d.getMonth() + duration);
+                    loanInfo.loanData.dueDate = d.toISOString();
+                  }
+                }
+              }
+              if (amountChanged) {
+                loanInfo.loanData.principalAmount = newPrincipal;
+              }
+            }
+          }
           return {
             id: row.dataset.id || (prevDetail ? prevDetail.id : generateId()),
             enterprise_id: entId,
@@ -683,7 +764,7 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
 
   // --- Check Dirty ---
   function checkDirty() {
-    const submitBtn = document.getElementById('submit-log-btn');
+    const submitBtn = document.getElementById('submit-log-btn') || document.getElementById('update-log-btn');
     if (!submitBtn) return;
     const isValid = validateEnterpriseInputs();
     submitBtn.disabled = !isValid;
@@ -825,6 +906,122 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
   // Shared with bulk remittance (ask-once dues decision for the whole batch)
   deps.showDuesChargePopup = showDuesChargePopup;
 
+  // --- Savings Withdrawal Charges Popup ---
+  // Lists charges pre-filled from the enterprise settings (interest, form fee,
+  // admin charge). User can add/remove/edit charges.
+  // Resolves null when dismissed (abort save), { charge:false } on
+  // "Don't Charge", or { charge:true, items:[{name,value,type}] } on "Charge".
+  function showSavingsChargesPopup(chargeable, principalAmount) {
+    return new Promise(resolve => {
+      const modalId = 'savings-charges-modal';
+      document.getElementById(modalId)?.remove();
+
+      const overlay = document.createElement('div');
+      overlay.id = modalId;
+      overlay.className = 'modal-overlay';
+      overlay.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 999999; display: flex; align-items: center; justify-content: center; opacity: 1; pointer-events: auto;';
+
+      const modalContent = document.createElement('div');
+      modalContent.style.cssText = 'background: var(--bg-card); border-radius: var(--radius-md); width: 90%; max-width: 520px; margin: 2rem auto; max-height: 90vh; overflow-y: auto; padding: 1.5rem; box-shadow: var(--shadow-xl);';
+
+      const renderCharges = () => {
+        const rowsHtml = chargeable.map((c, idx) => `
+          <div class="savings-charge-row" data-idx="${idx}" style="display: grid; grid-template-columns: 2fr 1fr 1.5fr auto; gap: 0.5rem; align-items: end; padding: 0.5rem; background: var(--bg-secondary); border-radius: var(--radius-sm);">
+            <div>
+              <label style="font-size: 0.72rem; color: var(--text-muted); display: block; margin-bottom: 0.2rem;">Name</label>
+              <input type="text" class="sc-name" value="${escapeHtml(c.name || '')}" placeholder="Charge name" style="width: 100%; padding: 0.4rem 0.5rem; border-radius: var(--radius-sm); border: 1px solid var(--border-medium); background: var(--bg-input); color: var(--text-primary); font-size: 0.85rem;">
+            </div>
+            <div>
+              <label style="font-size: 0.72rem; color: var(--text-muted); display: block; margin-bottom: 0.2rem;">Type</label>
+              <select class="sc-type" style="width: 100%; padding: 0.4rem 0.5rem; border-radius: var(--radius-sm); border: 1px solid var(--border-medium); background: var(--bg-input); color: var(--text-primary); font-size: 0.85rem;">
+                <option value="percentage" ${c.type === 'percentage' ? 'selected' : ''}>%</option>
+                <option value="fixed" ${c.type === 'fixed' ? 'selected' : ''}>Fixed (₦)</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size: 0.72rem; color: var(--text-muted); display: block; margin-bottom: 0.2rem;">Value</label>
+              <input type="number" step="0.01" min="0" class="sc-value" value="${c.value || 0}" style="width: 100%; padding: 0.4rem 0.5rem; border-radius: var(--radius-sm); border: 1px solid var(--border-medium); background: var(--bg-input); color: var(--text-primary); font-size: 0.85rem; text-align: right;">
+            </div>
+            <button type="button" class="sc-remove" data-idx="${idx}" style="padding: 0.4rem; border-radius: var(--radius-sm); border: none; background: transparent; color: var(--danger); font-size: 1.2rem; font-weight: 800; line-height: 1; cursor: pointer; margin-bottom: 0.1rem;" title="Remove">&times;</button>
+          </div>
+        `).join('');
+
+        const totalC = chargeable.reduce((sum, c) => {
+          const val = parseFloat(c.value) || 0;
+          return sum + (c.type === 'percentage' ? (val / 100) * principalAmount : val);
+        }, 0);
+
+        modalContent.innerHTML = `
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+            <h3 style="margin: 0;">Savings Withdrawal Charges</h3>
+            <button type="button" class="close-sc-btn" style="background: transparent; border: none; font-size: 1.5rem; cursor: pointer; color: var(--text-muted);">&times;</button>
+          </div>
+          <p style="margin: 0 0 1rem 0; font-size: 0.85rem; color: var(--text-muted);">Set charges to apply. They will be debited from the member and credited to Income as linked auto entries.</p>
+          <div style="display: flex; flex-direction: column; gap: 0.5rem;">${rowsHtml}</div>
+          <button type="button" class="sc-add" style="margin-top: 0.75rem; padding: 0.4rem 0.8rem; border-radius: var(--radius-sm); border: 1px dashed var(--border-medium); background: transparent; color: var(--accent-primary); font-weight: 600; font-size: 0.82rem; cursor: pointer;">+ Add Charge</button>
+          <div data-total style="margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid var(--border-light); text-align: right; font-weight: 700; font-size: 0.9rem; color: var(--text-primary);">
+            Total Estimated Charges: ${formatCurrency(totalC)}
+          </div>
+          <div style="display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 1rem; border-top: 1px solid var(--border-light); padding-top: 1rem;">
+            <button type="button" class="btn btn-secondary sc-dont-charge">Don&apos;t Charge</button>
+            <button type="button" class="btn btn-primary sc-charge">Charge</button>
+          </div>
+        `;
+
+        const done = (result) => { overlay.remove(); resolve(result); };
+        modalContent.querySelector('.close-sc-btn').addEventListener('click', () => done(null));
+        modalContent.querySelector('.sc-dont-charge').addEventListener('click', () => done({ charge: false, items: [] }));
+        modalContent.querySelector('.sc-add').addEventListener('click', () => {
+          chargeable.push({ name: '', value: 0, type: 'fixed' });
+          renderCharges();
+        });
+        modalContent.querySelectorAll('.sc-remove').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const idx = parseInt(btn.dataset.idx, 10);
+            chargeable.splice(idx, 1);
+            renderCharges();
+          });
+        });
+        modalContent.querySelector('.sc-charge').addEventListener('click', () => {
+          const items = [];
+          modalContent.querySelectorAll('.savings-charge-row').forEach((row, i) => {
+            const c = chargeable[i];
+            if (!c) return;
+            c.name = row.querySelector('.sc-name').value.trim();
+            c.type = row.querySelector('.sc-type').value;
+            c.value = parseFloat(row.querySelector('.sc-value').value || 0);
+            if (!c.name || isNaN(c.value) || c.value <= 0) return;
+            items.push({ name: c.name, value: c.value, type: c.type });
+          });
+          done({ charge: true, items });
+        });
+
+        // Sync inputs back to chargeable on change
+        modalContent.querySelectorAll('.savings-charge-row').forEach((row, i) => {
+          row.querySelector('.sc-name').addEventListener('input', (e) => { chargeable[i].name = e.target.value; });
+          row.querySelector('.sc-type').addEventListener('change', (e) => { chargeable[i].type = e.target.value; });
+          row.querySelector('.sc-value').addEventListener('input', (e) => {
+            chargeable[i].value = parseFloat(e.target.value || 0);
+            // Recalculate total
+            const totalEl = modalContent.querySelector('[data-total]');
+            if (totalEl) {
+              const total = chargeable.reduce((sum, ch) => {
+                const v = parseFloat(ch.value) || 0;
+                return sum + (ch.type === 'percentage' ? (v / 100) * principalAmount : v);
+              }, 0);
+              totalEl.textContent = 'Total Estimated Charges: ' + formatCurrency(total);
+            }
+          });
+        });
+      };
+
+      renderCharges();
+      overlay.appendChild(modalContent);
+      document.body.appendChild(overlay);
+      setTimeout(() => modalContent.querySelector('.sc-name')?.focus(), 50);
+    });
+  }
+
   // --- Handle Submit ---
   const handleSubmit = async () => {
     // First, sync form data from DOM to formData!
@@ -842,7 +1039,7 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
     };
     clearHighlights();
 
-    const submitBtn = document.getElementById('submit-log-btn');
+    const submitBtn = document.getElementById('submit-log-btn') || document.getElementById('update-log-btn');
     if (submitBtn) {
       if (submitBtn.disabled) return;
       submitBtn.disabled = true;
@@ -863,13 +1060,13 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
         if (!formData.remittance_date) {
           highlightField('remittance_date');
           showToast('Validation Error: Transaction Date is required.', 'error');
-          if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = 'Save Remittance'; }
+          if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = editMode ? 'Update Remittance' : 'Save Remittance'; }
           return;
         }
         if (!bankName) {
           highlightField('bank_name');
           showToast('Validation Error: Bank or Remittance Method is required.', 'error');
-          if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = 'Save Remittance'; }
+          if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = editMode ? 'Update Remittance' : 'Save Remittance'; }
           return;
         }
       }
@@ -877,19 +1074,19 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
       if (isCoopWide) {
         if (amountVal === 0) {
           showToast('Validation Error: Total amount cannot be zero.', 'error');
-          if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = 'Save Remittance'; }
+          if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = editMode ? 'Update Remittance' : 'Save Remittance'; }
           return;
         }
         if (!formData.description.trim()) {
           highlightField('description');
           showToast('Validation Error: Note / Description is required.', 'error');
-          if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = 'Save Remittance'; }
+          if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = editMode ? 'Update Remittance' : 'Save Remittance'; }
           return;
         }
         if (!txType) {
           highlightField('transaction_type');
           showToast('Validation Error: Transaction Type is required for Admin mode.', 'error');
-          if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = 'Save Remittance'; }
+          if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = editMode ? 'Update Remittance' : 'Save Remittance'; }
           return;
         }
       } else {
@@ -901,20 +1098,20 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
         if (!memberId || memberId === '0000000000') {
           highlightField('member_id');
           showToast('Validation Error: Please select a member.', 'error');
-          if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = 'Save Remittance'; }
+          if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = editMode ? 'Update Remittance' : 'Save Remittance'; }
           return;
         }
         if ((bankName || '').toLowerCase() === 'internal transfer') {
           if (!formData.description.trim()) {
             highlightField('description');
             showToast('Validation Error: Note / Description is required for Internal Transfer.', 'error');
-            if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = 'Save Remittance'; }
+            if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = editMode ? 'Update Remittance' : 'Save Remittance'; }
             return;
           }
           txType = 'Internal Transfer';
           if (Math.abs(detailsSum - amountVal) > 0.01) {
             showToast(`Validation Error: Distribution total (${detailsSum.toFixed(2)}) does not match remittance amount (${amountVal.toFixed(2)}).`, 'error');
-            if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = 'Save Remittance'; }
+            if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = editMode ? 'Update Remittance' : 'Save Remittance'; }
             return;
           }
         } else {
@@ -923,7 +1120,7 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
               txType = 'Internal Transfer';
             } else {
               showToast('Validation Error: Amount cannot be zero except for balanced Internal Transfers.', 'error');
-              if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = 'Save Remittance'; }
+              if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = editMode ? 'Update Remittance' : 'Save Remittance'; }
               return;
             }
           }
@@ -953,12 +1150,12 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
           });
           if (missingLoanConfigId) {
             showLoanConfigModal(missingLoanConfigId, false, deps);
-            if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = 'Save Remittance'; }
+            if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = editMode ? 'Update Remittance' : 'Save Remittance'; }
             return;
           }
           if (formData.isLoanRequest && !formData.details.some(d => d.loan_info)) {
             showToast('Validation Error: Please enter an amount for a loan account and configure the loan details.', 'error');
-            if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = 'Save Remittance'; }
+            if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = editMode ? 'Update Remittance' : 'Save Remittance'; }
             return;
           }
           if (amountVal < 0 && txType !== 'Internal Transfer') {
@@ -967,14 +1164,14 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
                 const nonZeroDetails = formData.details;
                 const hasLoanDistribution = nonZeroDetails.some(d => loanEntIds.includes(d.enterprise_id || d.item) && d.amount < 0);
                 const hasSavingsDistribution = nonZeroDetails.some(d => savingsEntIds.includes(d.enterprise_id || d.item) && d.amount < 0);
-                const isLoan = hasLoanDistribution && (nonZeroDetails.length === 1);
+                const isLoan = (hasLoanDistribution && nonZeroDetails.length === 1) || (formData.isLoanRequest && nonZeroDetails.some(d => d.loan_info));
 
                 if (isLoan) {
                   txType = 'Member Loan';
                   if (!formData.isLoanRequest) {
                     if (!hasLoanDistribution) {
                       showToast('Validation Error: Negative member payments must be distributed to a Loan account.', 'error');
-                      if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = 'Save Remittance'; }
+                      if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = editMode ? 'Update Remittance' : 'Save Remittance'; }
                       return;
                     }
                   }
@@ -982,7 +1179,7 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
                   txType = 'Savings Withdrawal';
                   if (!hasSavingsDistribution) {
                     showToast('Validation Error: Negative member payments must be distributed to a Savings account.', 'error');
-                    if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = 'Save Remittance'; }
+                    if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = editMode ? 'Update Remittance' : 'Save Remittance'; }
                     return;
                   }
                 }
@@ -996,7 +1193,7 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
                 txType = 'Savings Withdrawal';
               } else {
                 showToast('Validation Error: Members cannot log negative amounts directly. Please use the "Loan Request" or "Withdrawal Request" button.', 'error');
-                if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = 'Save Remittance'; }
+                if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = editMode ? 'Update Remittance' : 'Save Remittance'; }
                 return;
               }
             }
@@ -1007,7 +1204,7 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
           }
           if (txType !== 'Internal Transfer' && Math.abs(detailsSum - amountVal) > 0.01) {
             showToast(`Validation Error: Distribution total (${detailsSum.toFixed(2)}) does not match remittance amount (${amountVal.toFixed(2)}).`, 'error');
-            if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = 'Save Remittance'; }
+            if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = editMode ? 'Update Remittance' : 'Save Remittance'; }
             return;
           }
         }
@@ -1065,19 +1262,117 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
           duesDecision = await showDuesChargePopup(chargeable);
           if (!duesDecision) {
             // Popup closed without choosing (same as old "Go Back")
-            if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = 'Save Remittance'; }
+            if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = editMode ? 'Update Remittance' : 'Save Remittance'; }
             return;
           }
         }
       }
 
+      // Rule: dues & penalties can never exceed the savings inside this same
+      // payment — reject the remittance (no submission) when they do.
+      if (duesDecision && duesDecision.charge && Array.isArray(duesDecision.items) && duesDecision.items.length > 0) {
+        const _duePenIds = new Set();
+        (enterpriseData || []).forEach(ent => {
+          const _isD = !!ent.compulsory_due && parseFloat(ent.compulsory_amount || 0) > 0;
+          if (_isD || !!ent.is_penalty) _duePenIds.add(String(ent.id));
+        });
+        const _savTotal = (formData.details || [])
+          .filter(d => parseFloat(d.amount || 0) > 0 && !_duePenIds.has(String(d.enterprise_id || d.item || '')))
+          .reduce((s, d) => s + Math.abs(parseFloat(d.amount || 0)), 0);
+        const _dueTotal = duesDecision.items.reduce((s, it) => s + Math.abs(parseFloat(it.amount || 0)), 0);
+        if (_dueTotal > _savTotal + 1e-9) {
+          showToast(`Dues & penalties (₦${_dueTotal.toLocaleString()}) exceed savings in this payment (₦${_savTotal.toLocaleString()}). Reduce the charges or increase the payment.`, 'error');
+          if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = editMode ? 'Update Remittance' : 'Save Remittance'; }
+          return;
+        }
+      }
+
+      // Savings withdrawal charges: pre-fill from enterprise settings (interest,
+      // form fee, admin charge) and let user choose to charge or not.
+      // Charge => linked autogen children (member debits + Other Income pickup).
+      // Don't charge => parent only. Skipped for non-savings-withdrawal transactions.
+      let savingsChargesDecision = null;
+      if (hasSavingsDist && !isCoopWide && amountVal < 0) {
+        const savingsDetail = formData.details.find(d =>
+          localSavingsEntIds.includes(d.enterprise_id || d.item) && d.amount < 0
+        );
+        const savingsEnterprise = enterpriseData.find(e =>
+          String(e.id) === String(savingsDetail?.enterprise_id || savingsDetail?.item)
+        );
+        if (savingsEnterprise) {
+          const savChargeable = [];
+          if (savingsEnterprise.interest_rate !== undefined && savingsEnterprise.interest_rate !== null && savingsEnterprise.interest_rate !== '' && parseFloat(savingsEnterprise.interest_rate) > 0) {
+            savChargeable.push({
+              name: 'Interest',
+              value: Math.abs(parseFloat(savingsEnterprise.interest_rate) || 0),
+              type: savingsEnterprise.interest_is_percent ? 'percentage' : 'fixed'
+            });
+          }
+          if (savingsEnterprise.form_fee !== undefined && savingsEnterprise.form_fee !== null && savingsEnterprise.form_fee !== '' && parseFloat(savingsEnterprise.form_fee) > 0) {
+            savChargeable.push({
+              name: 'Form Fee',
+              value: Math.abs(parseFloat(savingsEnterprise.form_fee) || 0),
+              type: savingsEnterprise.form_fee_is_percent ? 'percentage' : 'fixed'
+            });
+          }
+          if (savingsEnterprise.admin_charge !== undefined && savingsEnterprise.admin_charge !== null && savingsEnterprise.admin_charge !== '' && parseFloat(savingsEnterprise.admin_charge) > 0) {
+            savChargeable.push({
+              name: 'Admin Charge',
+              value: Math.abs(parseFloat(savingsEnterprise.admin_charge) || 0),
+              type: savingsEnterprise.admin_charge_is_percent ? 'percentage' : 'fixed'
+            });
+          }
+          if (savChargeable.length > 0) {
+            savingsChargesDecision = await showSavingsChargesPopup(savChargeable, Math.abs(amountVal));
+            if (!savingsChargesDecision) {
+              if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = editMode ? 'Update Remittance' : 'Save Remittance'; }
+              return;
+            }
+          }
+        }
+      }
+
       // Only handle new remittances
+      const isEditing = editMode && formData.id;
       const selectedMember = members.find(m => m.id === formData.member_id);
       // Full name stamped onto the 0000000000 pickup descriptions below.
       const pickupMemberName = [selectedMember?.last_name, selectedMember?.first_name, selectedMember?.middle_name].filter(Boolean).join(' ')
         || selectedMember?.name
         || formData.member_id;
       const status = canApprove ? 'Approved' : 'Pending';      const finalDescription = (status === 'Approved' && formData.description === 'Loan Request') ? '' : formData.description;
+
+      // EDIT MODE: reverse old payment advise BEFORE cleanup (cleanup
+      // soft-deletes loans, which makes loadDoc return empty loans array),
+      // then delete all old children/loans/guarantors, then recreate fresh.
+      if (isEditing) {
+        // 1) Reverse old loan payment advise while loans are still live
+        const oldRemit = await (await import('../../services/sqliteService.js')).getDocById_Global('remittance', formData.id);
+        if (oldRemit && oldRemit.loans && oldRemit.loans.length > 0) {
+          const memberDoc = await fetchMemberDoc(formData.member_id);
+          if (memberDoc) {
+            let existingAdvise = memberDoc.payment_advise || [];
+            let adviseChanged = false;
+            for (const oldLoan of oldRemit.loans) {
+              if (oldLoan.principal_amount && oldLoan.duration_months && oldLoan.duration_months > 0) {
+                const oldMonthly = parseFloat((oldLoan.principal_amount / oldLoan.duration_months).toFixed(2));
+                if (oldMonthly > 0) {
+                  const idx = existingAdvise.findIndex(a => String(a.enterprise_id) === String(oldLoan.enterprise_id));
+                  if (idx >= 0) {
+                    existingAdvise[idx].amount = (parseFloat(existingAdvise[idx].amount) || 0) - oldMonthly;
+                    if (existingAdvise[idx].amount <= 0) existingAdvise.splice(idx, 1);
+                    adviseChanged = true;
+                  }
+                }
+              }
+            }
+            if (adviseChanged) {
+              await updateMemberPaymentAdvice(formData.member_id, existingAdvise, user.username, user.cooperativeId);
+            }
+          }
+        }
+        // 2) Now cleanup old family (children, loans, guarantors)
+        await cleanupRemittanceFamily(formData.id, user.username);
+      }
       
       formData.loans = [];
       const autogenRemittances = [];
@@ -1087,6 +1382,8 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
 
       formData.details.forEach(d => {
         if (d.loan_info) {
+          const entId = d.enterprise_id || d.item;
+          if (!localLoanEntIds.includes(entId)) return;
           const lInfo = d.loan_info;
           const loanId = generateId();
           formData.loans.push({
@@ -1121,7 +1418,7 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
                 remittance_date: formData.remittance_date,
                 bank_name: formData.bank_name || 'System Generated',
                 transaction_type: 'Loan Charges',
-                category: 'Loan Income',
+                category: 'Loan Asset',
                 description: 'Loan Charge: ' + (c.name || 'Charge'),
                 autogen: 1,
                 loan_id: loanId,
@@ -1155,17 +1452,32 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
 
       // Pre-generate the parent id so dues/penalty autogen children can link
       // back to it (loan_id = parent id, same convention as loan charges).
-      const parentRemId = generateRemittanceId(user.cooperativeId);
-      await addRemittance({
-        ...formData,
-        id: parentRemId,
-        description: finalDescription,
-        status,
-        cooperative_id: user.cooperativeId,
-        user_role: user.role || 'member',
-        user_roles: [user.role || 'member'],
-        loan_status: status === 'Approved' ? 'Active' : 'Pending'
-      }, isMember ? 'self' : user.username);
+      // In edit mode, reuse the existing parent id to update in-place.
+      const parentRemId = isEditing ? formData.id : generateRemittanceId(user.cooperativeId);
+      if (isEditing) {
+        // Update existing parent (preserves created_at)
+        await updateRemittance(parentRemId, {
+          ...formData,
+          id: parentRemId,
+          description: finalDescription,
+          status,
+          cooperative_id: user.cooperativeId,
+          user_role: user.role || 'member',
+          user_roles: [user.role || 'member'],
+          loan_status: status === 'Approved' ? 'Active' : 'Pending'
+        }, user.username);
+      } else {
+        await addRemittance({
+          ...formData,
+          id: parentRemId,
+          description: finalDescription,
+          status,
+          cooperative_id: user.cooperativeId,
+          user_role: user.role || 'member',
+          user_roles: [user.role || 'member'],
+          loan_status: status === 'Approved' ? 'Active' : 'Pending'
+        }, isMember ? 'self' : user.username);
+      }
       
       // Save autogen remittances
       for (let idx = 0; idx < autogenRemittances.length; idx++) {
@@ -1175,6 +1487,7 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
           autoRem.id = `${baseId}-${suffix}`;
           await addRemittance({
               ...autoRem,
+              parent_remittance_id: parentRemId,
               status,
               cooperative_id: user.cooperativeId,
               user_role: user.role || 'member',
@@ -1182,12 +1495,16 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
           }, isMember ? 'self' : user.username);
       }
 
-      // Save dues/penalty autogen remittances (Charge path only).
+      // Save dues/penalty autogen remittances (Charge path only). Four records:
       // Child A (per enterprise, member debit): negative amount + negative
       // detail on that enterprise, Internal Transfer. Typing 100 or -100
-      // both store -100. Child B (single pickup): positive total to
-      // Other Income under admin 0000000000 with matching positive details
-      // so the credit materializes in income reports (detail-driven).
+      // both store -100. Child B (single pickup): positive header-only total
+      // to Other Income under admin 0000000000 with NO details (header
+      // carries the credit; same convention as the loan income pickup).
+      // Child C (single settlement transfer): header 0 on the member, -side
+      // peeled from this payment's savings lines + +side split per due
+      // enterprise (one record covers all charges). Validation above already
+      // guaranteed dues <= savings, so the peel cannot shortfall here.
       // Categories resolve from transaction-type settings inside addRemittance.
       if (duesDecision && duesDecision.charge && Array.isArray(duesDecision.items) && duesDecision.items.length > 0) {
           const validItems = duesDecision.items.filter(it => parseFloat(it.amount || 0) > 0);
@@ -1227,23 +1544,103 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
                   remittance_date: formData.remittance_date,
                   bank_name: 'Internal Transfer',
                   transaction_type: 'Other Income',
-                  description: `Auto Other Income (Dues & Penalties) - ${pickupMemberName}`,
+                   description: `Auto Other Income (Dues & Penalties) - ${pickupMemberName}`,
                   autogen: 1,
                   loan_id: parentRemId,
                   status,
                   user_role: user.role || 'member',
-                  user_roles: [user.role || 'member'],
-                  details: validItems.map(item => ({
-                      id: generateId(),
-                      enterprise_id: item.enterprise_id,
-                      amount: Math.abs(parseFloat(item.amount || 0)),
-                      notes: item.name
-                  }))
+                  user_roles: [user.role || 'member']
               }, isMember ? 'self' : user.username);
+              // Child C: settlement transfer (header 0). Funded from this
+              // payment's own savings lines (due/penalty lines excluded).
+              const _duePenIdsC = new Set();
+              (enterpriseData || []).forEach(ent => {
+                  const _isD = !!ent.compulsory_due && parseFloat(ent.compulsory_amount || 0) > 0;
+                  if (_isD || !!ent.is_penalty) _duePenIdsC.add(String(ent.id));
+              });
+              const _savLines = (formData.details || [])
+                  .filter(d => parseFloat(d.amount || 0) > 0 && !_duePenIdsC.has(String(d.enterprise_id || d.item || '')))
+                  .map(d => ({ enterprise_id: d.enterprise_id || d.item, amount: Math.abs(parseFloat(d.amount || 0)) }));
+              await createDuesTransfer({
+                  cooperativeId: user.cooperativeId,
+                  parentId: parentRemId,
+                  memberId: formData.member_id,
+                  memberName: pickupMemberName,
+                  date: formData.remittance_date,
+                  status,
+                  actor: isMember ? 'self' : user.username,
+                  role: user.role || 'member',
+                  savingsLines: _savLines,
+                  duesItems: validItems
+              });
+          }
+      }
+
+      // Save savings withdrawal charges autogen remittances (Charge path only).
+      // Child A (per charge, member debit): negative amount + negative detail
+      // on the savings enterprise, Internal Transfer. Child B (single pickup):
+      // positive header-only total to Other Income under admin 0000000000.
+      if (savingsChargesDecision && savingsChargesDecision.charge && Array.isArray(savingsChargesDecision.items) && savingsChargesDecision.items.length > 0) {
+          const savEntId = formData.details.find(d =>
+              localSavingsEntIds.includes(d.enterprise_id || d.item) && d.amount < 0
+          );
+          const savEnterpriseId = savEntId ? (savEntId.enterprise_id || savEntId.item) : null;
+          if (savEnterpriseId) {
+              const validItems = savingsChargesDecision.items.filter(it => parseFloat(it.value || 0) > 0);
+              let chgIndex = 0;
+              let totalSavCharges = 0;
+              for (const item of validItems) {
+                  chgIndex++;
+                  let val = parseFloat(item.value) || 0;
+                  if (item.type === 'percentage') {
+                      val = (val / 100) * Math.abs(amountVal);
+                  }
+                  val = -Math.abs(val);
+                  totalSavCharges += Math.abs(val);
+                  await addRemittance({
+                      id: `${parentRemId}-CHG-${String(chgIndex).padStart(2, '0')}`,
+                      cooperative_id: user.cooperativeId,
+                      member_id: formData.member_id,
+                      amount: val,
+                      remittance_date: formData.remittance_date,
+                      bank_name: 'Internal Transfer',
+                      transaction_type: 'Internal Transfer',
+                      description: `Auto Savings Charge (${item.name})`,
+                      autogen: 1,
+                      parent_remittance_id: parentRemId,
+                      status,
+                      user_role: user.role || 'member',
+                      user_roles: [user.role || 'member'],
+                      details: [{
+                          id: generateId(),
+                          enterprise_id: savEnterpriseId,
+                          amount: val,
+                          notes: item.name
+                      }]
+                  }, isMember ? 'self' : user.username);
+              }
+              // Child B: income pickup (single, header only)
+              if (totalSavCharges > 0) {
+                  await addRemittance({
+                      id: `${parentRemId}-CHG-INCOME`,
+                      cooperative_id: user.cooperativeId,
+                      member_id: '0000000000',
+                      amount: totalSavCharges,
+                      remittance_date: formData.remittance_date,
+                      bank_name: 'Internal Transfer',
+                      transaction_type: 'Other Income',
+                      description: `Auto Savings Charges Income - ${pickupMemberName}`,
+                      autogen: 1,
+                      parent_remittance_id: parentRemId,
+                      status,
+                      user_role: user.role || 'member',
+                      user_roles: [user.role || 'member']
+                  }, isMember ? 'self' : user.username);
+              }
           }
       }
       
-      if (formData.loans && formData.loans.length > 0) {
+      if (formData.loans && formData.loans.length > 0 && status === 'Approved') {
           const { fetchMemberDoc, updateMemberPaymentAdvice } = await import('../../services/dataService.js');
           const memberId = formData.member_id;
           const memberDoc = await fetchMemberDoc(memberId);
@@ -1279,13 +1676,13 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
       clearSavedForm();
       await loadHistoryData(true);
       await clearForm(true);
-      showToast('Remittance record saved successfully!', 'success');
+      showToast(isEditing ? 'Remittance updated successfully!' : 'Remittance record saved successfully!', 'success');
       window.dispatchEvent(new CustomEvent('remittance-saved'));
     } catch (err) {
       showToast('Error saving remittance: ' + err.message, 'error');
       if (submitBtn) {
         submitBtn.disabled = false;
-        submitBtn.innerText = 'Save Remittance';
+        submitBtn.innerText = editMode ? 'Update Remittance' : 'Save Remittance';
       }
     }
   };
@@ -1294,7 +1691,7 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
   // --- Render ---
   const render = () => {
     const savedScrollTop = container.querySelector('.history-table-container')?.scrollTop ?? null;
-    Object.assign(deps, { formData, openingBalances, paymentAdvise, previewMode, historyState });
+    Object.assign(deps, { formData, openingBalances, paymentAdvise, previewMode, editMode, historyState });
     _render(container, deps);
     setupHistoryScrollListener();
     if (savedScrollTop !== null) {
@@ -1334,7 +1731,13 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
     const avatarWrap = container.querySelector('#up-avatar-wrap');
     if (!avatarWrap || !member) return;
     let previewEl = null;
-    let pressTimer = null;
+    let escHandler = null;
+
+    const hidePreview = () => {
+      if (previewEl) { previewEl.remove(); previewEl = null; }
+      if (escHandler) { document.removeEventListener('keydown', escHandler); escHandler = null; }
+    };
+
     const showPreview = () => {
       if (previewEl) return;
       previewEl = document.createElement('div');
@@ -1359,41 +1762,44 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
           </div>
         `;
       }
+      previewEl.addEventListener('click', hidePreview);
       document.body.appendChild(previewEl);
+      escHandler = (e) => { if (e.key === 'Escape') hidePreview(); };
+      document.addEventListener('keydown', escHandler);
     };
-    const hidePreview = () => {
-      if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
-      if (previewEl) { previewEl.remove(); previewEl = null; }
-    };
-    const startPress = (e) => {
-      if (e.type === 'touchstart') e.preventDefault();
+
+    avatarWrap.addEventListener('click', (e) => {
       e.stopPropagation();
-      pressTimer = setTimeout(() => { showPreview(); }, 350);
-      document.addEventListener('mouseup', hidePreview, { once: true });
-      document.addEventListener('touchend', hidePreview, { once: true });
-      document.addEventListener('touchcancel', hidePreview, { once: true });
-    };
-    avatarWrap.addEventListener('mousedown', startPress);
-    avatarWrap.addEventListener('touchstart', startPress, { passive: false });
+      if (previewEl) {
+        hidePreview();
+      } else {
+        showPreview();
+      }
+    });
   }
 
   function updateHistoryTable() {
-    // Track current focus before modifying the DOM
     trackFocus();
-    
     const tbody = container.querySelector('#history-tbody');
     if (!tbody) return;
-    tbody.innerHTML = historyState.allRemittances.map((remit, idx) => {
+
+    const renderRow = (remit, idx, isChild = false) => {
       const member = historyState.membersMap[remit.member_id];
       const isSelected = historyState.selectedRemittanceIds.has(remit.id);
+      const childCount = !isChild && remit.children ? remit.children.length : 0;
+      const isExpanded = historyState.expandedRemittanceIds.has(remit.id);
       return `
-      <tr class="${historyState.selectedRemittanceId === remit.id ? 'selected' : ''} ${isSelected ? 'selected' : ''}" data-id="${remit.id}" data-row-index="${idx}">
+      <tr class="${historyState.selectedRemittanceId === remit.id ? 'selected' : ''} ${isSelected ? 'selected' : ''} ${isChild ? 'child-row' : ''}" data-id="${remit.id}" data-row-index="${idx}" data-status="${remit.status || 'Pending'}" ${isChild ? `data-parent-id="${remit.parent_remittance_id || remit.loan_id}"` : ''} style="${isChild ? 'background: var(--bg-secondary);' : ''}">
         <td>
-          <input type="checkbox" class="remit-checkbox" data-id="${remit.id}" ${isSelected ? 'checked' : ''}>
+          ${isChild ? '<span style="display:inline-block;width:12px;"></span>' : `<input type="checkbox" class="remit-checkbox" data-id="${remit.id}" ${isSelected ? 'checked' : ''}>`}
         </td>
         ${!isMember ? `
           <td>
-            <div class="member-name-cell" style="color: ${remit.member_id === '0000000000' ? 'var(--accent-primary)' : 'var(--text-primary)'}">${escapeHtml(getFormattedName(remit.member_id, remit.transaction_type))}</div>
+            <div class="member-name-cell" style="color: ${remit.member_id === '0000000000' ? 'var(--accent-primary)' : 'var(--text-primary)'}; ${isChild ? 'font-size:0.82rem;font-weight:500;' : ''}">
+              ${isChild ? '<span style="color:var(--text-muted);margin-right:4px;">└</span>' : (childCount > 0 ? `<span class="expand-toggle" data-toggle-id="${remit.id}" style="cursor:pointer;margin-right:4px;color:var(--accent-primary);font-weight:700;user-select:none;">${isExpanded ? '▼' : '▶'}</span>` : '')}
+              ${escapeHtml(getFormattedName(remit.member_id, remit.transaction_type))}
+              ${childCount > 0 ? `<span style="font-size:0.7rem;color:var(--text-muted);margin-left:4px;">(${childCount})</span>` : ''}
+            </div>
             <div class="member-reg-cell">${timestampTail(remit.id)}</div>
           </td>
         ` : `
@@ -1406,9 +1812,9 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
         <td><div style="font-weight: 600;">${escapeHtml(remit.bank_name || 'Direct')}</div></td>
         <td><div style="max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-muted);" title="${escapeHtml(remit.description || '')}">${escapeHtml(remit.description || '')}</div></td>
         <td class="text-right">
-          <div style="font-family: 'Outfit', sans-serif; font-weight: 800; font-size: 1rem; color: ${remit.amount < 0 ? 'var(--danger)' : 'var(--success)'};">${formatCurrency(remit.amount)}</div>
+          <div style="font-family: 'Outfit', sans-serif; font-weight: 800; font-size: ${isChild ? '0.85rem' : '1rem'}; color: ${remit.amount < 0 ? 'var(--danger)' : 'var(--success)'}; ${isChild ? 'opacity:0.8;' : ''}">${formatCurrency(remit.amount)}</div>
         </td>
-        <td><span class="status-badge status-${escapeHtml(remit.status || 'Pending')}">${escapeHtml(remit.status || 'Pending')}</span></td>
+        <td><span class="status-badge status-${escapeHtml(remit.status || 'Pending')}" style="${isChild ? 'font-size:0.65rem;padding:0.15rem 0.5rem;' : ''}">${escapeHtml(remit.status || 'Pending')}</span></td>
         <td>
           <div class="modified-by-name">${escapeHtml(remit.created_by || '—')}</div>
           <div class="modified-at-time">${formatDateTime(remit.created_at || remit.remittance_date) || '—'}</div>
@@ -1419,17 +1825,26 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
         </td>
       </tr>
       `;
-    }).join('');
+    };
+
+    let html = '';
+    historyState.allRemittances.forEach((remit, idx) => {
+      html += renderRow(remit, idx, false);
+      const children = remit.children || [];
+      if (children.length > 0 && historyState.expandedRemittanceIds.has(remit.id)) {
+        children.forEach((child) => {
+          html += renderRow(child, idx, true);
+        });
+      }
+    });
+    tbody.innerHTML = html;
 
     const scrollIndicator = container.querySelector('#history-scroll-indicator');
     if (scrollIndicator) {
       scrollIndicator.style.display = historyState.isLoading ? 'block' : 'none';
     }
 
-    // Re-attach delete and checkbox listeners
     attachHistoryEventListeners();
-    
-    // Restore the previous focus and selection
     restoreFocus();
   }
 
@@ -1465,13 +1880,25 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
       });
     });
 
+    // Expand/collapse child rows
+    container.querySelectorAll('.expand-toggle').forEach(toggle => {
+      toggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = toggle.dataset.toggleId;
+        if (historyState.expandedRemittanceIds.has(id)) {
+          historyState.expandedRemittanceIds.delete(id);
+        } else {
+          historyState.expandedRemittanceIds.add(id);
+        }
+        updateHistoryTable();
+      });
+    });
 
 
 
-
-    // Delete selected button
+    // Delete handler — enabled for users with delete_remittance permission.
     const deleteSelectedBtn = container.querySelector('#delete-selected-btn');
-    if (deleteSelectedBtn && canDelete) {
+    if (deleteSelectedBtn) {
       deleteSelectedBtn.onclick = async () => {
         const count = historyState.selectedRemittanceIds.size;
         if (count === 0) return;
@@ -1507,8 +1934,14 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
     if (reverseSelectedBtn && canReverse) {
       reverseSelectedBtn.onclick = async () => {
         if (historyState.selectedRemittanceIds.size === 0) return;
-        const { showReverseModal } = await import('./remittanceReverse.js');
-        showReverseModal(deps);
+        // Statically imported above (no runtime chunk fetch) so Reverse
+        // opens fully offline. Dynamic fallback only for stale shells.
+        try {
+          showReverseModal(deps);
+        } catch (err) {
+          const mod = await import('./remittanceReverse.js');
+          mod.showReverseModal(deps);
+        }
       };
     }
 
@@ -1562,7 +1995,10 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
           dateFrom: '',
           dateTo: ''
         };
+        historyState.searchTerm = '';
+        historyState.searchColumn = 'All Columns';
         if (filterOverlay) filterOverlay.classList.remove('open');
+        persistState('remit-filters', { ...historyState.filters, searchTerm: '', searchColumn: 'All Columns' });
         loadHistoryData(true);
       };
     }
@@ -1590,6 +2026,7 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
         historyState.filters.maxAmount = filterMaxAmount?.value ? Number(filterMaxAmount.value) : null;
 
         if (filterOverlay) filterOverlay.classList.remove('open');
+        persistState('remit-filters', { ...historyState.filters, searchTerm: historyState.searchTerm, searchColumn: historyState.searchColumn });
         loadHistoryData(true);
       };
     }
@@ -1608,7 +2045,7 @@ import { showWorkspaceSpinner } from '../../components/workspaceSpinner.js';
     }
   }
 
-  Object.assign(deps, { formData, enterpriseData, members, selectorMembers, banks, transactionTypes, isMember, user, historyState, loadHistoryData, clearForm, clearSavedForm, render, openingBalances, paymentAdvise, showAllZeros, previewMode, panelSizes, isAdmin, isActualAdmin, canApprove, canDelete, canReverse, cooperativeId, PANEL_SIZE_KEY, syncFormData, checkDirty, saveSavedForm, handleMemberChange, handleSubmit, updateHistoryTable, updateDeleteSelectedButton, loadRemittanceToForm, attachImagePreview, trackFocus, isFormValid, restoreFocus, getFormattedName, attachHistoryEventListeners });
+  Object.assign(deps, { formData, enterpriseData, members, selectorMembers, banks, transactionTypes, isMember, user, historyState, loadHistoryData, clearForm, clearSavedForm, render, openingBalances, paymentAdvise, showAllZeros, previewMode, editMode, panelSizes, isAdmin, isActualAdmin, canApprove, canDelete, canReverse, canUpdate, cooperativeId, PANEL_SIZE_KEY, syncFormData, checkDirty, saveSavedForm, handleMemberChange, handleSubmit, updateHistoryTable, updateDeleteSelectedButton, loadRemittanceToForm, attachImagePreview, trackFocus, isFormValid, restoreFocus, getFormattedName, attachHistoryEventListeners, showBulkRemittanceModal, showReverseModal, isMobile });
   render();
 
   return {

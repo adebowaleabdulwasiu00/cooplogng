@@ -7,7 +7,11 @@ export function showToast(message, type = "info") {
     container.style.position = 'fixed'
     container.style.bottom = '2rem'
     container.style.right = '2rem'
-    container.style.zIndex = '9999'
+    // Topmost layer: must clear every modal/overlay in the app (modals go up to
+    // inline z-index 999999999), so toasts never end up buried under a blur
+    // screen. pointer-events none on the tray keeps it from blocking clicks.
+    container.style.zIndex = '2147483647'
+    container.style.pointerEvents = 'none'
     container.style.display = 'flex'
     container.style.flexDirection = 'column'
     container.style.gap = '0.75rem'
@@ -18,6 +22,7 @@ export function showToast(message, type = "info") {
   toast.className = `alert`
   toast.style.margin = '0'
   toast.style.boxShadow = 'var(--shadow-lg)'
+  toast.style.pointerEvents = 'auto'
   if (type === 'success') {
     toast.style.background = 'var(--success-bg)'
     toast.style.color = 'var(--success)'

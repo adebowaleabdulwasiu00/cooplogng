@@ -1,4 +1,4 @@
-import { buildAccountBalance, fetchEnterprises, fetchRemittances, fetchAllMembers, fetchBanks } from '../services/dataService.js'
+import { buildAccountBalance, fetchEnterprises, fetchRemittances, fetchAllMembers, fetchBanks, fetchMemberPaymentAdvise } from '../services/dataService.js'
 import { buildWeeklyActivity, reconstructBalances, areaChartSVG, weekPctChange, compactCurr, CHART_WEEKS } from '../components/weeklyChart.js'
 import { showWorkspaceSpinner } from '../components/workspaceSpinner.js'
 import { hasPermission } from '../services/permissionService.js'
@@ -18,6 +18,7 @@ function isDashboardExpense(cls) {
 // Persist mask/unmask state using localStorage
 const MASK_PREF_KEY = 'cooplog_balance_mask'
 const SHOW_ZERO_BALANCE_KEY = 'cooplog_show_zero_balance'
+const dashboardExpandedRemittances = new Set()
 
 function getMaskPreference() {
   try {
@@ -217,18 +218,21 @@ export async function renderAccountBalance(container, user) {
         const _rightsTokens = String(user.enterprise_rights || user.enterprises || '').split(',').map(p => p.trim()).filter(p => p.length > 0);
         const _allAccessForMembers = isAdmin || (isStaff && _rightsTokens.some(r => r.toLowerCase() === 'all'));
 
+        const memberAdviceId = (queryUser.memberId && queryUser.memberId !== '0000000000') ? queryUser.memberId : (isMember ? user.memberId : null);
         const [
             enterpriseRows,
             banks,
             membersAll,
             loansAll,
             syncQueue,
+            memberAdviceRows,
         ] = await Promise.all([
             fetchEnterprises(user.cooperativeId, true),
             fetchBanks(user.cooperativeId),
             fetchAllMembers(user.cooperativeId, user.username, _allAccessForMembers),
             queryRows(loansSql, [coopId]).catch(e => { console.warn('Error fetching loans for stats:', e); return []; }),
             getPendingQueue(user.cooperativeId),
+            (memberAdviceId ? fetchMemberPaymentAdvise(memberAdviceId).catch(() => []) : Promise.resolve([])),
         ]);
 
         let { accountBalance } = await buildAccountBalance(user.cooperativeId, queryUser, null, { remittances: sharedRemittances, enterprises: enterpriseRows })
@@ -258,6 +262,27 @@ export async function renderAccountBalance(container, user) {
         })
         visibleBalance.sort((a, b) => a.account_name.localeCompare(b.account_name))
 
+        // ── Current payment advice (member dashboard card) ──────────────
+        // Sum of the member's monthly advice, split savings vs auto loans.
+        // Uses the payment_advise table directly (most reliable source).
+        let adviceTotal = 0;
+        let adviceSavings = 0;
+        let adviceLoans = 0;
+        let adviceActiveCount = 0;
+        try {
+            const entTypeById = {};
+            (enterpriseRows || []).forEach(e => { entTypeById[String(e.id)] = (e.account_type || '').toLowerCase(); });
+            (memberAdviceRows || []).forEach(a => {
+                if (a && a.is_deleted) return;
+                const amt = parseFloat(a.amount) || 0;
+                if (amt === 0) return;
+                adviceTotal += amt;
+                adviceActiveCount++;
+                if (entTypeById[String(a.enterprise_id)] === 'loan') adviceLoans += amt;
+                else adviceSavings += amt;
+            });
+        } catch (e) { console.warn('Advice total calc failed:', e?.message); }
+
         let allowedEntIds = [];
         let allowedEntNames = [];
         let hasAllAccess = false;
@@ -284,6 +309,7 @@ export async function renderAccountBalance(container, user) {
         let totalSavingsLiabilities = 0;
         let totalLoansOutstandingAssets = 0;
         let totalRevenueCollected = 0;
+        let totalExpensesAllTime = 0;
 
         visibleBalance = visibleBalance.map(b => {
             const hasAccess = isAdmin || isMember || hasAllAccess ||
@@ -297,14 +323,19 @@ export async function renderAccountBalance(container, user) {
             const entObj = entObjMap[b.id];
             const isRevenue = entObj && (entObj.revenue == 1 || entObj.revenue === '1' || entObj.revenue === 'true' || entObj.revenue === true || entObj.account_type === 'revenue');
             const isPenalty = entObj && (entObj.is_penalty == 1 || entObj.is_penalty === '1' || entObj.is_penalty === 'true' || entObj.is_penalty === true);
-            if (isMember && (isRevenue || isPenalty)) {
+            // Dues & penalties are member obligations: they count toward
+            // networth (member + admin) even when flagged as revenue.
+            // Pure-revenue enterprises stay hidden from members as before.
+            const isDue = entObj && (entObj.compulsory_due == 1 || entObj.compulsory_due === '1' || entObj.compulsory_due === 'true' || entObj.compulsory_due === true);
+            const isDuePenalty = !!(isDue || isPenalty);
+            if (isMember && isRevenue && !isDuePenalty) {
                 return null;
             }
 
             const type = entObj ? (entObj.account_type || '').toLowerCase() : '';
-            if (isRevenue) {
+            if (isRevenue && !isDuePenalty) {
                 // revenue captured from transaction details below, not from balance
-            } else if ((type === 'savings' || type === 'liability') && !isPenalty) {
+            } else if ((type === 'savings' || type === 'liability')) {
                 totalSavingsLiabilities += (b.sum_of_amount || 0);
             } else if (type === 'loan' || type === 'asset') {
                 totalLoansOutstandingAssets += Math.abs(b.sum_of_amount || 0);
@@ -330,17 +361,60 @@ export async function renderAccountBalance(container, user) {
         if (queryUser.memberId && queryUser.memberId !== '0000000000') {
             remittances = remittances.filter(r => r.member_id === queryUser.memberId);
         }
-        const recentRemittances = remittances.slice(0, 10)
+
+        // Group autogen children under their parents (same logic as remittance page)
+        const parentMap = new Map();
+        const orphans = [];
+        for (const r of remittances) {
+            if (r.autogen !== 1) {
+                r.children = [];
+                parentMap.set(String(r.id), r);
+            }
+        }
+        for (const r of remittances) {
+            if (r.autogen !== 1) continue;
+            const childId = String(r.id);
+            const parentId = r.parent_remittance_id || r.loan_id;
+            let parent = parentMap.get(String(parentId));
+            if (!parent) {
+                const dashIdx = childId.lastIndexOf('-');
+                if (dashIdx > 0) {
+                    const prefix = childId.substring(0, dashIdx);
+                    parent = parentMap.get(prefix);
+                }
+            }
+            if (parent) {
+                parent.children.push(r);
+            } else {
+                orphans.push(r);
+            }
+        }
+        const groupedRemittances = [...parentMap.values(), ...orphans];
+        groupedRemittances.sort((a, b) => {
+            const createdCmp = String(b.created_at || '').localeCompare(String(a.created_at || ''));
+            if (createdCmp !== 0) return createdCmp;
+            const dateCmp = new Date(b.remittance_date || 0) - new Date(a.remittance_date || 0);
+            if (dateCmp !== 0) return dateCmp;
+            return String(b.id).localeCompare(String(a.id));
+        });
+        const recentRemittances = groupedRemittances.slice(0, 10)
+        window.__dashRecentRemittances = recentRemittances;
 
         // Accounting lives on the remittance header (transaction_type/category):
-        // revenue counts income-category headers at header amount. Details
-        // are only for member-level enterprise breakdowns, not accounting.
+        // revenue counts income-category headers at header amount, expenses
+        // count expense-category headers. Details are only for member-level
+        // enterprise breakdowns, not accounting.
         for (const rem of remittances) {
             if (rem.status !== 'Approved') continue;
             if (isDashboardIncome(rem.category || '')) {
                 totalRevenueCollected += parseFloat(rem.amount || 0);
+            } else if (isDashboardExpense(rem.category || '')) {
+                // Signed: a +ve expense header (refund/reversal) nets off.
+                totalExpensesAllTime -= parseFloat(rem.amount || 0);
             }
         }
+        // Total revenue is net of expenses (all-time).
+        const totalRevenue = totalRevenueCollected - totalExpensesAllTime;
 
         // Fetch statistics (pre-fetched above)
         let members = membersAll
@@ -381,7 +455,8 @@ export async function renderAccountBalance(container, user) {
                 if (isDashboardIncome(cls)) {
                     organizationalRevenue += amt;
                 } else if (isDashboardExpense(cls)) {
-                    organizationalExpenses += Math.abs(amt);
+                    // Signed: a +ve expense header (refund/reversal) nets off.
+                    organizationalExpenses -= amt;
                 }
             });
         }
@@ -448,9 +523,10 @@ export async function renderAccountBalance(container, user) {
             isMember ? 1 : 0, maskBalances ? 1 : 0, showZeroBalances ? 1 : 0,
             visibleBalance.map(b => [String(b.id), _sigMoney(b.sum_of_amount), b.isRestricted ? 1 : 0]),
             [_sigMoney(visibleTotal), _sigMoney(totalSavingsLiabilities), _sigMoney(totalLoansOutstandingAssets),
-             _sigMoney(totalRevenueCollected), _sigMoney(totalBankCash), _sigMoney(organizationalRevenue),
+             _sigMoney(totalRevenueCollected), _sigMoney(totalExpensesAllTime), _sigMoney(totalRevenue), _sigMoney(totalBankCash), _sigMoney(organizationalRevenue),
              _sigMoney(organizationalExpenses), _sigMoney(netPosition)],
             [activeLoans, _sigMoney(activeLoansAmount), overdueLoans, _sigMoney(overdueLoansAmount)],
+            [_sigMoney(adviceTotal), _sigMoney(adviceSavings), _sigMoney(adviceLoans), adviceActiveCount],
             [members.length, newThisMonth, activeMembers, pendingRemittances, approvedThisMonth, syncQueue.length],
             recentRemittances.map(r => [String(r.id), _sigMoney(r.amount), String(r.status || ''),
                 String(r.remittance_date || ''), String(r.description || ''), String(r.bank_name || ''), String(r.member_id || '')]),
@@ -597,12 +673,12 @@ export async function renderAccountBalance(container, user) {
             #balance-content.hide-zero-ents .enterprise-card[data-balance-raw="0.00"] {
                 display: none;
             }
-            @media (min-width: 768px) {
+            @media (min-width: 1000px) {
                 .dashboard-stats-grid {
                     grid-template-columns: repeat(4, 1fr);
                 }
             }
-            @media (max-width: 767px) {
+            @media (max-width: 999px) {
                 .fab-container {
                     bottom: calc(64px + 1rem) !important;
                 }
@@ -698,6 +774,12 @@ export async function renderAccountBalance(container, user) {
             <div style="font-size: 2rem; font-weight: 800; margin-top: 0.5rem;" data-balance-value="${visibleTotal}">${maskValue(visibleTotal)}</div>
             <div class="tap-hint">Tap for weekly trend ›</div>
           </div>
+          <div data-action="nav-tab" data-tab="advice" title="Manage payment advice" style="background: linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%); border-radius: 1.5rem; padding: 1.5rem; color: white; cursor: pointer; position: relative; overflow: hidden;">
+            <div style="font-size: 0.875rem; opacity: 0.9; text-transform: uppercase; font-weight: 600;">CURRENT PAYMENT ADVICE · MONTHLY</div>
+            <div style="font-size: 2rem; font-weight: 800; margin-top: 0.5rem;" data-balance-value="${adviceTotal}">${maskValue(adviceTotal)}</div>
+            <div style="font-size: 0.78rem; opacity: 0.9; margin-top: 0.35rem;">Savings <span data-balance-value="${adviceSavings}">${maskValue(adviceSavings)}</span> · Loans (auto) <span data-balance-value="${adviceLoans}">${maskValue(adviceLoans)}</span> · ${adviceActiveCount} active</div>
+            <div class="tap-hint" style="color: #fff;">Manage advice ›</div>
+          </div>
         </div>` : `
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-bottom: 2rem;">
           <div data-chart="savings" title="Tap for weekly trend" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 1.5rem; padding: 1.5rem; color: white;">
@@ -716,9 +798,10 @@ export async function renderAccountBalance(container, user) {
             <div class="tap-hint">Tap for weekly trend ›</div>
           </div>
           <div data-chart="revenue" title="Tap for weekly trend" style="background: linear-gradient(135deg, #10b981 0%, #34d399 100%); border-radius: 1.5rem; padding: 1.5rem; color: white;">
-            <div style="font-size: 0.875rem; opacity: 0.9; text-transform: uppercase; font-weight: 600;">TOTAL REVENUE COLLECTED</div>
-            <div style="font-size: 1.75rem; font-weight: 800; margin-top: 0.5rem;" data-balance-value="${totalRevenueCollected}">${maskValue(totalRevenueCollected)}</div>
-            <div class="tap-hint">Tap for weekly trend ›</div>
+            <div style="font-size: 0.875rem; opacity: 0.9; text-transform: uppercase; font-weight: 600;">NET REVENUE (ALL-TIME)</div>
+            <div style="font-size: 1.75rem; font-weight: 800; margin-top: 0.5rem;" data-balance-value="${totalRevenue}">${maskValue(totalRevenue)}</div>
+            <div style="font-size: 0.75rem; opacity: 0.85; margin-top: 0.25rem;">Gross <span data-balance-value="${totalRevenueCollected}">${maskValue(totalRevenueCollected)}</span> · Expenses <span data-balance-value="${totalExpensesAllTime}">${maskValue(totalExpensesAllTime)}</span></div>
+            <div class="tap-hint">Net = gross − expenses · all-time ›</div>
           </div>
         </div>
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-bottom: 2rem;">
@@ -738,9 +821,9 @@ export async function renderAccountBalance(container, user) {
             <div class="tap-hint">Tap for weekly trend ›</div>
           </div>
           <div data-chart="netM" title="Tap for weekly trend" style="background: linear-gradient(135deg, #8B5CF6 0%, #A78BFA 100%); border-radius: 1.5rem; padding: 1.5rem; color: white;">
-            <div style="font-size: 0.875rem; opacity: 0.9; text-transform: uppercase; font-weight: 600;">NET POSITION (THIS MONTH)</div>
+            <div style="font-size: 0.875rem; opacity: 0.9; text-transform: uppercase; font-weight: 600;">NET POSITION (CALENDAR MONTH)</div>
             <div style="font-size: 1.75rem; font-weight: 800; margin-top: 0.5rem;" data-balance-value="${netPosition}">${maskValue(netPosition)}</div>
-            <div class="tap-hint">Tap for weekly trend ›</div>
+            <div class="tap-hint">Revenue − expenses · calendar month ›</div>
           </div>
         </div>`}
         
@@ -885,10 +968,16 @@ export async function renderAccountBalance(container, user) {
           <tbody>
       `
             recentRemittances.forEach(remit => {
+                const childCount = remit.children ? remit.children.length : 0;
+                const isExpanded = dashboardExpandedRemittances.has(remit.id);
                 contentHtml += `
           <tr style="border-top: 1px solid var(--border-light); cursor: pointer;" data-action="view-details" data-remittance='${JSON.stringify(remit).replace(/'/g, "&#39;")}'>
             <td style="padding: 0.75rem 1rem; font-size: 0.875rem; color: var(--text-secondary);">${escapeHtml(new Date(remit.remittance_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }))}</td>
-            <td style="padding: 0.75rem 1rem; font-size: 0.875rem; color: var(--text-primary);">${escapeHtml(remit.description || 'No description')}</td>
+            <td style="padding: 0.75rem 1rem; font-size: 0.875rem; color: var(--text-primary);">
+              ${childCount > 0 ? `<span class="expand-toggle" data-toggle-id="${remit.id}" style="cursor:pointer;margin-right:4px;color:var(--accent-primary);font-weight:700;user-select:none;">${isExpanded ? '▼' : '▶'}</span>` : ''}
+              ${escapeHtml(remit.description || 'No description')}
+              ${childCount > 0 ? `<span style="font-size:0.7rem;color:var(--text-muted);margin-left:4px;">(${childCount})</span>` : ''}
+            </td>
             <td style="padding: 0.75rem 1rem; font-size: 0.875rem; color: var(--text-secondary);">${escapeHtml(remit.bank_name || '-')}</td>
             <td style="padding: 0.75rem 1rem;">
               <span style="display: inline-block; padding: 0.25rem 0.75rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; ${remit.status === 'Approved' ? 'background: #d1fae5; color: #065f46;' : remit.status === 'Pending' ? 'background: #fef3c7; color: #92400e;' : 'background: #fee2e2; color: #991b1b;'}">${escapeHtml(remit.status || 'Pending')}</span>
@@ -898,6 +987,26 @@ export async function renderAccountBalance(container, user) {
             </td>
           </tr>
         `
+                if (childCount > 0 && isExpanded) {
+                    remit.children.forEach(child => {
+                        contentHtml += `
+          <tr style="border-top: 1px solid var(--border-light); background: var(--bg-secondary); cursor: pointer;" data-action="view-details" data-remittance='${JSON.stringify(child).replace(/'/g, "&#39;")}'>
+            <td style="padding: 0.5rem 1rem; font-size: 0.8rem; color: var(--text-secondary);">${escapeHtml(new Date(child.remittance_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }))}</td>
+            <td style="padding: 0.5rem 1rem; font-size: 0.8rem; color: var(--text-primary);">
+              <span style="color:var(--text-muted);margin-right:4px;">└</span>
+              ${escapeHtml(child.description || 'No description')}
+            </td>
+            <td style="padding: 0.5rem 1rem; font-size: 0.8rem; color: var(--text-secondary);">${escapeHtml(child.bank_name || '-')}</td>
+            <td style="padding: 0.5rem 1rem;">
+              <span style="display: inline-block; padding: 0.2rem 0.6rem; border-radius: 999px; font-size: 0.7rem; font-weight: 600; ${child.status === 'Approved' ? 'background: #d1fae5; color: #065f46;' : child.status === 'Pending' ? 'background: #fef3c7; color: #92400e;' : 'background: #fee2e2; color: #991b1b;'}">${escapeHtml(child.status || 'Pending')}</span>
+            </td>
+            <td style="padding: 0.5rem 1rem; text-align: right; font-size: 0.8rem; font-weight: 600; color: ${child.amount < 0 ? 'var(--danger)' : 'var(--text-primary)'};" data-balance-value="${child.amount}">
+              ${maskValue(child.amount)}
+            </td>
+          </tr>
+        `
+                    })
+                }
             })
             contentHtml += `</tbody></table>`
         }
@@ -1219,7 +1328,78 @@ export async function renderAccountBalance(container, user) {
                     `;
                 }
                 // Keep an open card chart in sync (masked lock vs live chart).
-                if (openChartKey) paintChartModal()
+        if (openChartKey) paintChartModal()
+
+        // Expand/collapse child rows in Recent Activity table (event delegation)
+        if (!window._dashExpandBound) {
+            window._dashExpandBound = true;
+            document.addEventListener('click', (e) => {
+                const toggle = e.target.closest('.expand-toggle');
+                if (!toggle) return;
+                e.stopPropagation();
+                const id = toggle.dataset.toggleId;
+                if (!id) return;
+                if (dashboardExpandedRemittances.has(id)) {
+                    dashboardExpandedRemittances.delete(id);
+                } else {
+                    dashboardExpandedRemittances.add(id);
+                }
+                const tableEl = document.querySelector('.recent-activity-table');
+                if (!tableEl) return;
+                const tbody = tableEl.querySelector('tbody');
+                if (!tbody) return;
+                const expandedRemittances = window.__dashRecentRemittances || [];
+                let rowsHtml = '';
+                expandedRemittances.forEach(remit => {
+                    const childCount = remit.children ? remit.children.length : 0;
+                    const isExpanded = dashboardExpandedRemittances.has(remit.id);
+                    rowsHtml += `
+          <tr style="border-top: 1px solid var(--border-light); cursor: pointer;" data-action="view-details" data-remittance='${JSON.stringify(remit).replace(/'/g, "&#39;")}'>
+            <td style="padding: 0.75rem 1rem; font-size: 0.875rem; color: var(--text-secondary);">${escapeHtml(new Date(remit.remittance_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }))}</td>
+            <td style="padding: 0.75rem 1rem; font-size: 0.875rem; color: var(--text-primary);">
+              ${childCount > 0 ? `<span class="expand-toggle" data-toggle-id="${remit.id}" style="cursor:pointer;margin-right:4px;color:var(--accent-primary);font-weight:700;user-select:none;">${isExpanded ? '\u25BC' : '\u25B6'}</span>` : ''}
+              ${escapeHtml(remit.description || 'No description')}
+              ${childCount > 0 ? `<span style="font-size:0.7rem;color:var(--text-muted);margin-left:4px;">(${childCount})</span>` : ''}
+            </td>
+            <td style="padding: 0.75rem 1rem; font-size: 0.875rem; color: var(--text-secondary);">${escapeHtml(remit.bank_name || '-')}</td>
+            <td style="padding: 0.75rem 1rem;">
+              <span style="display: inline-block; padding: 0.25rem 0.75rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; ${remit.status === 'Approved' ? 'background: #d1fae5; color: #065f46;' : remit.status === 'Pending' ? 'background: #fef3c7; color: #92400e;' : 'background: #fee2e2; color: #991b1b;'}">${escapeHtml(remit.status || 'Pending')}</span>
+            </td>
+            <td style="padding: 0.75rem 1rem; text-align: right; font-size: 0.875rem; font-weight: 600; color: ${remit.amount < 0 ? 'var(--danger)' : 'var(--text-primary)'};" data-balance-value="${remit.amount}">
+              ${maskValue(remit.amount)}
+            </td>
+          </tr>
+        `
+                    if (childCount > 0 && isExpanded) {
+                        remit.children.forEach(child => {
+                            rowsHtml += `
+          <tr style="border-top: 1px solid var(--border-light); background: var(--bg-secondary); cursor: pointer;" data-action="view-details" data-remittance='${JSON.stringify(child).replace(/'/g, "&#39;")}'>
+            <td style="padding: 0.5rem 1rem; font-size: 0.8rem; color: var(--text-secondary);">${escapeHtml(new Date(child.remittance_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }))}</td>
+            <td style="padding: 0.5rem 1rem; font-size: 0.8rem; color: var(--text-primary);">
+              <span style="color:var(--text-muted);margin-right:4px;">\u2514</span>
+              ${escapeHtml(child.description || 'No description')}
+            </td>
+            <td style="padding: 0.5rem 1rem; font-size: 0.8rem; color: var(--text-secondary);">${escapeHtml(child.bank_name || '-')}</td>
+            <td style="padding: 0.5rem 1rem;">
+              <span style="display: inline-block; padding: 0.2rem 0.6rem; border-radius: 999px; font-size: 0.7rem; font-weight: 600; ${child.status === 'Approved' ? 'background: #d1fae5; color: #065f46;' : child.status === 'Pending' ? 'background: #fef3c7; color: #92400e;' : 'background: #fee2e2; color: #991b1b;'}">${escapeHtml(child.status || 'Pending')}</span>
+            </td>
+            <td style="padding: 0.5rem 1rem; text-align: right; font-size: 0.8rem; font-weight: 600; color: ${child.amount < 0 ? 'var(--danger)' : 'var(--text-primary)'};" data-balance-value="${child.amount}">
+              ${maskValue(child.amount)}
+            </td>
+          </tr>
+        `
+                        })
+                    }
+                })
+                tbody.innerHTML = rowsHtml;
+                // Re-apply mask state to newly rendered elements
+                if (typeof maskBalances !== 'undefined' && maskBalances) {
+                    tbody.querySelectorAll('[data-balance-value]').forEach(el => {
+                        el.textContent = '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022';
+                    });
+                }
+            });
+        }
             })
         }
 

@@ -258,7 +258,7 @@ export async function showWithdrawalWizard() {
                 ${guarantors.map(g => `
                   <div style="display: flex; justify-content: space-between; font-size: 0.85rem;">
                     <span>${escapeHtml(g.name || 'Unknown')}</span>
-                    <span style="font-weight: 600;">₦${(g.amount || Math.abs(withdrawalAmount) / (guarantors.length || 1)).toLocaleString()}</span>
+                    <span style="font-weight: 600;">${formatCurrency(g.amount || Math.abs(withdrawalAmount) / (guarantors.length || 1))}</span>
                   </div>
                 `).join('')}
               </div>
@@ -649,9 +649,6 @@ export async function showWithdrawalWizard() {
 
           document.getElementById('withdrawal-wizard-modal').remove();
           
-          // Go to dashboard
-          state.activeTab = 'dashboard';
-          window.location.hash = 'dashboard';
           render();
           showToast('Request submitted successfully!', 'success');
         } catch (err) {

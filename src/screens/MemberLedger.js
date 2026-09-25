@@ -191,7 +191,7 @@ export async function renderMemberLedger(container, user) {
       .ltab:hover { color: var(--text-primary); background: var(--bg-hover, rgba(0,0,0,0.05)); }
       .ltab.active { background: var(--bg-card, #ffffff); color: var(--accent-primary); box-shadow: var(--shadow-sm, 0 1px 3px rgba(0,0,0,0.1)); }
 
-      @media (max-width: 768px) {
+      @media (max-width: 999px) {
         .ldv { display: none; }
         .lmv { display: block; }
         .ledger-sticky-header {
@@ -219,7 +219,7 @@ export async function renderMemberLedger(container, user) {
         .ltab .tab-label-short { display: inline; }
         .ltab { font-size: 0.78rem; padding: 0.4rem 0.4rem; }
       }
-      @media (min-width: 769px) {
+      @media (min-width: 1000px) {
         .ltab .tab-label-full { display: inline; }
         .ltab .tab-label-short { display: none; }
       }
@@ -231,7 +231,7 @@ export async function renderMemberLedger(container, user) {
     <div class="ledger-sticky-header">
       <div class="lhdr" style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 0.6rem; margin-bottom: 0.6rem;">
         <div style="flex: 1; min-width: 200px;">
-          <h2 style="margin: 0; font-size: 1.3rem; font-weight: 800;">${isGlobalView() ? 'Cooperative Ledger' : 'Member Ledger'}</h2>
+          <h2 style="margin: 0; font-size: 1.3rem; font-weight: 800;">${isGlobalView() ? 'Cooperative Ledger' : 'Member Ledger'} <span id="ledger-member-ids" style="font-weight: 800; color: var(--accent-primary);"></span></h2>
           <p class="sub" id="ledger-subtitle" style="margin: 0.25rem 0 0 0; font-size: 0.85rem; color: var(--text-muted);"></p>
         </div>
 
@@ -367,6 +367,28 @@ export async function renderMemberLedger(container, user) {
     if (allMembersCache) return allMembersCache
     allMembersCache = await fetchAllMembers(user.cooperativeId, user.username, isAdmin)
     return allMembersCache
+  }
+
+  function formatLedgerMemberIds(m) {
+    if (!m) return ''
+    const special = String(m.special_id || '').trim()
+    const reg = String(m.member_registration_no || m.registration_no || '').trim()
+    if (special && reg) return `${special} / ${reg}`
+    if (special) return special
+    if (reg) return reg
+    return ''
+  }
+
+  async function updateLedgerTitleIds() {
+    const el = document.getElementById('ledger-member-ids')
+    if (!el) return
+    if (!filters.memberId || filters.memberId === 'All') { el.textContent = ''; return }
+    try {
+      const members = await getMembersForSearch()
+      const hit = (members || []).find(mm => String(mm.id) === String(filters.memberId))
+      const label = formatLedgerMemberIds(hit)
+      el.textContent = label ? ` (${label})` : ''
+    } catch { el.textContent = '' }
   }
 
   const memberSearchInput = document.getElementById('ledger-member-search')
@@ -513,6 +535,7 @@ export async function renderMemberLedger(container, user) {
   }
 
   async function renderActiveTab() {
+    updateLedgerTitleIds()
     const subtitleEl = document.getElementById('ledger-subtitle')
     if (subtitleEl) {
       const viewLabel = isGlobalView() ? 'Cooperative-wide' : `Member: <strong style="color: var(--accent-primary);">${escapeHtml(filters.memberName)}</strong>`
@@ -540,7 +563,8 @@ export async function renderMemberLedger(container, user) {
     const viewLabel = isGlobalView()
       ? `Showing <strong>${isAdmin ? 'Global' : 'Accessible'}</strong> Ledger`
       : `Member: <strong style="color: var(--accent-primary);">${escapeHtml(filters.memberName)}</strong>`
-    subtitleEl.innerHTML = `${viewLabel} | Total: <strong>${formatCurrency(networth)}</strong>`
+    const totalClass = Number(networth) < 0 ? 'text-red' : 'text-green'
+    subtitleEl.innerHTML = `${viewLabel} | Total: <strong class="${totalClass}">${formatCurrency(networth)}</strong>`
   }
 
   async function renderTransactionsTab() {
@@ -984,9 +1008,7 @@ export async function renderMemberLedger(container, user) {
           <button class="secondary-button" id="loan-act-decline" style="font-size:0.8rem;padding:0.4rem 0.8rem;background:var(--danger-bg,#fee2e2);color:var(--danger,#dc2626);border:1px solid var(--danger,#dc2626);">Decline Loan</button>`
       }
 
-      html += `
-        <button class="secondary-button" id="loan-act-delete" style="font-size:0.8rem;padding:0.4rem 0.8rem;background:var(--danger-bg,#fee2e2);color:var(--danger,#dc2626);border:1px solid var(--danger,#dc2626);">Delete Loan</button>
-      </div>`
+      html += `</div>`
 
       body.innerHTML = html
 
@@ -1018,18 +1040,7 @@ export async function renderMemberLedger(container, user) {
         }
       })
 
-      document.getElementById('loan-act-delete')?.addEventListener('click', async () => {
-        if (!confirm('Delete this loan permanently? This action cannot be undone.')) return
-        if (!confirm('Final confirmation: Are you sure you want to delete this loan and all associated records?')) return
-        try {
-          document.getElementById('loan-act-delete').disabled = true
-          await deleteRemittance(remittanceId, user.username)
-          overlay.classList.remove('open')
-          renderActiveTab()
-        } catch (err) {
-          alert('Delete failed: ' + err.message)
-        }
-      })
+      // Delete action hidden in ledger for everyone (no delete button rendered).
 
     } catch (err) {
       body.innerHTML = `<div class="alert" style="margin:0.5rem;">Error: ${escapeHtml(err.message)}</div>`

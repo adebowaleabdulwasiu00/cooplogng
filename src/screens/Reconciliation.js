@@ -3,6 +3,7 @@ import { hasPermission } from '../services/permissionService.js'
 import { formatCurrency, escapeHtml } from '../utils/formatters.js'
 import { showToast } from '../services/toastService.js'
 import { showWorkspaceSpinner } from '../components/workspaceSpinner.js'
+import { save as persistState, load as loadPersisted, clear as clearPersisted } from '../services/statePersistence.js'
 
 export async function renderReconciliation(state, container) {
   const user = state.welcomeUser
@@ -148,8 +149,8 @@ export async function renderReconciliation(state, container) {
   let currentRelevantIds = []
   let currentSummaryId = null
 
-  // Persistence logic
-  const DRAFT_KEY = `cooplog-recon-draft-${state.welcomeUser.cooperativeId}`
+  // Persistence logic — uses centralized statePersistence module
+  const DRAFT_KEY = `recon-draft-${state.welcomeUser.cooperativeId}`
   const inputs = ['recon-month', 'recon-bank', 'bank-cr', 'bank-dr']
   
   const saveDraft = () => {
@@ -158,22 +159,19 @@ export async function renderReconciliation(state, container) {
         const el = document.getElementById(id)
         if (el) draft[id] = el.value
     })
-    sessionStorage.setItem(DRAFT_KEY, JSON.stringify(draft))
+    persistState(DRAFT_KEY, draft)
   }
 
   const loadDraft = () => {
-    try {
-        const raw = sessionStorage.getItem(DRAFT_KEY)
-        if (!raw) return
-        const draft = JSON.parse(raw)
-        inputs.forEach(id => {
-            const el = document.getElementById(id)
-            if (el && draft[id] !== undefined) el.value = draft[id]
-        })
-    } catch(e) {}
+    const draft = loadPersisted(DRAFT_KEY)
+    if (!draft) return
+    inputs.forEach(id => {
+        const el = document.getElementById(id)
+        if (el && draft[id] !== undefined) el.value = draft[id]
+    })
   }
 
-  const clearDraft = () => sessionStorage.removeItem(DRAFT_KEY)
+  const clearDraft = () => clearPersisted(DRAFT_KEY)
 
   loadDraft()
 

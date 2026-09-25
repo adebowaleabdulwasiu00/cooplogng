@@ -17,7 +17,7 @@ export {
     getUserByUsername, getUsersByUsername,
     getMemberByMobile, getMemberByRegistrationNo,
     getUserByEmail, getMemberByEmail,
-    getGuarantorStatsLocal, getPendingGuarantorRequestsLocal, getMemberLoans
+    getGuarantorStatsLocal, getPendingGuarantorRequestsLocal, getMyGuarantorRequestsLocal, getMemberLoans
 } from './dataAccess.js'
 export {
     getRemittances, getRemittancesPage, getRemittancesPageForUser
@@ -36,13 +36,13 @@ export {
 export {
     enqueueWrite, updateQueueStatus, hasPendingWrites, checkDbExists,
     getSyncQueueSummary, getSyncQueueDetails, restartAllSyncItems,
-    resetProcessingQueueItems, resetSyncQueueAndMarkUnsynced, clearSyncQueueLogs,
-    scanAndEnqueueUnsynced, reconcileUnsyncedQueue, getPendingQueue, removeQueueItem, removeQueueItemsBatch, incrementQueueRetry,
+    resetProcessingQueueItems, resetSyncQueueAndMarkUnsynced, clearSyncQueueLogs, clearAllSyncQueueItems,
+    scanAndEnqueueUnsynced, bulkEnqueueUnsynced, reconcileUnsyncedQueue, getPendingQueue, removeQueueItem, removeQueueItemsBatch, incrementQueueRetry,
     getQueueSnapshot, healChildQueueItem, resolveChildParent, CHILD_QUEUE_COLLECTIONS, MAX_QUEUE_ATTEMPTS
 } from './syncQueue.js'
 export {
     initializeDefaultTransactionTypes, getTransactionTypes,
-    getTransactionTypeByName, isTransactionTypeUsed,
+    isTransactionTypeUsed,
     migrateExistingRemittancesToAddCategory, migrateTransactionClassifications,
     createTransactionType, updateTransactionType, deleteTransactionType
 } from './transactionTypes.js'

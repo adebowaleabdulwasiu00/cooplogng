@@ -32,7 +32,12 @@ function generateSecureRandom(length) {
     return Array.from(array, b => b.toString(16).padStart(2, '0')).join('');
 }
 
-const SESSION_TTL_MS = 10 * 60 * 1000  // 10 minutes of inactivity
+const SESSION_TTL_MS = 10 * 60 * 1000  // 10 minutes of inactivity (staff/admin)
+// Members stay logged in until they manually log out: their persistent
+// session gets a very long life and the inactivity watcher skips them.
+// The 10-min window is still used for members, but only to decide when a
+// re-open/refresh counts as a new visit (+1 login_count).
+const MEMBER_TTL_MS = 365 * 24 * 60 * 60 * 1000  // 365 days (effectively "always")
 // Remembered ("Remember me") sessions live much longer and auto-restore on
 // launch, giving zero-typing sign-in without ever storing a password.
 export const REMEMBER_TTL_MS = 30 * 24 * 60 * 60 * 1000  // 30 days
@@ -44,9 +49,26 @@ const ACTIVITY_TOUCH_THROTTLE_MS = 60 * 1000  // extend IndexedDB expiry at most
 const WATCHER_CHECK_MS = 30 * 1000  // inactivity watcher tick
 
 /**
+ * Members (members collection / role === 'member') never auto-logout.
+ * Staff/admin (users collection) keep the 10-minute inactivity rule.
+ */
+function isMemberSession(s) {
+    if (!s) return false
+    return s.role === 'member' || s.user_collection === 'members' || s.userCollection === 'members'
+}
+
+function expiryForSession(now, { remembered = false, role = '', userCollection = '' } = {}) {
+    if (role === 'member' || userCollection === 'members') return now + MEMBER_TTL_MS
+    return now + (remembered ? REMEMBER_TTL_MS : SESSION_TTL_MS)
+}
+
+/**
  * Synchronous load for app initialization (main.js state).
  * Uses sessionStorage for immediate tab-session state.
- * Returns null when the session has been idle past the timeout.
+ * Staff/admin sessions return null when idle past the timeout.
+ * Member sessions NEVER expire here: an idle member is returned with a
+ * `__idleReturn` flag (and a refreshed clock) so bootstrap can count the
+ * return visit (+1 login_count) without forcing a fresh login.
  */
 export function loadSavedSession() {
     try {
@@ -57,6 +79,18 @@ export function loadSavedSession() {
         if (!session.cooperativeId || (!session.memberId && session.role === 'member')) {
             window.sessionStorage.removeItem(SYNC_SESSION_KEY)
             return null
+        }
+        // Members stay logged in: preserve a pending return-count flag across
+        // reloads, otherwise flag idle returns (>10 min) and refresh the clock.
+        if (isMemberSession(session)) {
+            if (session.__idleReturn) return session
+            const lastActive = session.lastActivityTs || 0
+            if (lastActive && Date.now() - lastActive > INACTIVITY_TIMEOUT_MS) {
+                const refreshed = { ...session, lastActivityTs: Date.now(), __idleReturn: true }
+                try { window.sessionStorage.setItem(SYNC_SESSION_KEY, JSON.stringify(refreshed)) } catch {}
+                return refreshed
+            }
+            return session
         }
         // Inactivity expiry: idle past the timeout forces a fresh login
         const lastActive = session.lastActivityTs || 0
@@ -117,8 +151,9 @@ let _watcherStarted = false
 
 /**
  * Start the inactivity auto-logout watcher (idempotent).
- * Every 30s: if logged in and idle longer than the timeout,
+ * Every 30s: if a STAFF/ADMIN session is idle longer than the timeout,
  * `onTimeout` is invoked (the app performs a full logout there).
+ * Member sessions are skipped — members stay logged in until manual logout.
  */
 export function startInactivityWatcher(onTimeout) {
     if (_watcherStarted) return
@@ -129,6 +164,8 @@ export function startInactivityWatcher(onTimeout) {
             if (!raw) return
             const session = JSON.parse(raw)
             if (!session?.cooperativeId) return
+            // Members never auto-logout (only the manual Log Out button).
+            if (isMemberSession(session)) return
             const lastActive = session.lastActivityTs || 0
             if (Date.now() - lastActive > INACTIVITY_TIMEOUT_MS) {
                 onTimeout && onTimeout()
@@ -238,7 +275,55 @@ export async function restoreSessionFromIndexedDB() {
             console.warn('[OfflineAuth] Restored session requires password change; forcing fresh login.')
             return null
         }
+        // Check if the cooperative's database has been extracted (logins blocked)
+        try {
+            const { getDocById_Global } = await import('./sqliteService.js')
+            const coop = await getDocById_Global('cooperatives', String(welcomeUser.cooperativeId)).catch(() => null)
+            if (coop && coop.is_extracted) {
+                console.warn('[OfflineAuth] Cooperative is extracted; blocking restored session.')
+                return null
+            }
+        } catch (e) {
+            console.warn('[OfflineAuth] Failed to check is_extracted on restore:', e.message)
+        }
+        // Block unsubscribed/expired accounts from restoring a session —
+        // they must go through the login screen to see the polite message.
+        try {
+            const { getDocById_Global: _getById } = await import('./sqliteService.js')
+            const { isSubscriptionBlocked } = await import('./subscriptionService.js')
+            const isMember = welcomeUser.role === 'member' || welcomeUser.userCollection === 'members'
+            const _id = welcomeUser.userId || welcomeUser.memberId
+            if (_id) {
+                const row = await _getById(isMember ? 'members' : 'users', String(_id)).catch(() => null)
+                if (row && !row.is_deleted && isSubscriptionBlocked(row, welcomeUser.username)) {
+                    console.warn('[OfflineAuth] Restored session is unsubscribed; forcing fresh login.')
+                    try {
+                        const sk = `${session.cooperative_id}_${session.user_id}`
+                        const { deleteLocalSession } = await import('./sqliteService.js')
+                        await deleteLocalSession(sk).catch(() => {})
+                    } catch {}
+                    try {
+                        window.sessionStorage.setItem(
+                            'cooplog-login-blocked-msg',
+                            'Your account subscription is inactive. Please contact your administrator for assistance.'
+                        )
+                    } catch {}
+                    return null
+                }
+            }
+        } catch (e) {
+            console.warn('[OfflineAuth] Restore subscription check skipped:', e?.message)
+        }
         welcomeUser.lastActivityTs = Date.now()
+        // Members restored after >10 min idle count as a return visit (+1).
+        // The flag survives the reload below so bootstrap can bump the
+        // counter once the DB is ready; staff/admin restores keep expiry.
+        if (isMemberSession(welcomeUser)) {
+            const idleMs = Date.now() - (session.last_verified_ts || 0)
+            if (session.last_verified_ts && idleMs > INACTIVITY_TIMEOUT_MS) {
+                welcomeUser.__idleReturn = true
+            }
+        }
         window.sessionStorage.setItem(SYNC_SESSION_KEY, JSON.stringify(welcomeUser))
         // Persist the repaired snapshots back so future restores are clean
         try {
@@ -250,6 +335,10 @@ export async function restoreSessionFromIndexedDB() {
                 full_name: welcomeUser.fullName || session.full_name || '',
                 username: welcomeUser.username || session.username || '',
                 last_verified_ts: Date.now(),
+                // Members never expire on idle: extend long-lived sessions.
+                session_expires_ts: isMemberSession(welcomeUser)
+                    ? Date.now() + MEMBER_TTL_MS
+                    : session.session_expires_ts,
             })
         } catch {
             // persist-back is best-effort
@@ -272,8 +361,11 @@ export async function saveSessionLocally(session, password, remember) {
         return
     }
 
-    // 1. Sync save for main.js state (stamped so idle sessions can expire)
-    const payload = { ...session, lastActivityTs: Date.now() }
+    // 1. Sync save for main.js state (stamped so idle staff sessions can
+    // expire; members never expire on idle). Strip the one-shot return flag:
+    // a fresh login already counted via validateLogin/validateOfflineLogin.
+    const { __idleReturn: _drop, ...sessionSansFlag } = session || {}
+    const payload = { ...sessionSansFlag, lastActivityTs: Date.now() }
     window.sessionStorage.setItem(SYNC_SESSION_KEY, JSON.stringify(payload))
 
     // 2. Async save for long-term offline login persistence
@@ -317,9 +409,24 @@ export async function saveSessionLocally(session, password, remember) {
 
 /**
  * Wrapper for main.js login flow.
+ * Enforces the same progressive back-off as online login (see authService.js:
+ * 1-4 free, 5th->1min, 6th->5min, 7-8th->15min, 9th+->1h) and records a single
+ * failure per call. Callers that already recorded an online failure for the
+ * same tap should pass `skipRecordOnFail=true` to avoid double-counting.
  */
-export async function attemptOfflineLogin(username, password, cooperativeId) {
+export async function attemptOfflineLogin(username, password, cooperativeId, skipRecordOnFail = false) {
     const normalizedUsername = String(username || '').trim().toLowerCase()
+    const coopId = String(cooperativeId || '').trim()
+    try {
+        const { checkRateLimit, formatDelay } = await import('./authService.js')
+        const gate = checkRateLimit(normalizedUsername, coopId)
+        if (!gate.allowed) {
+            throw new Error(`Too many failed attempts. Try again in ${formatDelay(gate.retryAfterMs)}.`)
+        }
+    } catch (e) {
+        if (e && /too many failed attempts/i.test(e.message || '')) throw e
+        // rate-limit storage unavailable — proceed with login
+    }
     const { hashPassword } = await import('../utils/formatters.js')
     const pwdHash = await hashPassword(password)
     const session = await validateOfflineLogin(normalizedUsername, pwdHash, cooperativeId, String(password || ''))
@@ -327,6 +434,22 @@ export async function attemptOfflineLogin(username, password, cooperativeId) {
     // sessions and would strip it, leaving a hollow (all-undefined) user
     // that sails past the modal straight to an Access-Denied dashboard.
     if (session && session.forceChange) return session
+    // Blocked accounts (subscription/extracted) surface as sentinel objects
+    // so the polite message reaches the login screen instead of a generic
+    // "invalid PIN" (validateOfflineLogin never throws — it returns null).
+    if (session && session.subscriptionBlocked) {
+        const { SUBSCRIPTION_BLOCKED_MSG } = await import('./subscriptionService.js')
+        throw new Error(session.subscriptionBlockedMessage || SUBSCRIPTION_BLOCKED_MSG)
+    }
+    if (session && session.extractedBlocked) {
+        throw new Error(session.extractedBlockedMessage || 'This cooperative\'s data has been extracted. Please contact your administrator for assistance.')
+    }
+    if (!session && !skipRecordOnFail) {
+        try {
+            const { recordFailedAttempt } = await import('./authService.js')
+            recordFailedAttempt(normalizedUsername, coopId)
+        } catch {}
+    }
     return sessionToWelcomeUser(session)
 }
 
@@ -395,7 +518,9 @@ export async function saveOfflineSession(sessionData) {
         session_token: token,
         remember: remembered,
         last_verified_ts: now,
-        session_expires_ts: now + (remembered ? REMEMBER_TTL_MS : SESSION_TTL_MS),
+        // Members stay logged in until manual logout; staff/admin keep
+        // 10-min idle expiry (or 30 days when Remember-me is set).
+        session_expires_ts: expiryForSession(now, { remembered, role, userCollection: userCollection || 'users' }),
         created_ts: now,
     })
 
@@ -404,6 +529,8 @@ export async function saveOfflineSession(sessionData) {
 
 /**
  * Load the most recent valid local session.
+ * Staff/admin sessions must be unexpired; member sessions are always
+ * valid (they only end on manual logout) so idle members restore.
  * Returns null if no valid session exists.
  */
 export async function loadBestOfflineSession() {
@@ -412,9 +539,9 @@ export async function loadBestOfflineSession() {
         if (!all || all.length === 0) return null
 
         const now = Date.now()
-        // Filter to non-expired sessions, pick most recently verified
+        // Filter to non-expired sessions (members exempt), pick most recently verified
         const valid = all
-            .filter(s => s.session_expires_ts > now)
+            .filter(s => s.session_expires_ts > now || s.role === 'member')
             .sort((a, b) => b.last_verified_ts - a.last_verified_ts)
 
         return valid.length > 0 ? valid[0] : null
@@ -426,6 +553,8 @@ export async function loadBestOfflineSession() {
 
 /**
  * Load a specific session by cooperativeId + userId.
+ * Expired staff/admin sessions are deleted; expired member sessions are
+ * kept (members never auto-logout).
  */
 export async function loadOfflineSession(cooperativeId, userId) {
     try {
@@ -433,6 +562,7 @@ export async function loadOfflineSession(cooperativeId, userId) {
         const session = await loadLocalSession(sessionKey)
         if (!session) return null
         if (Date.now() > session.session_expires_ts) {
+            if (session.role === 'member') return session
             await deleteLocalSession(sessionKey)
             return null
         }
@@ -501,6 +631,37 @@ export async function validateOfflineLogin(username, passwordHash, cooperativeId
 
         if (!userDoc) return null
 
+        // Check if the cooperative's database has been extracted (logins blocked).
+        // Returned as a sentinel (not thrown) because this function's catch-all
+        // below would otherwise swallow it into a generic "invalid PIN".
+        try {
+            const { getDocById_Global } = await import('./sqliteService.js')
+            const coop = await getDocById_Global('cooperatives', String(coopId)).catch(() => null)
+            if (coop && coop.is_extracted) {
+                return { extractedBlocked: true, extractedBlockedMessage: 'This cooperative\'s data has been extracted. Please contact your administrator for assistance.', userDoc, collection };
+            }
+        } catch (e) {
+            if (e && e.extractedBlocked) return e;
+            if (e && /extracted/i.test(e.message || '')) {
+                return { extractedBlocked: true, extractedBlockedMessage: e.message, userDoc, collection };
+            }
+            console.warn('[OfflineAuth] Failed to check is_extracted:', e.message)
+        }
+
+        // Block unsubscribed/expired accounts completely (admin exempt).
+        // Sentinel (not throw) for the same catch-all reason above; the
+        // subscription check runs BEFORE force-change so blocked accounts
+        // cannot reach the PIN-change modal either.
+        try {
+            const { isSubscriptionBlocked, SUBSCRIPTION_BLOCKED_MSG } = await import('./subscriptionService.js')
+            if (isSubscriptionBlocked(userDoc)) {
+                return { subscriptionBlocked: true, subscriptionBlockedMessage: SUBSCRIPTION_BLOCKED_MSG, userDoc, collection };
+            }
+        } catch (e) {
+            if (e && e.subscriptionBlocked) return e;
+            console.warn('[OfflineAuth] Subscription gate check skipped:', e?.message)
+        }
+
         // Same 6-digit PIN policy as online login (see formatters.js):
         // 6-digit PINs pass, grandfathered legacy-complex passwords pass,
         // plain-text non-legacy and old <6-digit PINs must change.
@@ -566,7 +727,7 @@ export async function validateOfflineLogin(username, passwordHash, cooperativeId
                 active_tab: 'history',
                 session_token: 'offline_' + now,
                 last_verified_ts: now,
-                session_expires_ts: now + SESSION_TTL_MS,
+                session_expires_ts: expiryForSession(now, { role, userCollection: collection }),
                 created_ts: now,
             }
             await saveLocalSession(sessionKey, session)
@@ -592,8 +753,13 @@ export async function validateOfflineLogin(username, passwordHash, cooperativeId
                 }
             }
             session.last_verified_ts = _now
-            // Preserve long-lived remembered sessions; standard ones stay 10-min.
-            session.session_expires_ts = _now + (session.remember ? REMEMBER_TTL_MS : SESSION_TTL_MS)
+            // Preserve long-lived remembered sessions; standard staff ones
+            // stay 10-min; members always get the long-lived expiry.
+            session.session_expires_ts = expiryForSession(_now, {
+                remembered: !!session.remember,
+                role: session.role,
+                userCollection: session.user_collection,
+            })
             await saveLocalSession(sessionKey, session)
         }
 
@@ -606,8 +772,10 @@ export async function validateOfflineLogin(username, passwordHash, cooperativeId
 
 /**
  * Revalidate a session against Firestore when internet is available.
- * Checks: user still exists, not deleted, permissions unchanged.
- * Returns: { valid: true } or { valid: false, reason: string }
+ * Checks: user still exists, not deleted, subscription active,
+ * permissions/role unchanged.
+ * Returns: { valid: true } or { valid: false, reason: string, code: string }
+ * Codes: 'SUBSCRIPTION' | 'PERMISSIONS' | 'ROLE' | 'DELETED' | 'NOT_FOUND' | 'COOP_MISMATCH'
  */
 export async function revalidateOnline(session) {
     try {
@@ -623,34 +791,44 @@ export async function revalidateOnline(session) {
         if (session.user_collection === 'members') {
             const { getDoc, doc } = await import('../firebase.js')
             const snap = await getDoc(doc(db, 'members', userId))
-            if (!snap.exists()) return { valid: false, reason: 'Account not found.' }
+            if (!snap.exists()) return { valid: false, reason: 'Account not found.', code: 'NOT_FOUND' }
             userDoc = { id: snap.id, ...snap.data() }
         } else {
             const { getDoc, doc } = await import('../firebase.js')
             const snap = await getDoc(doc(db, 'users', userId))
-            if (!snap.exists()) return { valid: false, reason: 'Account not found.' }
+            if (!snap.exists()) return { valid: false, reason: 'Account not found.', code: 'NOT_FOUND' }
             userDoc = { id: snap.id, ...snap.data() }
         }
 
         // Check deleted
-        if (userDoc.is_deleted) return { valid: false, reason: 'Account has been deactivated.' }
+        if (userDoc.is_deleted) return { valid: false, reason: 'Account has been deactivated.', code: 'DELETED' }
 
         // Check cooperative match
         if (String(userDoc.cooperative_id) !== coopId) {
-            return { valid: false, reason: 'Cooperative mismatch.' }
+            return { valid: false, reason: 'Cooperative mismatch.', code: 'COOP_MISMATCH' }
+        }
+
+        // Check subscription revoked/expired (admin exempt inside helper).
+        try {
+            const { isSubscriptionBlocked, SUBSCRIPTION_BLOCKED_MSG } = await import('./subscriptionService.js')
+            if (isSubscriptionBlocked(userDoc)) {
+                return { valid: false, reason: SUBSCRIPTION_BLOCKED_MSG, code: 'SUBSCRIPTION' }
+            }
+        } catch {
+            // fail-open on helper errors; local policy check covers it later
         }
 
         // Check permissions changed
         const currentPerms = JSON.stringify(userDoc.permissions || '')
         const storedPerms = session.permissions_snapshot || ''
         if (currentPerms !== storedPerms) {
-            return { valid: false, reason: 'Your permissions have changed. Please log in again.' }
+            return { valid: false, reason: 'Your permissions have changed. Please log in again.', code: 'PERMISSIONS' }
         }
 
         // Check role changed
         const currentRole = session.user_collection === 'members' ? 'member' : (userDoc.role || 'user')
         if (currentRole !== session.role) {
-            return { valid: false, reason: 'Your role has changed. Please log in again.' }
+            return { valid: false, reason: 'Your role has changed. Please log in again.', code: 'ROLE' }
         }
 
         return { valid: true, userDoc }
@@ -662,17 +840,179 @@ export async function revalidateOnline(session) {
 }
 
 /**
+ * Local policy check for a live session against a fresh users/members row.
+ * Used by the background-sync guard (delta pulls update the local row while
+ * the user is logged in). Compares the in-memory welcomeUser against the
+ * freshly-synced row — NOT against stored snapshots (which lag by design).
+ * Returns: null when the session is still valid, else
+ * { code: 'SUBSCRIPTION'|'PERMISSIONS'|'ROLE'|'DELETED', message }.
+ * Admin (`username === 'admin'`) is exempt from SUBSCRIPTION only.
+ */
+export async function getSessionPolicyViolation(welcomeUser, freshRow) {
+    try {
+        if (!welcomeUser || !freshRow) return null
+        if (freshRow.is_deleted === 1 || freshRow.is_deleted === true) {
+            return { code: 'DELETED', message: 'Account has been deactivated.' }
+        }
+        const { isSubscriptionBlocked, SUBSCRIPTION_BLOCKED_MSG } = await import('./subscriptionService.js')
+        if (isSubscriptionBlocked(freshRow, welcomeUser.username)) {
+            return { code: 'SUBSCRIPTION', message: SUBSCRIPTION_BLOCKED_MSG }
+        }
+        const isMember = welcomeUser.role === 'member' || welcomeUser.userCollection === 'members'
+        const liveRole = isMember ? 'member' : (freshRow.role || welcomeUser.role || 'user')
+        if (liveRole !== welcomeUser.role) {
+            return { code: 'ROLE', message: 'Your role has changed. Please log in again.' }
+        }
+        if (!isMember) {
+            const livePerms = String(freshRow.permissions ?? '')
+            const curPerms = String(welcomeUser.permissions ?? '')
+            if (livePerms !== curPerms) {
+                return { code: 'PERMISSIONS', message: 'Your permissions have changed. Please log in again.' }
+            }
+        }
+        return null
+    } catch {
+        return null
+    }
+}
+
+/**
+ * Convenience wrapper: loads the current user's fresh row from the local DB
+ * and runs getSessionPolicyViolation. Returns null when valid/unknown.
+ */
+export async function checkCurrentSessionPolicy(welcomeUser) {
+    try {
+        if (!welcomeUser) return null
+        const { getDocById_Global } = await import('./sqliteService.js')
+        const isMember = welcomeUser.role === 'member' || welcomeUser.userCollection === 'members'
+        const id = welcomeUser.userId || welcomeUser.memberId
+        if (!id) return null
+        const row = await getDocById_Global(isMember ? 'members' : 'users', String(id)).catch(() => null)
+        if (!row) return null
+        return getSessionPolicyViolation(welcomeUser, row)
+    } catch {
+        return null
+    }
+}
+
+/**
  * Update the last_verified_ts and extend expiry after successful revalidation.
+ * Members keep the long-lived expiry; staff/admin keep 10-min/remember rules.
  */
 export async function touchSession(cooperativeId, userId) {
     const sessionKey = makeSessionKey(cooperativeId, userId)
     const session = await loadLocalSession(sessionKey)
     if (!session) return
+    const now = Date.now()
     await saveLocalSession(sessionKey, {
         ...session,
-        last_verified_ts: Date.now(),
-        session_expires_ts: Date.now() + (session.remember ? REMEMBER_TTL_MS : SESSION_TTL_MS),
+        last_verified_ts: now,
+        session_expires_ts: expiryForSession(now, {
+            remembered: !!session.remember,
+            role: session.role,
+            userCollection: session.user_collection,
+        }),
     })
+}
+
+/**
+ * Count a member return visit: a member re-opening/refreshing the app after
+ * >10 min idle stays logged in (no password entry) but still gets
+ * `login_count + 1` and a fresh `last_login` — mirroring a real login.
+ * Driven by the `__idleReturn` flag set by loadSavedSession() /
+ * restoreSessionFromIndexedDB(). Best-effort: never throws, returns true
+ * when a visit was counted.
+ */
+export async function maybeCountMemberReturnVisit(welcomeUser) {
+    try {
+        if (!welcomeUser || !welcomeUser.__idleReturn) return false
+        if (welcomeUser.role !== 'member') {
+            delete welcomeUser.__idleReturn
+            return false
+        }
+        const memberId = welcomeUser.memberId || welcomeUser.userId
+        const coopId = welcomeUser.cooperativeId
+        if (!memberId || !coopId) {
+            delete welcomeUser.__idleReturn
+            return false
+        }
+        const lastLoginStr = new Date().toISOString()
+        // 1. Local SQLite (drives reports when offline).
+        try {
+            const { getDocById_Global, saveDoc } = await import('./sqliteService.js')
+            const row = await getDocById_Global('members', String(memberId)).catch(() => null)
+            if (row && !row.is_deleted) {
+                const newCount = parseInt(row.login_count || welcomeUser.login_count || 0, 10) + 1
+                await saveDoc('members', { ...row, last_login: lastLoginStr, login_count: newCount }).catch(() => {})
+                welcomeUser.login_count = newCount
+                welcomeUser.last_login = lastLoginStr
+            }
+        } catch (e) {
+            console.warn('[OfflineAuth] Member return local count failed:', e?.message)
+        }
+        // 2. Firestore (best-effort when online; syncs down on next pull).
+        try {
+            if (typeof navigator === 'undefined' || navigator.onLine) {
+                const { getDb, doc, getDoc, updateDoc, serverTimestamp } = await import('../firebase.js')
+                const db = getDb()
+                const ref = doc(db, 'members', String(memberId))
+                let base = parseInt(welcomeUser.login_count || 0, 10)
+                try {
+                    const snap = await getDoc(ref)
+                    if (snap.exists()) {
+                        const data = snap.data() || {}
+                        const cloudCount = parseInt(data.login_count || 0, 10)
+                        if (cloudCount >= base) base = cloudCount + 1
+                        else base = base + 1
+                    } else {
+                        base = base + 1
+                    }
+                } catch {
+                    base = base + 1
+                }
+                await updateDoc(ref, {
+                    cooperative_id: String(coopId),
+                    last_login: lastLoginStr,
+                    login_count: base,
+                    sync_at: serverTimestamp(),
+                }).catch(() => {})
+                welcomeUser.login_count = base
+                welcomeUser.last_login = lastLoginStr
+            }
+        } catch (e) {
+            console.warn('[OfflineAuth] Member return cloud count failed:', e?.message)
+        }
+        // 3. Refresh the persistent session clock so the next 10-min window
+        // starts now (prevents double-counting on immediate refreshes).
+        try {
+            const key = makeSessionKey(String(coopId), String(memberId))
+            const existing = await loadLocalSession(key).catch(() => null)
+            if (existing) {
+                const now = Date.now()
+                await saveLocalSession(key, {
+                    ...existing,
+                    last_verified_ts: now,
+                    session_expires_ts: now + MEMBER_TTL_MS,
+                }).catch(() => {})
+            }
+        } catch {}
+        // 4. Clear the flag in memory + tab storage.
+        delete welcomeUser.__idleReturn
+        try {
+            const raw = window.sessionStorage.getItem(SYNC_SESSION_KEY)
+            if (raw) {
+                const s = JSON.parse(raw)
+                if (s.__idleReturn) {
+                    delete s.__idleReturn
+                    s.lastActivityTs = Date.now()
+                    window.sessionStorage.setItem(SYNC_SESSION_KEY, JSON.stringify(s))
+                }
+            }
+        } catch {}
+        return true
+    } catch {
+        return false
+    }
 }
 
 /**
@@ -681,6 +1021,191 @@ export async function touchSession(cooperativeId, userId) {
 export async function clearOfflineSession(cooperativeId, userId) {
     const sessionKey = makeSessionKey(cooperativeId, userId)
     await deleteLocalSession(sessionKey)
+}
+
+/**
+ * List the cooperatives where the CURRENT logged-in member exists in the
+ * local members table — matched by MOBILE ONLY (no PIN check; the member is
+ * already authenticated on this device).
+ * Returns [{ id, name, memberId }]. Empty when not a member / no mobile.
+ */
+export async function getMemberCooperatives() {
+    try {
+        const raw = window.sessionStorage.getItem(SYNC_SESSION_KEY)
+        if (!raw) return []
+        const current = JSON.parse(raw)
+        if (!isMemberSession(current)) return []
+        const myId = current.memberId || current.userId
+        if (!myId) return []
+        const { getDocById_Global, queryRows } = await import('./sqliteService.js')
+        const { normalizePhone } = await import('../utils/normalize.js')
+        const me = await getDocById_Global('members', String(myId)).catch(() => null)
+        // Fall back to the session username when the row is missing (pruned DB).
+        const myMobileKey = normalizePhone(me?.mobile || current.username || '')
+        if (!myMobileKey) return []
+        const rows = await queryRows(
+            'SELECT id, cooperative_id, mobile FROM members WHERE is_deleted = 0'
+        ).catch(() => [])
+        const byCoop = new Map()
+        for (const r of rows || []) {
+            if (normalizePhone(r.mobile || '') !== myMobileKey) continue
+            const cid = String(r.cooperative_id || '')
+            if (!cid || byCoop.has(cid)) continue
+            byCoop.set(cid, String(r.id))
+        }
+        const out = []
+        for (const [cid, mid] of byCoop) {
+            let name = cid
+            try {
+                const coop = await getDocById_Global('cooperatives', cid).catch(() => null)
+                name = coop?.full_name || coop?.short_name || cid
+            } catch {}
+            out.push({ id: cid, name, memberId: mid })
+        }
+        out.sort((a, b) => String(a.name).localeCompare(String(b.name)))
+        return out
+    } catch {
+        return []
+    }
+}
+
+/**
+ * Stamp legacy sync-queue rows that carry no cooperative_id with the coop of
+ * their local document. New rows always carry it (see enqueueWrite); this
+ * closes the one leak vector where a Coop A write could be picked up while
+ * pushing Coop B's queue (getPendingQueue includes orphans in every scope).
+ * Best-effort, never throws.
+ */
+async function stampQueueCooperativeIds() {
+    try {
+        const { getAllItems, getItem, putItem } = await import('./indexedDbService.js')
+        const q = await getAllItems('sync_queue').catch(() => [])
+        for (const item of q || []) {
+            if (item.cooperative_id) continue
+            if (!item.collection_name || !item.document_id) continue
+            try {
+                const doc = await getItem(item.collection_name, String(item.document_id)).catch(() => null)
+                const cid = doc?.cooperative_id || (item.collection_name === 'cooperatives' ? doc?.id : null)
+                if (cid) {
+                    item.cooperative_id = String(cid)
+                    await putItem('sync_queue', item).catch(() => {})
+                }
+            } catch {}
+        }
+    } catch {}
+}
+
+/**
+ * Switch the active session to another cooperative where the current member
+ * exists (mobile match, no PIN re-entry). Storage-level only: pushes the
+ * CURRENT coop's queue first when online (leaves it queued when offline),
+ * then swaps sessionStorage to the target coop's session.
+ *
+ * Queue isolation: pushQueue() is strictly per-cooperative_id, the resync
+ * wipe is `WHERE cooperative_id = <new>`, and member pruning only touches
+ * the new coop — Coop A rows + queued writes are never merged into Coop B.
+ * Returns { ok:true, welcomeUser, prevCoopId, pushed } or { ok:false, error }.
+ */
+export async function switchMemberCooperative(targetCoopId) {
+    try {
+        const raw = window.sessionStorage.getItem(SYNC_SESSION_KEY)
+        if (!raw) return { ok: false, error: 'No active session. Please log in.' }
+        const current = JSON.parse(raw)
+        if (!isMemberSession(current)) return { ok: false, error: 'Only members can switch cooperative.' }
+        const target = String(targetCoopId || '')
+        const prevCoopId = String(current.cooperativeId || '')
+        if (!target || target === prevCoopId) return { ok: false, error: 'Already on this cooperative.' }
+
+        const coops = await getMemberCooperatives()
+        const match = (coops || []).find(c => String(c.id) === target)
+        if (!match) return { ok: false, error: 'Your mobile was not found in that cooperative.' }
+
+        // Seal the leak vector: orphan queue rows get their owner's coop id.
+        await stampQueueCooperativeIds()
+
+        // Push CURRENT coop's writes when online; leave them queued offline.
+        // Strictly scoped: Coop A items can never upload as Coop B items —
+        // every item carries its own cooperative_id.
+        let pushed = false
+        try {
+            if (typeof navigator === 'undefined' || navigator.onLine) {
+                const { pushQueue } = await import('./syncService.js')
+                await pushQueue(prevCoopId).catch(() => {})
+                pushed = true
+            }
+        } catch {}
+
+        const { getDocById_Global } = await import('./sqliteService.js')
+        const mrow = await getDocById_Global('members', String(match.memberId)).catch(() => null)
+        if (!mrow || mrow.is_deleted) {
+            return { ok: false, error: 'Member record not found on this device. Connect to the internet and try again.' }
+        }
+        // Unsubscribed target accounts cannot be switched into.
+        try {
+            const { isSubscriptionBlocked, SUBSCRIPTION_BLOCKED_MSG } = await import('./subscriptionService.js')
+            if (isSubscriptionBlocked(mrow)) {
+                return { ok: false, error: SUBSCRIPTION_BLOCKED_MSG }
+            }
+        } catch {}
+
+        let sess = await loadOfflineSession(target, String(match.memberId)).catch(() => null)
+        const sessExisted = !!sess
+        const prevVerifiedTs = sessExisted ? (sess.last_verified_ts || 0) : 0
+        const now = Date.now()
+        if (sess) {
+            // Refresh snapshots from the live local row (same repair as login).
+            sess.permissions_snapshot = JSON.stringify(mrow.permissions || '')
+            sess.enterprises_snapshot = JSON.stringify(mrow.enterprise_rights || mrow.enterprises || '')
+            sess.username = mrow.username || mrow.mobile || sess.username
+            sess.role = 'member'
+            sess.full_name = (`${mrow.last_name || ''} ${mrow.first_name || ''} ${mrow.middle_name || ''}`.trim()
+                || (mrow.username || mrow.mobile || sess.full_name))
+            sess.last_verified_ts = now
+            sess.session_expires_ts = now + MEMBER_TTL_MS
+            await saveLocalSession(makeSessionKey(target, String(match.memberId)), sess)
+        } else {
+            let coopName = target
+            try {
+                const coop = await getDocById_Global('cooperatives', target).catch(() => null)
+                coopName = coop?.full_name || coop?.short_name || target
+            } catch {}
+            await saveOfflineSession({
+                userId: String(match.memberId),
+                userCollection: 'members',
+                cooperativeId: target,
+                username: mrow.username || mrow.mobile,
+                role: 'member',
+                permissions: mrow.permissions,
+                enterprises: mrow.enterprise_rights || mrow.enterprises,
+                memberId: String(match.memberId),
+                fullName: (`${mrow.last_name || ''} ${mrow.first_name || ''} ${mrow.middle_name || ''}`.trim()
+                    || (mrow.username || mrow.mobile)),
+                cooperativeName: coopName,
+                activeTab: 'dashboard',
+                remember: undefined,
+            })
+            sess = await loadOfflineSession(target, String(match.memberId)).catch(() => null)
+            if (!sess) return { ok: false, error: 'Could not open that cooperative. Please try again.' }
+        }
+
+        const welcomeUser = sessionToWelcomeUser(sess)
+        await repairWelcomeUser(welcomeUser)
+        welcomeUser.lastActivityTs = Date.now()
+        // First-ever visit to this coop OR return after >10 min idle counts +1
+        // (counted by maybeCountMemberReturnVisit after the swap, no logout).
+        if (!sessExisted || (prevVerifiedTs && now - prevVerifiedTs > INACTIVITY_TIMEOUT_MS)) {
+            welcomeUser.__idleReturn = true
+        }
+        if (welcomeUser.subscriptionStatus === undefined) welcomeUser.subscriptionStatus = 1
+        window.sessionStorage.setItem(SYNC_SESSION_KEY, JSON.stringify(welcomeUser))
+        try {
+            const uname = String(welcomeUser.username || '').toLowerCase()
+            if (uname) localStorage.setItem('cooplog-last-coop-' + uname, target)
+        } catch {}
+        return { ok: true, welcomeUser, prevCoopId, pushed }
+    } catch (e) {
+        return { ok: false, error: e?.message || 'Could not switch cooperative.' }
+    }
 }
 
 /**
@@ -767,7 +1292,7 @@ export async function discoverCooperativesOffline(username) {
         const allSessions = await getAllLocalSessions()
         const now = Date.now()
         allSessions.forEach(s => {
-            if (s.session_expires_ts > now && (
+            if ((s.session_expires_ts > now || s.role === 'member') && (
                 String(s.username || '').toLowerCase() === normalizedInput || 
                 String(s.member_id || '').toLowerCase() === normalizedInput || 
                 String(s.registration_no || '').toLowerCase() === normalizedInput ||

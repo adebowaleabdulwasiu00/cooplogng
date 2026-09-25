@@ -1,339 +1,298 @@
 /**
  * subscriptionService.js
- * Service for handling subscription-related operations.
+ * Offline-first service for subscription management (members + users).
+ *
+ * Pattern: local IndexedDB is the source of truth (saveDoc),
+ * cloud sync goes through the sync queue (enqueueWrite).
  */
 
-import { getDb, doc, updateDoc, getDoc, Timestamp }
-import { getAllForCoop, saveDoc, loadDoc, enqueueWrite }
-import { hasPermission }
+import {
+  queryRows,
+  getDocById_Global,
+  saveDoc,
+  enqueueWrite,
+} from './sqliteService.js';
 
-// Subscription status constants
+// Subscription status constants (matches members.js / users.js usage)
 export const SUBSCRIPTION_STATUS = {
-    UNSUBSCRIBED: 0,
-    SUBSCRIBED: 1,
-    PENDING: 2
+  UNSUBSCRIBED: 0,
+  SUBSCRIBED: 1,
 };
 
 /**
- * Helper function to get the expiry date from a document (handles both expiry_date and subscriptionExpiry)
+ * Polite message shown when an unsubscribed/expired account is blocked
+ * from logging in (or is signed out mid-session).
  */
-function getExpiry(doc) {
-    return doc?.expiry_date ?? doc?.subscriptionExpiry ?? null;
-}
+export const SUBSCRIPTION_BLOCKED_MSG =
+  'Your account subscription is inactive. Please contact your administrator for assistance.';
 
 /**
- * Helper function to check if a user is an admin
+ * Central login/session gate: does this account doc fail the subscription check?
+ * - The built-in `admin` user is always exempt (matches dashboard bypass).
+ * - Docs with NO subscription fields (legacy) fail-open to `false` so old
+ *   data is never locked out — only explicit opt-outs block.
+ * - Explicit `subscriptionStatus` of 0/'0' (or any defined non-1 value) blocks.
+ * - A past `expiry_date`/`subscriptionExpiry` blocks even when subscribed.
+ * @param {object|null} doc - users/members row (local or Firestore data)
+ * @param {string} [usernameOverride] - falls back to doc.username when omitted
+ * @param {string} [nowIso] - defaults to current time
+ * @returns {boolean} true when the account must be blocked from login/session.
  */
-function isAdminUser(userDoc) {
-    // Check if username is 'admin' OR has 'admin' permission
-    if (userDoc?.username?.toLowerCase() ;
+export function isSubscriptionBlocked(doc, usernameOverride, nowIso = new Date().toISOString()) {
+  try {
+    if (!doc) return false;
+    const username = usernameOverride ?? doc.username ?? doc.mobile ?? '';
+    if (String(username || '').toLowerCase() === 'admin') return false;
+    const status = doc.subscriptionStatus;
+    const hasStatus = status !== undefined && status !== null && status !== '';
+    if (hasStatus) {
+      const n = Number(status);
+      // Explicit opt-out (0) or any defined value that is not subscribed (1).
+      if (n !== 1) return true;
     }
-    if (hasPermission(userDoc?.permissions, 'admin')) {
-        return true;
-    }
+    const expiry = getExpiry(doc) ?? doc.subscriptionExpiry ?? null;
+    if (expiry && String(expiry) < nowIso) return true;
     return false;
+  } catch {
+    return false;
+  }
 }
 
 /**
- * Helper function to format the expiry date for storage (ISO string)
+ * Get the expiry date from a document (handles expiry_date / subscriptionExpiry).
  */
-function formatExpiry(date) {
-    if (!date) return null;
-    if (date instanceof Date) return date.toISOString();
-    if (typeof date ;
-    return null;
+export function getExpiry(doc) {
+  return doc?.expiry_date ?? doc?.subscriptionExpiry ?? null;
+}
+
+function isActiveDoc(doc, nowIso) {
+  const subscribed =
+    doc?.subscriptionStatus === SUBSCRIPTION_STATUS.SUBSCRIBED ||
+    doc?.subscriptionStatus === '1' ||
+    doc?.subscriptionStatus === 1;
+  if (!subscribed) return false;
+  const expiry = getExpiry(doc);
+  if (!expiry) return true; // subscribed with no expiry counts as active (legacy)
+  return String(expiry) >= nowIso;
 }
 
 /**
- * Get subscription statistics for a cooperative
- * @param {string} cooperativeId - The cooperative ID
+ * Classify a doc as 'active' | 'expired' | 'inactive'.
+ * - active: subscribed && (no expiry || expiry >= now)
+ * - expired: subscribed && expiry < now
+ * - inactive: not subscribed
+ */
+export function getSubscriptionState(doc, nowIso = new Date().toISOString()) {
+  const subscribed =
+    doc?.subscriptionStatus === SUBSCRIPTION_STATUS.SUBSCRIBED ||
+    doc?.subscriptionStatus === '1' ||
+    doc?.subscriptionStatus === 1;
+  if (!subscribed) return 'inactive';
+  const expiry = getExpiry(doc);
+  if (expiry && String(expiry) < nowIso) return 'expired';
+  return 'active';
+}
+
+function countStats(rows, nowIso) {
+  const stats = { total: rows.length, active: 0, expired: 0, inactive: 0 };
+  for (const r of rows) {
+    stats[getSubscriptionState(r, nowIso)]++;
+  }
+  return stats;
+}
+
+/**
+ * Get subscription statistics for a cooperative (members + users).
  */
 export async function getSubscriptionStatistics(cooperativeId) {
-    try {
-        const [members, users] ;
+  const coopId = String(cooperativeId);
+  const nowIso = new Date().toISOString();
+  const [members, users] = await Promise.all([
+    queryRows('SELECT id, subscriptionStatus, expiry_date FROM members WHERE cooperative_id = ? AND is_deleted = 0', [coopId]).catch(() => []),
+    queryRows('SELECT id, subscriptionStatus, expiry_date FROM users WHERE cooperative_id = ? AND is_deleted = 0', [coopId]).catch(() => []),
+  ]);
+  const memberStats = countStats(members || [], nowIso);
+  const userStats = countStats(users || [], nowIso);
+  return {
+    members: memberStats,
+    users: userStats,
+    total: {
+      total: memberStats.total + userStats.total,
+      active: memberStats.active + userStats.active,
+      expired: memberStats.expired + userStats.expired,
+      inactive: memberStats.inactive + userStats.inactive,
+    },
+  };
+}
 
-        const now = new Date();
+function memberDisplayName(m) {
+  const full = `${m.last_name || ''} ${m.first_name || ''} ${m.middle_name || ''}`.trim().replace(/\s+/g, ' ');
+  return full || m.mobile || m.special_id || m.registration_no_str || m.id;
+}
 
-        const stats = {
-            members: {
-                total: 0,
-                active: 0,
-                inactive: 0,
-                expired: 0
-            },
-            users: {
-                total: 0,
-                active: 0,
-                inactive: 0,
-                expired: 0
-            }
-        };
-
-        members.forEach(m => {
-            stats.members.total++;
-            const expiry = getExpiry(m);
-            if (expiry) {
-                const expiryDate = new Date(expiry);
-                if (expiryDate > now) {
-                    if (m.subscriptionStatus === SUBSCRIPTION_STATUS.SUBSCRIBED) {
-                        stats.members.active++;
-                    } else {
-                        stats.members.inactive++;
-                    }
-                } else {
-                    stats.members.expired++;
-                }
-            } else {
-                if (m.subscriptionStatus === SUBSCRIPTION_STATUS.SUBSCRIBED) {
-                    stats.members.active++;
-                } else {
-                    stats.members.inactive++;
-                }
-            }
-        });
-
-        users.forEach(u => {
-            stats.users.total++;
-            const expiry = getExpiry(u);
-            if (expiry) {
-                const expiryDate = new Date(expiry);
-                if (expiryDate > now) {
-                    if (u.subscriptionStatus === SUBSCRIPTION_STATUS.SUBSCRIBED) {
-                        stats.users.active++;
-                    } else {
-                        stats.users.inactive++;
-                    }
-                } else {
-                    stats.users.expired++;
-                }
-            } else {
-                if (u.subscriptionStatus === SUBSCRIPTION_STATUS.SUBSCRIBED) {
-                    stats.users.active++;
-                } else {
-                    stats.users.inactive++;
-                }
-            }
-        });
-
-        return stats;
-    } catch (error) {
-        throw error;
-    }
+function memberSecondary(m) {
+  return m.registration_no_str || (m.registration_no ?? '') || m.mobile || m.special_id || '';
 }
 
 /**
- * Get all accounts (members + users) for subscription management
- * @param {string} cooperativeId - The cooperative ID
- * @param {string} filter - Filter: 'all', 'members', 'users', 'active', 'inactive', 'expired'
+ * Get a unified account list for subscription management.
+ * @param {string} cooperativeId
+ * @param {object} opts - { type: 'all'|'members'|'users', status: 'all'|'active'|'expired'|'inactive', search: string }
  */
-export async function getAllAccounts(cooperativeId, filter ;
+export async function getAllAccounts(cooperativeId, opts = {}) {
+  const { type = 'all', status = 'all', search = '' } = opts;
+  const coopId = String(cooperativeId);
+  const nowIso = new Date().toISOString();
+  const term = String(search || '').trim().toLowerCase();
 
-        const now = new Date();
+  const [members, users] = await Promise.all([
+    type === 'users'
+      ? []
+      : queryRows('SELECT * FROM members WHERE cooperative_id = ? AND is_deleted = 0', [coopId]).catch(() => []),
+    type === 'members'
+      ? []
+      : queryRows('SELECT * FROM users WHERE cooperative_id = ? AND is_deleted = 0', [coopId]).catch(() => []),
+  ]);
 
-        let allAccounts ;
+  const out = [];
+  for (const m of members || []) {
+    const state = getSubscriptionState(m, nowIso);
+    if (status !== 'all' && state !== status) continue;
+    out.push({
+      collection: 'members',
+      id: m.id,
+      displayName: memberDisplayName(m),
+      secondary: memberSecondary(m),
+      detail: m.mobile || m.special_id || '',
+      state,
+      expiry_date: getExpiry(m),
+      isAdmin: false,
+      raw: m,
+    });
+  }
+  for (const u of users || []) {
+    const state = getSubscriptionState(u, nowIso);
+    if (status !== 'all' && state !== status) continue;
+    const isAdmin = String(u.username || '').toLowerCase() === 'admin';
+    out.push({
+      collection: 'users',
+      id: u.id,
+      displayName: u.username || '',
+      secondary: u.role || '',
+      detail: u.email || '',
+      state: isAdmin ? 'admin' : state,
+      expiry_date: getExpiry(u),
+      isAdmin,
+      raw: u,
+    });
+  }
 
-        // Apply filter
-        if (filter ;
-        } else if (filter ;
-        } else if (filter ;
-                    }
-                    return true;
-                }
-                return false;
-            });
-        } else if (filter ;
-        } else if (filter ;
-                }
-                return false;
-            });
-        }
-
-        return allAccounts;
-    } catch (error) {
-        throw error;
-    }
+  if (term) {
+    return out.filter(
+      (a) =>
+        String(a.displayName || '').toLowerCase().includes(term) ||
+        String(a.secondary || '').toLowerCase().includes(term) ||
+        String(a.detail || '').toLowerCase().includes(term),
+    );
+  }
+  out.sort((a, b) => String(a.displayName || '').localeCompare(String(b.displayName || '')));
+  return out;
 }
 
 /**
- * Activate a subscription
- * @param {string} collectionName - The collection name ('members' or 'users')
- * @param {string} docId - The document ID
- * @param {string} username - The username of the person performing the action
- * @param {string} cooperativeId - The cooperative ID
+ * Activate a subscription (members or users).
+ * Extends current expiry when still active, otherwise +1 year from now.
  */
 export async function activateSubscription(collectionName, docId, username, cooperativeId) {
-    try {
-        const now = Timestamp.now();
-        const nowDate = new Date();
-        let newExpiryDate = new Date(nowDate.setFullYear(nowDate.getFullYear() + 1));
+  if (!['members', 'users'].includes(collectionName)) throw new Error(`Unknown collection: ${collectionName}`);
+  const existing = await getDocById_Global(collectionName, docId);
+  if (!existing) throw new Error('Record not found');
 
-        // Get current document first
-        const localDoc = await loadDoc(collectionName, docId, cooperativeId);
-        if (localDoc) {
-            const currentExpiry = getExpiry(localDoc);
-            if (currentExpiry) {
-                const currentExpiryDate = new Date(currentExpiry);
-                if (currentExpiryDate > new Date()) {
-                    // If not expired yet, add 1 year to current expiry
-                    newExpiryDate = new Date(currentExpiryDate);
-                    newExpiryDate.setFullYear(newExpiryDate.getFullYear() + 1);
-                }
-            }
-        }
-
-        const formattedExpiry = formatExpiry(newExpiryDate);
-        const updatePayload = {
-            cooperative_id: String(cooperativeId),
-            subscriptionStatus: SUBSCRIPTION_STATUS.SUBSCRIBED,
-            expiry_date: formattedExpiry,
-            subscriptionExpiry: formattedExpiry, // For backward compatibility
-            sync_at: now,
-            modified_at: now,
-            modified_by: username
-        };
-
-        // Update locally
-        try {
-            if (localDoc) {
-                await saveDoc(collectionName, { ...localDoc, ...updatePayload });
-                await enqueueWrite(cooperativeId, collectionName, docId, 'update', updatePayload);
-            }
-        } catch (localErr) {
-        }
-
-        // Also update Firestore directly
-        try {
-            const db = getDb();
-            const docRef = doc(db, collectionName, docId);
-            await updateDoc(docRef, updatePayload);
-        } catch (firestoreErr) {
-        }
-        return { success: true, expiry: newExpiryDate };
-    } catch (error) {
-        throw error;
+  const now = new Date();
+  const nowIso = now.toISOString();
+  let expiry = new Date(now);
+  expiry.setFullYear(expiry.getFullYear() + 1);
+  const currentExpiry = getExpiry(existing);
+  if (currentExpiry && String(currentExpiry) >= nowIso) {
+    const d = new Date(currentExpiry);
+    if (!isNaN(d.getTime())) {
+      d.setFullYear(d.getFullYear() + 1);
+      expiry = d;
     }
+  }
+  const expiryIso = expiry.toISOString();
+
+  await saveDoc(collectionName, {
+    ...existing,
+    subscriptionStatus: SUBSCRIPTION_STATUS.SUBSCRIBED,
+    expiry_date: expiryIso,
+    modified_at: nowIso,
+    modified_by: username || 'system',
+    is_synced: 0,
+  });
+
+  await enqueueWrite(String(cooperativeId ?? existing.cooperative_id), collectionName, docId, 'update', {
+    subscriptionStatus: SUBSCRIPTION_STATUS.SUBSCRIBED,
+    expiry_date: expiryIso,
+    modified_at: nowIso,
+    modified_by: username || 'system',
+  });
+
+  return { success: true, expiry: expiryIso };
 }
 
 /**
- * Deactivate a subscription
- * @param {string} collectionName - The collection name ('members' or 'users')
- * @param {string} docId - The document ID
- * @param {string} username - The username of the person performing the action
- * @param {string} cooperativeId - The cooperative ID
+ * Deactivate a subscription (members or users).
  */
 export async function deactivateSubscription(collectionName, docId, username, cooperativeId) {
+  if (!['members', 'users'].includes(collectionName)) throw new Error(`Unknown collection: ${collectionName}`);
+  const existing = await getDocById_Global(collectionName, docId);
+  if (!existing) throw new Error('Record not found');
+  const nowIso = new Date().toISOString();
+
+  await saveDoc(collectionName, {
+    ...existing,
+    subscriptionStatus: SUBSCRIPTION_STATUS.UNSUBSCRIBED,
+    expiry_date: null,
+    modified_at: nowIso,
+    modified_by: username || 'system',
+    is_synced: 0,
+  });
+
+  await enqueueWrite(String(cooperativeId ?? existing.cooperative_id), collectionName, docId, 'update', {
+    subscriptionStatus: SUBSCRIPTION_STATUS.UNSUBSCRIBED,
+    expiry_date: null,
+    modified_at: nowIso,
+    modified_by: username || 'system',
+  });
+
+  return { success: true };
+}
+
+/**
+ * Bulk activate/deactivate a list of { collection, id } accounts.
+ * Admin users collection rows flagged isAdmin are skipped by callers.
+ */
+export async function bulkSetSubscription(accounts, active, username, cooperativeId) {
+  let done = 0;
+  const failed = [];
+  for (const acc of accounts || []) {
     try {
-        const now = Timestamp.now();
-
-        const updatePayload = {
-            cooperative_id: String(cooperativeId),
-            subscriptionStatus: SUBSCRIPTION_STATUS.UNSUBSCRIBED,
-            sync_at: now,
-            modified_at: now,
-            modified_by: username
-        };
-
-        // Update locally
-        try {
-            const localDoc = await loadDoc(collectionName, docId, cooperativeId);
-            if (localDoc) {
-                await saveDoc(collectionName, { ...localDoc, ...updatePayload });
-                await enqueueWrite(cooperativeId, collectionName, docId, 'update', updatePayload);
-            }
-        } catch (localErr) {
-        }
-
-        // Also update Firestore directly
-        try {
-            const db = getDb();
-            const docRef = doc(db, collectionName, docId);
-            await updateDoc(docRef, updatePayload);
-        } catch (firestoreErr) {
-        }
-        return { success: true };
-    } catch (error) {
-        throw error;
+      if (active) await activateSubscription(acc.collection, acc.id, username, cooperativeId);
+      else await deactivateSubscription(acc.collection, acc.id, username, cooperativeId);
+      done++;
+    } catch (e) {
+      failed.push({ ...acc, error: e?.message || String(e) });
     }
+  }
+  return { done, failed };
 }
 
 /**
  * Get subscription status for a member or user.
- * @param {string} collectionName - The collection name ('members' or 'users')
- * @param {string} docId - The document ID of the member/user
- * @param {string} cooperativeId - The cooperative ID
  */
-export async function getSubscriptionStatus(collectionName, docId, cooperativeId) {
-    try {
-        // Try to get from local DB first
-        try {
-            const localDoc = await loadDoc(collectionName, docId, cooperativeId);
-            if (localDoc) {
-                return {
-                    status: localDoc.subscriptionStatus ?? SUBSCRIPTION_STATUS.UNSUBSCRIBED,
-                    expiry: getExpiry(localDoc),
-                    syncAt: localDoc.sync_at ?? null
-                };
-            }
-        } catch (localErr) {
-        }
-
-        // Fall back to Firestore
-        const db = getDb();
-        const docRef = doc(db, collectionName, docId);
-        const docSnap = await getDoc(docRef);
-
-        if (docSnap.exists()) {
-            const data = docSnap.data();
-            return {
-                status: data.subscriptionStatus ?? SUBSCRIPTION_STATUS.UNSUBSCRIBED,
-                expiry: getExpiry(data),
-                syncAt: data.sync_at ?? null
-            };
-        }
-
-        return {
-            status: SUBSCRIPTION_STATUS.UNSUBSCRIBED,
-            expiry: null,
-            syncAt: null
-        };
-    } catch (error) {
-        return {
-            status: SUBSCRIPTION_STATUS.UNSUBSCRIBED,
-            expiry: null,
-            syncAt: null
-        };
-    }
-}
-
-/**
- * Check if a user/member has a valid active subscription
- * @param {Object} userDoc - The user/member document
- * @returns {Object} { isValid: boolean, isRestricted: boolean, reason?: string }
- */
-export function validateSubscription(userDoc) {
-    // Admin users are always considered subscribed with full access
-    if (isAdminUser(userDoc)) {
-        return { isValid: true, isRestricted: false };
-    }
-
-    const now = new Date();
-    const status = userDoc?.subscriptionStatus ?? SUBSCRIPTION_STATUS.UNSUBSCRIBED;
-    const expiry = getExpiry(userDoc);
-
-    let isRestricted = true;
-    let reason = null;
-
-    if (!expiry) {
-        reason ;
-    } else {
-        const expiryDate = new Date(expiry);
-        if (expiryDate <;
-        } else if (status !;
-        } else {
-            isRestricted = false;
-        }
-    }
-
-    // Always allow login, just indicate if access is restricted
-    return { isValid: true, isRestricted, reason };
+export async function getSubscriptionStatus(collectionName, docId) {
+  const doc = await getDocById_Global(collectionName, docId).catch(() => null);
+  if (!doc) return { status: SUBSCRIPTION_STATUS.UNSUBSCRIBED, expiry: null };
+  return { status: doc.subscriptionStatus ?? SUBSCRIPTION_STATUS.UNSUBSCRIBED, expiry: getExpiry(doc) };
 }

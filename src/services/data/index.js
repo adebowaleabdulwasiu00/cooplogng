@@ -10,16 +10,23 @@ export { fetchCooperativeUsers, addUser, updateUser, deleteUser, changePassword 
 export {
     fetchRemittances, fetchRemittancesPage,
     fetchTransactionTypes, addRemittance, updateRemittance, deleteRemittance,
-    approveRemittance, declineRemittance, fetchLoanById, fetchMemberLoans
+    approveRemittance, declineRemittance, fetchLoanById, fetchMemberLoans,
+    cleanupRemittanceFamily
 } from './remittances.js'
 export {
-    fetchGuarantorStats, fetchPendingGuarantorRequests,
-    approveGuarantorRequest, approveLoanRequest, declineLoanRequest
+    fetchGuarantorStats, fetchPendingGuarantorRequests, fetchMyGuarantorRequests,
+    approveGuarantorRequest, rejectGuarantorRequest, setGuarantorDecision, approveLoanRequest, declineLoanRequest
 } from './loans.js'
 export {
     getReconciliationTotals, getReconciliationSummary,
     saveReconciliationSummary, unsealReconciliation
 } from './reconciliation.js'
 export { buildAccountBalance, buildMemberLedger } from './balance.js'
+export {
+    freeChildId, duesTotalsByEnt, sumDuesTotals, buildTransferDetails,
+    alignChildToParent,
+    createDueDebitChildren, createDuesIncomePickup, createDuesTransfer,
+    resolveDueFunding, createDueFundingTransfer
+} from './duesTransfer.js'
 export { registerCooperative } from './registration.js'
 export { submitFeedback } from './feedback.js'

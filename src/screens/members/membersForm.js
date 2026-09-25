@@ -71,28 +71,28 @@ export async function renderMembersForm(container, user, member = null) {
             </div>
             <div style="margin-bottom: 0.75rem;">
                 <input type="text" id="mgr-dropdown-search" placeholder="Search managers..." 
-                    style="width: 100%; padding: 0.4rem; border-radius: 4px; border: 1px solid var(--border-medium); font-size: 0.8rem; background: var(--bg-input); color: var(--text-primary);">
+                    style="width: 100%; box-sizing: border-box; padding: 0.7rem 0.85rem; border-radius: var(--radius-md); border: 1px solid var(--border-medium); font-size: 0.88rem; background: var(--bg-input); color: var(--text-primary);">
             </div>
-            <div class="mgr-list" style="max-height: 200px; overflow-y: auto; margin-bottom: 0.75rem;">
-                <label class="field-option" style="display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem; cursor: pointer; border-radius: 4px;" data-key="all">
+            <div class="mgr-list" style="max-height: 240px; overflow-y: auto; margin-bottom: 1rem; display: flex; flex-direction: column; gap: 0.35rem; padding: 0.15rem;">
+                <label class="field-option" data-key="all">
                     <input type="checkbox" id="mgr-chk-all" ${pendingManagers.length === usersList.length ? 'checked' : ''}>
-                    <span style="font-weight: 700; font-size: 0.85rem;">All Managers</span>
+                    <span style="font-weight: 700; font-size: 0.88rem;">All Managers</span>
                 </label>
                 ${usersList.map(u => {
                     const displayName = u.full_name || u.username;
                     return `
-                    <label class="field-option mgr-item" data-key="${u.username}" data-search="${displayName.toLowerCase()}" style="display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem; cursor: pointer; border-radius: 4px;">
+                    <label class="field-option mgr-item" data-key="${u.username}" data-search="${displayName.toLowerCase()}">
                         <input type="checkbox" class="mgr-chk" value="${u.username}" ${pendingManagers.includes(u.username) ? 'checked' : ''}>
-                        <div style="display: flex; flex-direction: column;">
-                            <span style="font-size: 0.85rem; color: var(--text-primary); font-weight: 500;">${escapeHtml(displayName)}</span>
-                            ${u.full_name ? `<span style="font-size: 0.7rem; color: var(--text-muted);">@${escapeHtml(u.username)}</span>` : ''}
+                        <div style="display: flex; flex-direction: column; gap: 0.1rem;">
+                            <span style="font-size: 0.88rem; color: var(--text-primary); font-weight: 500;">${escapeHtml(displayName)}</span>
+                            ${u.full_name ? `<span style="font-size: 0.75rem; color: var(--text-muted);">@${escapeHtml(u.username)}</span>` : ''}
                         </div>
                     </label>
                 `}).join('')}
             </div>
-            <div style="display: flex; gap: 0.5rem;">
-                <button type="button" class="primary-button" id="apply-mgrs" style="flex: 1; height: 1.85rem; font-size: 0.7rem; border-radius: 999px;">Apply</button>
-                <button type="button" class="secondary-button" id="cancel-mgrs" style="flex: 1; height: 1.85rem; font-size: 0.7rem; border-radius: 999px; background: white; color: black;">Cancel</button>
+            <div style="display: flex; gap: 0.75rem;">
+                <button type="button" class="primary-button" id="apply-mgrs" style="flex: 1; min-height: 2.5rem; font-size: 0.85rem; border-radius: 999px;">Apply</button>
+                <button type="button" class="secondary-button" id="cancel-mgrs" style="flex: 1; min-height: 2.5rem; font-size: 0.85rem; border-radius: 999px; background: white; color: black;">Cancel</button>
             </div>
         `;
 
@@ -155,34 +155,13 @@ export async function renderMembersForm(container, user, member = null) {
             padding: 2rem;
             box-shadow: var(--shadow-xl);
             border: 1px solid var(--border-light);
-            max-width: 900px;
+            max-width: 1360px;
             margin: 0 auto;
+            width: 100%;
+            box-sizing: border-box;
         }
-        .field {
-            display: flex;
-            flex-direction: column;
-            gap: 0.5rem;
-            margin-bottom: 1.25rem;
-        }
-        .field span {
-            font-size: 0.85rem;
-            font-weight: 600;
-            color: var(--text-muted);
-        }
-        .field input, .field select, .field textarea {
-            padding: 0.75rem 1rem;
-            border-radius: var(--radius-md);
-            border: 1px solid var(--border-medium);
-            font-size: 0.95rem;
-            outline: none;
-            transition: border-color 0.2s, box-shadow 0.2s;
-            background: var(--bg-input);
-            color: var(--text-primary);
-        }
-        .field input:focus {
-            border-color: var(--accent-primary);
-            box-shadow: 0 0 0 3px var(--accent-soft);
-        }
+        /* Field styling inherits the global floating-outlined .field system
+           from style.css (same as the remittance form) for app-wide consistency. */
         .tab-btn {
             background: transparent;
             border: none;
@@ -204,9 +183,14 @@ export async function renderMembersForm(container, user, member = null) {
             content: ' •';
             font-weight: 800;
         }
+        @media (max-width: 1024px) {
+            .bio-layout > .bio-photos { grid-column: span 12; grid-row: auto; }
+            .bio-layout > label.field { grid-column: span 6 !important; }
+        }
         @media (max-width: 640px) {
             .form-card { padding: 1.1rem; }
             .nok-bank-grid { grid-template-columns: 1fr !important; }
+            .bio-layout > label.field { grid-column: span 12 !important; }
         }
         .duplicate-warning {
             color: #dc2626;
@@ -232,20 +216,22 @@ export async function renderMembersForm(container, user, member = null) {
             display: flex; 
             align-items: center; 
             gap: 0.75rem; 
-            padding: 0.5rem 0.75rem; 
+            padding: 0.65rem 0.75rem; 
             cursor: pointer; 
-            border-radius: 6px;
+            border-radius: 8px;
             transition: background 0.2s; 
-            font-size: 0.85rem; 
+            font-size: 0.88rem; 
             color: var(--text-primary); 
+            border: 1px solid transparent;
         }
-        .field-option:hover { background: var(--bg-secondary); }
+        .field-option:hover { background: var(--bg-secondary); border-color: var(--border-light); }
         .field-option input[type="checkbox"] { 
             cursor: pointer; 
-            width: 16px !important; 
-            height: 16px !important; 
+            width: 18px !important; 
+            height: 18px !important; 
             margin: 0;
             flex-shrink: 0;
+            accent-color: var(--accent-primary);
         }
         .dropdown-menu {
             position: absolute;
@@ -259,6 +245,153 @@ export async function renderMembersForm(container, user, member = null) {
             z-index: 100;
             padding: 1rem;
             min-width: 280px;
+        }
+        /* Photo strip — sits top-left as the first grid cell, no boxes;
+           fields flow around it. Tapping a photo opens the fullscreen
+           preview (same as the members table); tapping an empty
+           placeholder goes straight to add. */
+        /* 12-column bio layout: photos take 3 cols x 3 rows top-left
+           (just wide enough for both thumbs, no dead gap), field rows
+           sit 3-across beside them, rest full-width. */
+        .bio-layout {
+            display: grid;
+            grid-template-columns: repeat(12, 1fr);
+            column-gap: 0.7rem;
+            row-gap: 1.5rem;
+        }
+        .bio-layout > label.field { grid-column: span 3; min-width: 0; }
+        .bio-layout > label.field.wide { grid-column: span 4; }
+        /* Consistent rows form-wide: neutralize the global tall field
+           margins inside every field grid; the grid gaps set rhythm. */
+        .bio-layout > label.field:has(input),
+        .bio-layout > label.field:has(select),
+        .bio-layout > label.field:has(textarea),
+        .nok-bank-grid > label.field:has(input),
+        .nok-bank-grid > label.field:has(select),
+        .nok-bank-grid > label.field:has(textarea),
+        .emp-grid > label.field:has(input),
+        .emp-grid > label.field:has(select),
+        .emp-grid > label.field:has(textarea) { margin-top: 0; margin-bottom: 0; }
+        .bio-photos {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            align-items: flex-start;
+            padding-top: 0.25rem;
+            min-width: 0;
+            grid-column: span 3;
+            grid-row: span 3;
+            align-self: start;
+        }
+        .bio-photos-row {
+            display: flex;
+            gap: 1rem;
+            align-items: flex-start;
+        }
+        .bio-photo {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.3rem;
+            min-width: 0;
+        }
+        .bio-photo-caption {
+            font-size: 0.68rem;
+            font-weight: 700;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .bio-thumb {
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+        .bio-thumb:focus-visible {
+            outline: 2px solid var(--accent-primary);
+            outline-offset: 3px;
+        }
+        /* Small pill buttons under the photos (Edit / Reset PIN). */
+        .bio-edit-btn {
+            background: var(--bg-card);
+            border: 1px solid var(--border-medium);
+            color: var(--text-primary);
+            border-radius: 999px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            cursor: pointer;
+            padding: 0.35rem 0.9rem;
+            font-family: inherit;
+            white-space: nowrap;
+        }
+        .bio-edit-btn:hover { border-color: var(--accent-primary); color: var(--accent-primary); }
+        /* Add/change chooser popover (Camera / Gallery / Remove). */
+        .bio-chooser {
+            position: absolute;
+            top: calc(100% + 6px);
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--bg-card);
+            border: 1px solid var(--border-medium);
+            border-radius: var(--radius-md);
+            box-shadow: var(--shadow-xl);
+            z-index: 60;
+            min-width: 150px;
+            padding: 0.35rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.15rem;
+        }
+        .bio-chooser.hidden { display: none; }
+        .bio-chooser button {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            width: 100%;
+            padding: 0.5rem 0.65rem;
+            border: none;
+            border-radius: 6px;
+            background: transparent;
+            color: var(--text-primary);
+            font-size: 0.82rem;
+            font-weight: 600;
+            cursor: pointer;
+            font-family: inherit;
+            white-space: nowrap;
+        }
+        .bio-chooser button:hover { background: var(--bg-secondary); }
+        .bio-chooser button.danger { color: var(--danger); }
+        /* Fullscreen photo preview — same look as the members table. */
+        .mf-photo-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 9999;
+            background: rgba(0,0,0,0.84);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            backdrop-filter: blur(6px);
+            -webkit-backdrop-filter: blur(6px);
+        }
+        .mf-photo-wrap {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 1.25rem;
+        }
+        .mf-photo-wrap img {
+            max-width: min(88vw, 576px);
+            max-height: 80vh;
+            object-fit: contain;
+            border-radius: 14px;
+            box-shadow: 0 24px 80px rgba(0,0,0,0.65);
+        }
+        .mf-photo-name {
+            color: rgba(255,255,255,0.92);
+            font-size: 1.05rem;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            text-shadow: 0 1px 6px rgba(0,0,0,0.6);
         }
       </style>
 
@@ -276,6 +409,7 @@ export async function renderMembersForm(container, user, member = null) {
         <div class="form-card">
           <div style="display: flex; border-bottom: 1px solid var(--border-light); margin-bottom: 2rem;">
               <button class="tab-btn active" data-tab="bio">Personal Info</button>
+              <button class="tab-btn" data-tab="work">Employment</button>
               <button class="tab-btn" data-tab="nok">NOK & Bank</button>
               <button class="tab-btn" data-tab="pay">Payment Advice</button>
           </div>
@@ -283,36 +417,69 @@ export async function renderMembersForm(container, user, member = null) {
           <form id="member-form">
             <!-- Bio Data Tab -->
             <div id="tab-bio">
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem;">
+                <div class="bio-layout">
+                    <div class="bio-photos">
+                    <div class="bio-photos-row">
+                    <div class="bio-photo" id="passport-slot">
+                            <span class="bio-photo-caption">Passport</span>
+                            <div class="bio-thumb" id="passport-preview-wrap" role="button" tabindex="0" title="Passport photo — tap to view or add">
+                                <div id="passport-preview" style="width: 120px; height: 120px; border-radius: 50%; background: var(--bg-secondary); display: flex; align-items: center; justify-content: center; overflow: hidden; border: 2px solid var(--border-light);">
+                                </div>
+                            </div>
+                            <button type="button" class="bio-edit-btn" id="passport-edit">Edit</button>
+                            <div class="bio-chooser hidden" id="passport-chooser">
+                                <button type="button" id="passport-camera">Camera</button>
+                                <button type="button" id="passport-gallery">Gallery</button>
+                                <button type="button" id="passport-remove" class="danger">Remove</button>
+                            </div>
+                            <input type="file" id="passport-input" accept="image/*" hidden />
+                        </div>
+                        <div class="bio-photo" id="signature-slot">
+                            <span class="bio-photo-caption">Signature</span>
+                            <div class="bio-thumb" id="signature-preview-wrap" role="button" tabindex="0" title="Signature — tap to view or add">
+                                <div id="signature-preview" style="width: 120px; height: 120px; background: #fff; display: flex; align-items: center; justify-content: center; overflow: hidden; border: 2px solid var(--border-light); border-radius: 12px;">
+                                </div>
+                            </div>
+                            <button type="button" class="bio-edit-btn" id="signature-edit">Edit</button>
+                            <div class="bio-chooser hidden" id="signature-chooser">
+                                <button type="button" id="signature-camera">Camera</button>
+                                <button type="button" id="signature-gallery">Gallery</button>
+                                <button type="button" id="signature-remove" class="danger">Remove</button>
+                            </div>
+                            <input type="file" id="signature-input" accept="image/*" hidden />
+                        </div>
+                    </div>
+                    ${isEdit ? `<button type="button" id="reset-pwd-btn" class="bio-edit-btn">Reset 6-Digit PIN</button>` : ''}
+                    </div>
                     <label class="field">
                         <span>Last Name *</span>
-                        <input name="last_name" required value="${escapeHtml(member?.last_name || '')}">
+                        <input name="last_name" type="text" required value="${escapeHtml(member?.last_name || '')}">
                     </label>
                     <label class="field">
                         <span>First Name *</span>
-                        <input name="first_name" required value="${escapeHtml(member?.first_name || '')}">
+                        <input name="first_name" type="text" required value="${escapeHtml(member?.first_name || '')}">
                     </label>
                     <label class="field">
                         <span>Middle Name</span>
-                        <input name="middle_name" value="${escapeHtml(member?.middle_name || '')}">
+                        <input name="middle_name" type="text" value="${escapeHtml(member?.middle_name || '')}">
+                    </label>
+                    <label class="field">
+                        <span>Registration No</span>
+                        <input name="registration_no" type="text" readonly value="${member ? String(member.registration_no || "").padStart(4, '0') : '(Auto-generated)'}" style="background: var(--bg-secondary); color: var(--text-muted);">
+                    </label>
+                    <label class="field">
+                        <span>Special ID (Live Duplicate Check)</span>
+                        <input name="special_id" id="special-id-input" type="text" value="${escapeHtml(member?.special_id || '')}">
+                        <div id="special-id-duplicate-error" class="duplicate-warning hidden">This Special ID is already registered to another member.</div>
                     </label>
                     <label class="field">
                         <span>Mobile * (Live Duplicate Check)</span>
-                        <input name="mobile" id="mobile-input" required value="${escapeHtml(member?.mobile || '')}">
+                        <input name="mobile" id="mobile-input" type="tel" required value="${escapeHtml(member?.mobile || '')}">
                         <div id="duplicate-error" class="duplicate-warning hidden">This mobile number is already registered to another member.</div>
                     </label>
                     <label class="field">
                         <span>Email</span>
                         <input name="email" type="email" value="${escapeHtml(member?.email || '')}">
-                    </label>
-                    <label class="field">
-                        <span>Special ID (Live Duplicate Check)</span>
-                        <input name="special_id" id="special-id-input" value="${escapeHtml(member?.special_id || '')}">
-                        <div id="special-id-duplicate-error" class="duplicate-warning hidden">This Special ID is already registered to another member.</div>
-                    </label>
-                    <label class="field">
-                        <span>Registration No</span>
-                        <input name="registration_no" readonly value="${member ? String(member.registration_no || "").padStart(4, '0') : '(Auto-generated)'}" style="background: var(--bg-secondary); color: var(--text-muted);">
                     </label>
                     <label class="field">
                         <span>Status</span>
@@ -329,19 +496,15 @@ export async function renderMembersForm(container, user, member = null) {
                             <option value="Female" ${member?.sex === 'Female' ? 'selected' : ''}>Female</option>
                         </select>
                     </label>
-                    <div class="field" style="margin-bottom: 1.25rem; background: var(--bg-secondary); border: 1px solid var(--border-light); border-radius: var(--radius-md); padding: 0.6rem 0.9rem;">
-                        <span style="font-size: 0.72rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em;">Full name preview</span>
-                        <div id="full-name-preview" style="font-size: 1rem; font-weight: 700; color: var(--text-primary);">—</div>
-                    </div>
-                    <label class="field">
+                    <label class="field wide">
                         <span>Date Joined</span>
                         <input name="date_joined" type="date" value="${member ? formatDateForInput(member.date_joined) : formatDateForInput(new Date())}">
                     </label>
-                    <label class="field">
+                    <label class="field wide">
                         <span>Date of Birth</span>
                         <input name="dob" type="date" value="${member ? formatDateForInput(member.dob) : ''}">
                     </label>
-                    <label class="field">
+                    <label class="field wide">
                         <span>Marital Status</span>
                         <select name="marital_status">
                             ${(() => {
@@ -355,61 +518,33 @@ export async function renderMembersForm(container, user, member = null) {
                     </label>
                 </div>
 
-                <!-- Passport Photo and Signature -->
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem; margin-top: 0.5rem;">
-                    <label class="field">
-                        <span>Passport Photo</span>
-                        <div style="display: flex; align-items: center; gap: 1rem;">
-                            <div id="passport-preview" style="width: 80px; height: 80px; border-radius: 50%; background: var(--bg-secondary); display: flex; align-items: center; justify-content: center; overflow: hidden; border: 2px solid var(--border-light);">
-                                ${member?.image_path 
-                                    ? `<img src="${escapeHtml(member.image_path)}" style="width: 100%; height: 100%; object-fit: cover;" />`
-                                    : `<span style="color: var(--text-muted); font-size: 2rem;">📷</span>`
-                                }
-                            </div>
-                            <input type="file" id="passport-input" accept="image/*" style="flex: 1;" />
-                            <button type="button" id="passport-camera" class="ghost-button" title="Take photo with camera" style="font-size: 1rem; padding: 0.25rem 0.5rem;">📷</button>
-                            <button type="button" id="passport-remove" class="ghost-button" style="font-size: 0.75rem; color: var(--danger); padding: 0.25rem 0.5rem;">Remove</button>
-                        </div>
-                    </label>
-                    <label class="field">
-                        <span>Signature</span>
-                        <div style="display: flex; align-items: center; gap: 1rem;">
-                            <div id="signature-preview" style="width: 120px; height: 60px; background: var(--bg-secondary); display: flex; align-items: center; justify-content: center; overflow: hidden; border: 2px solid var(--border-light); border-radius: 4px;">
-                                ${member?.signature_path 
-                                    ? `<img src="${member.signature_path}" style="width: 100%; height: 100%; object-fit: contain;" />`
-                                    : ''
-                                }
-                            </div>
-                            <input type="file" id="signature-input" accept="image/*" style="flex: 1;" />
-                            <button type="button" id="signature-camera" class="ghost-button" title="Take photo with camera" style="font-size: 1rem; padding: 0.25rem 0.5rem;">📷</button>
-                            <button type="button" id="signature-remove" class="ghost-button" style="font-size: 0.75rem; color: var(--danger); padding: 0.25rem 0.5rem;">Remove</button>
-                        </div>
-                    </label>
-                </div>
-
-                <label class="field" style="margin-top: 0.5rem;">
+                <label class="field" style="margin: 1.5rem 0 0;">
                     <span>Home Address</span>
                     <textarea name="address" rows="2">${escapeHtml(member?.address || '')}</textarea>
                 </label>
 
-                <h4 style="margin: 1.25rem 0 1rem 0; font-size: 0.9rem; color: var(--text-primary);">Employment</h4>
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem;">
+            </div>
+
+            <!-- Employment & Managers Tab -->
+            <div id="tab-work" class="hidden">
+                <h4 style="margin: 0 0 1.5rem 0; font-size: 0.9rem; color: var(--text-primary);">Employment</h4>
+                <div class="emp-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem 0.7rem;">
                     <label class="field">
                         <span>Employer</span>
-                        <input name="employer" value="${escapeHtml(member?.employer || '')}">
+                        <input name="employer" type="text" value="${escapeHtml(member?.employer || '')}">
                     </label>
                     <label class="field">
                         <span>Department</span>
-                        <input name="department" value="${escapeHtml(member?.department || '')}">
+                        <input name="department" type="text" value="${escapeHtml(member?.department || '')}">
                     </label>
                     <label class="field">
                         <span>Position</span>
-                        <input name="position" value="${escapeHtml(member?.position || '')}">
+                        <input name="position" type="text" value="${escapeHtml(member?.position || '')}">
                     </label>
                 </div>
 
                 <!-- Manager Dropdown UI -->
-                <div class="field" style="margin-top: 1rem; position: relative;">
+                <div class="field" style="margin-top: 1.5rem; position: relative;">
                     <span>Account Manager(s)</span>
                     <button type="button" class="dropdown-btn" id="manager-dropdown-trigger">
                         <span id="manager-trigger-text">Select Managers...</span>
@@ -419,32 +554,23 @@ export async function renderMembersForm(container, user, member = null) {
                         <!-- Rendered by renderManagerDropdown() -->
                     </div>
                 </div>
-
-                ${isEdit ? `
-                    <div style="margin-top: 2rem; padding: 1.25rem; background: var(--warning-bg); border: 1px solid var(--warning); border-radius: var(--radius-lg); display: flex; justify-content: space-between; align-items: center;">
-                        <div style="font-size: 0.85rem; color: var(--warning);">
-                            <strong>Security Notice:</strong> Password reset will be queued for synchronization immediately.
-                        </div>
-                        <button type="button" id="reset-pwd-btn" class="secondary-button" style="padding: 0.5rem 1rem; font-size: 0.8rem; background: var(--bg-card); color: var(--text-primary);">Reset 4-Digit PIN</button>
-                    </div>
-                ` : ''}
             </div>
 
             <!-- NOK & Bank Tab -->
             <div id="tab-nok" class="hidden">
-                <div class="nok-bank-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+                <div class="nok-bank-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem 0.7rem;">
                     <div>
                         <h4 style="margin: 0 0 1rem 0; font-size: 0.9rem; color: var(--text-primary);">Next of Kin</h4>
-                        <label class="field"><span>Full Name</span><input name="nok_name" value="${escapeHtml(member?.nok_name || '')}"></label>
-                        <label class="field"><span>Relationship</span><input name="nok_relationship" value="${escapeHtml(member?.nok_relationship || '')}"></label>
-                        <label class="field"><span>Mobile</span><input name="nok_mobile" value="${escapeHtml(member?.nok_mobile || '')}"></label>
-                        <label class="field"><span>Address</span><input name="nok_address" value="${escapeHtml(member?.nok_address || '')}"></label>
+                        <label class="field"><span>Full Name</span><input name="nok_name" type="text" value="${escapeHtml(member?.nok_name || '')}"></label>
+                        <label class="field"><span>Relationship</span><input name="nok_relationship" type="text" value="${escapeHtml(member?.nok_relationship || '')}"></label>
+                        <label class="field"><span>Mobile</span><input name="nok_mobile" type="tel" value="${escapeHtml(member?.nok_mobile || '')}"></label>
+                        <label class="field"><span>Address</span><input name="nok_address" type="text" value="${escapeHtml(member?.nok_address || '')}"></label>
                     </div>
                     <div>
                         <h4 style="margin: 0 0 1rem 0; font-size: 0.9rem; color: var(--text-primary);">Bank Details</h4>
-                        <label class="field"><span>Bank Name</span><input name="bank_name" value="${escapeHtml(member?.bank_name || '')}"></label>
-                        <label class="field"><span>Account Number</span><input name="account_number" value="${escapeHtml(member?.account_number || '')}"></label>
-                        <label class="field"><span>Account Name</span><input name="account_name" value="${escapeHtml(member?.account_name || '')}"></label>
+                        <label class="field"><span>Bank Name</span><input name="bank_name" type="text" value="${escapeHtml(member?.bank_name || '')}"></label>
+                        <label class="field"><span>Account Number</span><input name="account_number" type="text" value="${escapeHtml(member?.account_number || '')}"></label>
+                        <label class="field"><span>Account Name</span><input name="account_name" type="text" value="${escapeHtml(member?.account_name || '')}"></label>
                     </div>
                 </div>
             </div>
@@ -465,10 +591,11 @@ export async function renderMembersForm(container, user, member = null) {
                             ${enterpriseList.map(ent => {
                                 const advice = member?.payment_advise?.find(a => a.enterprise_id === ent.id)
                                 const amount = advice ? advice.amount : '0.00'
+                                const isLoan = (ent.account_type || '').toLowerCase() === 'loan'
                                 return `
                                     <tr class="pay-advise-row" data-search="${escapeHtml(String(ent.account_name || '').toLowerCase())}">
-                                        <td>${escapeHtml(ent.account_name)}</td>
-                                        <td style="text-align: right;"><input type="number" step="0.01" min="0" class="pay-advise-input" data-ent-id="${ent.id}" value="${amount}" style="width: 120px; text-align: right;"></td>
+                                        <td>${escapeHtml(ent.account_name)}${isLoan ? ' <span style="font-size:0.7rem;color:var(--text-muted);font-style:italic;">(auto)</span>' : ''}</td>
+                                        <td style="text-align: right;"><input type="number" step="0.01" min="0" class="pay-advise-input" data-ent-id="${ent.id}" value="${amount}" ${isLoan ? 'disabled title="Auto-calculated from active loans"' : ''} style="width: 120px; text-align: right;${isLoan ? 'opacity:0.6;' : ''}"></td>
                                     </tr>
                                 `
                             }).join('')}
@@ -477,10 +604,10 @@ export async function renderMembersForm(container, user, member = null) {
                 </div>
             </div>
 
-            <div style="margin-top: 3rem; display: flex; justify-content: flex-end; gap: 1rem; border-top: 1px solid var(--border-light); padding-top: 2rem; flex-wrap: wrap;">
-                <button type="button" class="secondary-button" id="cancel-btn" style="padding: 0.75rem 2rem; color: var(--text-primary);">Cancel</button>
+            <div style="margin-top: 1.5rem; display: flex; justify-content: flex-end; gap: 1rem; border-top: 1px solid var(--border-light); padding-top: 1.5rem; flex-wrap: wrap;">
+                <button type="button" class="secondary-button" id="cancel-btn" style="padding: 0.75rem 2rem;">Cancel</button>
                 ${isEdit ? '' : `<button type="button" class="secondary-button" id="save-add-btn" style="padding: 0.75rem 1.5rem;">Save &amp; Add Another</button>`}
-                <button type="submit" class="primary-button" id="save-member-btn" style="padding: 0.75rem 2rem;">Save Member</button>
+                <button type="submit" class="primary-button" id="save-member-btn" style="padding: 0.75rem 2rem; flex: 0 0 auto;">Save Member</button>
             </div>
           </form>
         </div>
@@ -493,43 +620,76 @@ export async function renderMembersForm(container, user, member = null) {
     // Wrap all date inputs
     container.querySelectorAll('input[type="date"]').forEach(wrapDateInput);
     
-    // Passport Handler
+    // Passport + Signature — separate cards, big touch targets, SVG icons
+    // (emoji glyphs don't render on some devices). Hidden file inputs are
+    // Gallery-only; Camera buttons go through the offline picker
+    // (in-app camera -> native camera app, never needs internet).
     const passportInput = container.querySelector('#passport-input')
     const passportPreview = container.querySelector('#passport-preview')
-    passportInput?.addEventListener('change', async (e) => {
-        const file = e.target.files[0]
-        if (file) {
-            try {
-                selectedPassport = await compressImage(file)
-                passportPreview.innerHTML = `<img src="${selectedPassport}" style="width: 100%; height: 100%; object-fit: cover;" />`
-            } catch (err) {
-                console.error('Passport compression failed:', err)
-            }
-        }
-    })
-
-    // Signature Handler
     const signatureInput = container.querySelector('#signature-input')
     const signaturePreview = container.querySelector('#signature-preview')
-    signatureInput?.addEventListener('change', async (e) => {
-        const file = e.target.files[0]
-        if (file) {
-            try {
-                selectedSignature = await compressImage(file)
-                signaturePreview.innerHTML = `<img src="${selectedSignature}" style="width: 100%; height: 100%; object-fit: contain;" />`
-                // Warn-only signature sanity check (never blocks saving)
-                checkSignatureImage(file).then(r => {
-                    if (r && (r.verdict === 'blank' || r.verdict === 'photo') && r.message) {
-                        showToast(r.message, 'warning')
-                    }
-                }).catch(() => {})
-            } catch (err) {
-                console.error('Signature compression failed:', err)
-            }
+    const EMPTY_AVATAR_SVG = `<svg width="44" height="44" fill="none" stroke="var(--text-muted)" stroke-width="1.6" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"/></svg>`
+    const EMPTY_SIG_SVG = `<svg width="40" height="40" fill="none" stroke="#94a3b8" stroke-width="1.6" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931z"/></svg>`
+
+    // Single source of truth for the thumbs: image (or placeholder),
+    // Edit-button visibility, and Remove-option visibility.
+    const paintPhotos = () => {
+        if (passportPreview) passportPreview.innerHTML = selectedPassport
+            ? `<img src="${selectedPassport}" style="width: 100%; height: 100%; object-fit: cover;" />`
+            : EMPTY_AVATAR_SVG
+        if (signaturePreview) signaturePreview.innerHTML = selectedSignature
+            ? `<img src="${selectedSignature}" style="width: 100%; height: 100%; object-fit: contain;" />`
+            : EMPTY_SIG_SVG
+        const passportEdit = container.querySelector('#passport-edit')
+        const signatureEdit = container.querySelector('#signature-edit')
+        if (passportEdit) passportEdit.style.display = selectedPassport ? '' : 'none'
+        if (signatureEdit) signatureEdit.style.display = selectedSignature ? '' : 'none'
+        const passportRemove = container.querySelector('#passport-remove')
+        const signatureRemove = container.querySelector('#signature-remove')
+        if (passportRemove) passportRemove.style.display = selectedPassport ? '' : 'none'
+        if (signatureRemove) signatureRemove.style.display = selectedSignature ? '' : 'none'
+    }
+
+    const applyPassportFile = async (file) => {
+        if (!file) return
+        try {
+            selectedPassport = await compressImage(file)
+            paintPhotos()
+        } catch (err) {
+            console.error('Passport compression failed:', err)
+            showToast('Could not read that photo. Try another.', 'error')
         }
+    }
+    const applySignatureFile = async (file) => {
+        if (!file) return
+        try {
+            selectedSignature = await compressImage(file)
+            paintPhotos()
+            // Warn-only signature sanity check (never blocks saving)
+            checkSignatureImage(file).then(r => {
+                if (r && (r.verdict === 'blank' || r.verdict === 'photo') && r.message) {
+                    showToast(r.message, 'warning')
+                }
+            }).catch(() => {})
+        } catch (err) {
+            console.error('Signature compression failed:', err)
+            showToast('Could not read that photo. Try another.', 'error')
+        }
+    }
+
+    passportInput?.addEventListener('change', async (e) => {
+        const file = e.target.files?.[0]
+        // Clear value so picking the same file twice still fires change.
+        e.target.value = ''
+        await applyPassportFile(file)
+    })
+    signatureInput?.addEventListener('change', async (e) => {
+        const file = e.target.files?.[0]
+        e.target.value = ''
+        await applySignatureFile(file)
     })
 
-    // Camera buttons: shared picker (in-app camera -> native camera -> gallery).
+    // Camera buttons: shared offline picker (in-app camera -> native camera).
     const runCameraFor = async (kind) => {
         const { pickImageFile } = await import('../../utils/photoPicker.js')
         const file = await pickImageFile({ title: kind === 'signature' ? 'Add signature photo' : 'Add passport photo' })
@@ -538,7 +698,6 @@ export async function renderMembersForm(container, user, member = null) {
             const dataUrl = await compressImage(file)
             if (kind === 'signature') {
                 selectedSignature = dataUrl
-                if (signaturePreview) signaturePreview.innerHTML = `<img src="${dataUrl}" style="width: 100%; height: 100%; object-fit: contain;" />`
                 checkSignatureImage(file).then(r => {
                     if (r && (r.verdict === 'blank' || r.verdict === 'photo') && r.message) {
                         showToast(r.message, 'warning')
@@ -546,28 +705,104 @@ export async function renderMembersForm(container, user, member = null) {
                 }).catch(() => {})
             } else {
                 selectedPassport = dataUrl
-                if (passportPreview) passportPreview.innerHTML = `<img src="${dataUrl}" style="width: 100%; height: 100%; object-fit: cover;" />`
             }
+            paintPhotos()
         } catch (err) {
             console.error('Camera photo compression failed:', err)
         }
     }
-    container.querySelector('#passport-camera')?.addEventListener('click', () => runCameraFor('passport'))
-    container.querySelector('#signature-camera')?.addEventListener('click', () => runCameraFor('signature'))
+
+    // Add/change chooser popovers (Camera / Gallery / Remove-when-present).
+    const closeChoosers = () => {
+        container.querySelector('#passport-chooser')?.classList.add('hidden')
+        container.querySelector('#signature-chooser')?.classList.add('hidden')
+    }
+    const openChooser = (kind) => {
+        const other = kind === 'passport' ? '#signature-chooser' : '#passport-chooser'
+        container.querySelector(other)?.classList.add('hidden')
+        container.querySelector(kind === 'passport' ? '#passport-chooser' : '#signature-chooser')?.classList.remove('hidden')
+    }
+    container.querySelector('#passport-camera')?.addEventListener('click', () => { closeChoosers(); runCameraFor('passport') })
+    container.querySelector('#signature-camera')?.addEventListener('click', () => { closeChoosers(); runCameraFor('signature') })
+    // Gallery buttons trigger the hidden file inputs (plain chooser, offline).
+    container.querySelector('#passport-gallery')?.addEventListener('click', () => { closeChoosers(); passportInput?.click() })
+    container.querySelector('#signature-gallery')?.addEventListener('click', () => { closeChoosers(); signatureInput?.click() })
 
     // Remove photo / signature (edit mode: saving persists the removal —
     // updateMember writes null when the key is present with a null value)
-    const emptyAvatar = `<span style="color: var(--text-muted); font-size: 2rem;">📷</span>`
     container.querySelector('#passport-remove')?.addEventListener('click', () => {
         selectedPassport = null
         if (passportInput) passportInput.value = ''
-        if (passportPreview) passportPreview.innerHTML = emptyAvatar
+        closeChoosers()
+        paintPhotos()
     })
     container.querySelector('#signature-remove')?.addEventListener('click', () => {
         selectedSignature = null
         if (signatureInput) signatureInput.value = ''
-        if (signaturePreview) signaturePreview.innerHTML = ''
+        closeChoosers()
+        paintPhotos()
     })
+
+    // Fullscreen preview — same look as the members table. Single click on
+    // a shown image opens it; click anywhere or Escape closes.
+    const hidePhotoPreview = () => document.getElementById('mf-photo-preview')?.remove()
+    const showPhotoPreview = (src, title) => {
+        if (!src) return
+        hidePhotoPreview()
+        const g = (n) => container.querySelector(`input[name="${n}"]`)?.value || ''
+        const name = [g('last_name'), g('first_name'), g('middle_name')].map(s => String(s || '').trim()).filter(Boolean).join(' ') || member?.name || ''
+        const overlay = document.createElement('div')
+        overlay.className = 'mf-photo-overlay'
+        overlay.id = 'mf-photo-preview'
+        overlay.innerHTML = `<div class="mf-photo-wrap">
+            <img src="${src}" alt="${escapeHtml(title)}" draggable="false">
+            <div class="mf-photo-name">${escapeHtml(name ? `${name} — ${title}` : title)}</div>
+        </div>`
+        overlay.addEventListener('click', hidePhotoPreview)
+        document.body.appendChild(overlay)
+        document.addEventListener('keydown', function onKey(e) {
+            if (e.key === 'Escape') {
+                hidePhotoPreview()
+                document.removeEventListener('keydown', onKey)
+            }
+        })
+    }
+
+    // Thumb clicks: image present -> fullscreen preview; empty ->
+    // straight to the add chooser. Edit buttons open the chooser.
+    const bindPhotoSlot = (kind) => {
+        const wrap = container.querySelector(kind === 'passport' ? '#passport-preview-wrap' : '#signature-preview-wrap')
+        const editBtn = container.querySelector(kind === 'passport' ? '#passport-edit' : '#signature-edit')
+        const hasImage = () => kind === 'passport' ? !!selectedPassport : !!selectedSignature
+        const onThumb = (e) => {
+            e?.stopPropagation?.()
+            if (hasImage()) {
+                closeChoosers()
+                showPhotoPreview(kind === 'passport' ? selectedPassport : selectedSignature, kind === 'passport' ? 'Passport Photo' : 'Signature')
+            } else {
+                openChooser(kind)
+            }
+        }
+        wrap?.addEventListener('click', onThumb)
+        wrap?.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onThumb(e) }
+        })
+        editBtn?.addEventListener('click', (e) => { e?.stopPropagation?.(); openChooser(kind) })
+    }
+    bindPhotoSlot('passport')
+    bindPhotoSlot('signature')
+    container.addEventListener('click', (e) => {
+        if (!e.target.closest('.bio-photo')) closeChoosers()
+    })
+    // Bound once globally (form re-renders per navigation) — Escape closes
+    // any open add/change chooser.
+    if (!document.__mfChooserKeyBound) {
+        document.__mfChooserKeyBound = true
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') document.querySelectorAll('.bio-chooser').forEach(c => c.classList.add('hidden'))
+        })
+    }
+    paintPhotos()
 
     // Payment-advice helpers: filter, bulk-set visible rows, live total
     const updatePayTotal = () => {
@@ -595,7 +830,7 @@ export async function renderMembersForm(container, user, member = null) {
         container.querySelectorAll('.pay-advise-row').forEach(row => {
             if (row.style.display === 'none') return
             const inp = row.querySelector('.pay-advise-input')
-            if (inp) inp.value = raw
+            if (inp && !inp.disabled) inp.value = raw
         })
         updatePayTotal()
     })
@@ -645,7 +880,7 @@ export async function renderMembersForm(container, user, member = null) {
     const memberFormEl = container.querySelector('#member-form')
     memberFormEl?.addEventListener('invalid', (e) => {
         const field = e.target
-        const pane = field.closest?.('#tab-bio, #tab-nok, #tab-pay')
+        const pane = field.closest?.('#tab-bio, #tab-work, #tab-nok, #tab-pay')
         if (pane) {
             const tabId = pane.id.replace('tab-', '')
             if (tabId !== activeFormTab) {
@@ -656,24 +891,11 @@ export async function renderMembersForm(container, user, member = null) {
         }
     }, true)
     memberFormEl?.addEventListener('input', (e) => {
-        const pane = e.target.closest?.('#tab-bio, #tab-nok, #tab-pay')
+        const pane = e.target.closest?.('#tab-bio, #tab-work, #tab-nok, #tab-pay')
         if (pane) {
             container.querySelector(`.tab-btn[data-tab="${pane.id.replace('tab-', '')}"]`)?.classList.remove('has-error')
         }
     }, true)
-
-    // Live full-name preview (display only; save path re-applies properCase)
-    const previewName = () => {
-        const g = (n) => container.querySelector(`input[name="${n}"]`)?.value || ''
-        const pc = (s) => String(s || '').trim().split(/\s+/).filter(Boolean).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')
-        const full = [pc(g('last_name')), pc(g('first_name')), pc(g('middle_name'))].filter(Boolean).join(' ')
-        const prev = container.querySelector('#full-name-preview')
-        if (prev) prev.textContent = full || '—'
-    }
-    ;['last_name', 'first_name', 'middle_name'].forEach(n => {
-        container.querySelector(`input[name="${n}"]`)?.addEventListener('input', previewName)
-    })
-    previewName()
 
     // Back & Cancel
     const goBack = () => window.location.hash = 'members'
@@ -727,7 +949,7 @@ export async function renderMembersForm(container, user, member = null) {
 
     // PASSWORD RESET
     container.querySelector('#reset-pwd-btn')?.addEventListener('click', async () => {
-        const newPwd = generateRandom6Digit()
+        const newPwd = '123456'
         if (confirm(`Reset PIN to ${newPwd}? The member will set a new PIN on next login.`)) {
             try {
                 await updateMember(member.id, { ...member, password_hash: newPwd, force_password_change: true }, user.username)
@@ -787,7 +1009,7 @@ export async function renderMembersForm(container, user, member = null) {
             account_manager: selectedManagers.join(','),
             image_path: selectedPassport,
             signature_path: selectedSignature,
-            payment_advise: Array.from(container.querySelectorAll('.pay-advise-input')).map(inp => ({
+            payment_advise: Array.from(container.querySelectorAll('.pay-advise-input')).filter(inp => !inp.disabled).map(inp => ({
                 enterprise_id: inp.dataset.entId,
                 amount: parseFloat(inp.value || 0)
             }))

@@ -1,5 +1,14 @@
 import { escapeHtml } from '../../utils/formatters.js';
 
+// True when running on a local/testing environment (Vite dev, Electron dev
+// with START_URL, Capacitor). Only such environments are allowed to reveal
+// destructive actions like the remittance Delete button.
+function isLocalhost() {
+  if (typeof window === 'undefined' || !window.location) return false;
+  const host = (window.location.hostname || '').toLowerCase();
+  return host === 'localhost' || host === '127.0.0.1' || host === '[::1]';
+}
+
 // Gmail-style colors for fallback initials
 const AVATAR_COLORS = [
   '#f44336', '#e91e63', '#9c27b0', '#673ab7',
@@ -83,4 +92,13 @@ function showModalDialog(title, message, buttons = []) {
         }
     }
 
-export { AVATAR_COLORS, getAvatarColor, showModalDialog };
+function isMobile() {
+  try {
+    if (typeof window !== 'undefined' && window.matchMedia) {
+      return window.matchMedia('(max-width: 999px)').matches;
+    }
+  } catch {}
+  return false;
+}
+
+export { AVATAR_COLORS, getAvatarColor, showModalDialog, isLocalhost, isMobile };
