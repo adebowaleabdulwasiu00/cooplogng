@@ -192,7 +192,7 @@ export async function getMemberPerformanceAgingData(cooperativeId) {
     }
 
     const headers = ['S/N', useSpecialId ? 'Member ID' : 'Reg No', 'Member Name', 'Status', 'Loan Account', 'Current (<30)', '30-60 Days', '60-90 Days', 'Over 90 Days', 'Total Outstanding'];
-    return { data, headers, title: 'Member Performance & Aging Report' };
+    return { data, headers, title: 'Loan Aging Analysis Report' };
 }
 
 export async function getGeneralNetworthData(cooperativeId, user, dateTo) {
@@ -284,6 +284,6 @@ export async function getGeneralNetworthData(cooperativeId, user, dateTo) {
         data.push(['TOTAL', '', '', ...entTotals, footerTotal]);
     }
 
-    const title = `General Net Worth Balances As At ${formatDate(dateTo)}`;
+    const title = `Member Balances Summary As At ${formatDate(dateTo)}`;
     return { data, headers, title };
 }

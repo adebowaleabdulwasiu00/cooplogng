@@ -81,7 +81,7 @@ export function isPnLClassification(classification) {
 }
 
 export const DEFAULT_TRANSACTION_TYPES = [
-    { name: "Unknown Payments", classification: "Suspense" },
+    { name: "Unknown Payments", classification: "Member Liability" },
     { name: "Admin Expenses", classification: "Administrative Expense" },
     { name: "Staff & Management Expenses", classification: "Administrative Expense" },
     { name: "Meeting & Member Activities", classification: "Operating Expense" },

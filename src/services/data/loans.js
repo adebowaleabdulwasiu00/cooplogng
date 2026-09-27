@@ -233,7 +233,7 @@ export async function approveLoanRequest(remittanceId, approvedBy, options = {})
                         member_id: loan.member_id || remittance.member_id,
                         amount: -val,
                         remittance_date: chargeDate,
-                        bank_name: remittance.bank_name || 'System Generated',
+                        bank_name: 'Internal Transfer',
                         transaction_type: 'Loan Charges',
                         category: 'Loan Asset',
                         description: `Loan Charge: ${charge.name}`,

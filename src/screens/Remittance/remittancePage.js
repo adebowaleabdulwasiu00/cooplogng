@@ -1416,7 +1416,7 @@ import { save as persistState, load as loadPersisted } from '../../services/stat
                 member_id: formData.member_id,
                 amount: val,
                 remittance_date: formData.remittance_date,
-                bank_name: formData.bank_name || 'System Generated',
+                bank_name: 'Internal Transfer',
                 transaction_type: 'Loan Charges',
                 category: 'Loan Asset',
                 description: 'Loan Charge: ' + (c.name || 'Charge'),

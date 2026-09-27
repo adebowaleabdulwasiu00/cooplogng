@@ -1,0 +1,17 @@
+﻿import initSqlJs from "sql.js";
+import fs from "fs"; import path from "path";
+const SQL = await initSqlJs({ locateFile: f => path.join(process.cwd(),"node_modules","sql.js","dist",f) });
+const db = new SQL.Database(fs.readFileSync("sampledata.db"));
+const q=(s)=>{const r=db.exec(s); return r.length?r[0].values:[];};
+const show=(t,s)=>{console.log(`\n## ${t}`); for(const row of q(s)) console.log("  "+row.map(v=>v===null?"NULL":String(v)).join(" | "));};
+show("transaction_types.classification", "SELECT classification, COUNT(*) FROM transaction_types GROUP BY classification ORDER BY 2 DESC");
+show("transaction_types", "SELECT transaction_type, classification, is_system_default, is_active FROM transaction_types ORDER BY classification, transaction_type");
+show("enterprise.account_type", "SELECT account_type, COUNT(*) FROM enterprise GROUP BY account_type ORDER BY 2 DESC");
+show("enterprise revenue/penalty flags", "SELECT revenue, is_penalty, COUNT(*) FROM enterprise GROUP BY revenue, is_penalty");
+show("remittance.transaction_type", "SELECT transaction_type, COUNT(*) FROM remittance GROUP BY transaction_type ORDER BY 2 DESC");
+show("remittance.category", "SELECT category, COUNT(*) FROM remittance GROUP BY category ORDER BY 2 DESC");
+show("remittance.bank_name", "SELECT bank_name, COUNT(*) FROM remittance GROUP BY bank_name ORDER BY 2 DESC");
+show("remittance.status / is_deleted / autogen", "SELECT status, is_deleted, autogen, COUNT(*) FROM remittance GROUP BY status, is_deleted, autogen ORDER BY 4 DESC");
+show("loans.status", "SELECT status, COUNT(*) FROM loans GROUP BY status");
+show("remittance_detail.is_deleted nulls", "SELECT CASE WHEN is_deleted IS NULL THEN 'NULL' ELSE is_deleted END, COUNT(*) FROM remittance_detail GROUP BY 1");
+show("members.account_balance vs total", "SELECT COUNT(*) AS members, SUM(CASE WHEN account_balance IS NULL OR account_balance='' THEN 1 ELSE 0 END) AS null_balance FROM members");

@@ -322,9 +322,42 @@ function toggleTheme() {
 
 const currentTheme = initTheme();
 
+/**
+ * Neutral boot splash.
+ *
+ * The session check below is async (sessionStorage sync + IndexedDB restore),
+ * so the logged-out screens must never paint while it runs — a remembered
+ * session would otherwise show the login screen for a frame before landing on
+ * the dashboard. Painted instead of the login/landing screen until bootstrap
+ * decides: dashboard (session restored) or login.
+ */
+function showBootSplash(label = 'Restoring Offline Data...') {
+  app.innerHTML = `
+    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background-color: var(--bg-main); font-family: inherit;">
+      <div style="width: 48px; height: 48px; border: 4px solid var(--border-medium); border-top: 4px solid var(--accent-primary); border-radius: 50%; animation: spin 1s linear infinite;"></div>
+      <h2 style="margin-top: 24px; color: var(--text-primary); font-weight: 600; font-size: 1.25rem;">${label}</h2>
+      <div style="color: var(--text-muted); font-size: 0.875rem; margin-top: 8px;">Please wait</div>
+      <style>@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }</style>
+    </div>
+  `
+}
+
+// True while bootstrapApp is still resolving the session. render() answers
+// with the boot splash instead of the login/landing screens until it settles.
+let _bootComplete = false
+
 async function bootstrapApp() {
   const startTs = Date.now();
   console.log(`[DEBUG] [${startTs}] bootstrapApp: Starting...`);
+  // No flicker: whenever a session could still be restored (tab session, a
+  // saved Remember-me identity, or a previous restore attempt) hold the splash
+  // until the check is done. First-time visitors with nothing stored go
+  // straight to the landing page as before.
+  let _hasStoredSessionHint = !!state.welcomeUser || !!_rememberedAtBoot
+  if (!_hasStoredSessionHint) {
+    try { _hasStoredSessionHint = !!sessionStorage.getItem('cooplog-restore-reloaded') } catch {}
+  }
+  if (_hasStoredSessionHint) showBootSplash()
   handleRouting()
   // Complete a redirect-based Google sign-in (Capacitor/mobile) if one is pending.
   try { await _consumeGoogleRedirectResult(); } catch {}
@@ -375,14 +408,7 @@ async function bootstrapApp() {
   // If there's no session, skip — initDb() will be lazily called when the user logs in.
   if (state.welcomeUser) {
     console.log(`[DEBUG] [${Date.now()}] bootstrapApp: Initializing SQLite...`);
-    app.innerHTML = `
-      <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background-color: var(--bg-main); font-family: inherit;">
-        <div style="width: 48px; height: 48px; border: 4px solid var(--border-medium); border-top: 4px solid var(--accent-primary); border-radius: 50%; animation: spin 1s linear infinite;"></div>
-        <h2 style="margin-top: 24px; color: var(--text-primary); font-weight: 600; font-size: 1.25rem;">Restoring Offline Data...</h2>
-        <div style="color: var(--text-muted); font-size: 0.875rem; margin-top: 8px;">Please wait</div>
-        <style>@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }</style>
-      </div>
-    `
+    showBootSplash()
     try {
       const { initDb } = await import('./services/sqliteService.js')
       await initDb()
@@ -488,13 +514,12 @@ async function bootstrapApp() {
   // Start real connectivity pings (replaces unreliable navigator.onLine)
   startConnectivityCheck();
 
-  // Auto-logout after 10 minutes of inactivity for STAFF/ADMIN only
-  // (active users stay logged in via recordActivity on every interaction).
-  // Members never auto-logout — only the manual Log Out button ends them.
-  // Started once; it no-ops when logged out.
+  // Auto-logout after 10 minutes of inactivity for every session WITHOUT
+  // "Remember me" (active users stay logged in via recordActivity on every
+  // interaction). Remembered sessions are persistent and are skipped by the
+  // watcher itself. Started once; it no-ops when logged out.
   startInactivityWatcher(() => {
     if (!state.welcomeUser) return
-    if (state.welcomeUser.role === 'member') return
     performLogout(true)
   });
 
@@ -561,11 +586,17 @@ async function bootstrapApp() {
   // Network indicator is handled by the main listeners above
 
   console.log(`[DEBUG] [${Date.now()}] bootstrapApp: Calling first render()...`);
+  _bootComplete = true
   render()
   console.log(`[DEBUG] [${Date.now()}] bootstrapApp: Finished.`);
 }
 
-bootstrapApp()
+bootstrapApp().catch(err => {
+  // Never strand the user on the boot splash: fall back to the login screen.
+  console.error('[Bootstrap] bootstrapApp failed:', err)
+  _bootComplete = true
+  try { render() } catch (e) { console.error('[Bootstrap] fallback render failed:', e) }
+})
 
 
 /**
@@ -1671,7 +1702,14 @@ app.addEventListener('input', (event) => {
 
 function render() {
   console.log(`[DEBUG] [${Date.now()}] render: Called. stage=${state.stage}, welcomeUser=${!!state.welcomeUser}, isRegistering=${state.isRegistering}, showActivationKeyPrompt=${state.showActivationKeyPrompt}`);
-  
+
+  // Still resolving the session/Remember-me state: never paint the logged-out
+  // screens here, or a restored session would flash the login page first.
+  if (!_bootComplete && !state.welcomeUser && !state.isRegistering && !state.showActivationKeyPrompt) {
+    showBootSplash('Checking your session...')
+    return
+  }
+
   if (state.showActivationKeyPrompt) {
     app.innerHTML = `
       <main class="shell">
@@ -1911,7 +1949,14 @@ function render() {
   app.innerHTML = `
     <main class="shell">
       <section class="card" style="animation: fadeIn 0.5s ease-out; position: relative;">
-        <div style="position: absolute; top: 1rem; left: 1.25rem;">
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.25rem; min-height: 2.75rem;">
+          <div style="min-width: 2.75rem;">
+            ${state.stage !== 1 ? `
+            <button type="button" data-action="back" aria-label="Go back" title="Back" ${state.isSubmitting ? 'disabled' : ''} style="background: var(--bg-secondary); border: none; border-radius: 50%; width: 2.75rem; height: 2.75rem; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--text-muted);">
+              <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"></path></svg>
+            </button>
+            ` : ''}
+          </div>
           <div class="network-indicator ${networkIndicatorClass()}" role="status" aria-label="${networkIndicatorLabel()}">
             <span class="indicator-icon">${networkIndicatorIcon()}</span>
             <span>${networkIndicatorLabel()}</span>
@@ -2003,16 +2048,8 @@ function render() {
             </div>
           </label>
 
-          <div class="actions">
-            <button
-              type="button"
-              class="secondary-button ${state.stage === 1 ? 'hidden' : ''}"
-              data-action="back"
-              ${state.isSubmitting ? 'disabled' : ''}
-            >
-              Back
-            </button>
-            <button type="submit" class="primary-button" ${state.isSubmitting ? 'disabled' : ''}>
+          <div class="actions" style="flex-direction: column; align-items: stretch;">
+            <button type="submit" class="primary-button" style="width: 100%;" ${state.isSubmitting ? 'disabled' : ''}>
               ${state.isSubmitting ? 'Please wait...' : buttonLabels[state.stage]}
             </button>
           </div>
@@ -2026,11 +2063,11 @@ function render() {
           </div>
           ` : ''}
 
-          <div style="margin-top: 2.5rem; text-align: center; border-top: 1px solid var(--border-light); padding-top: 2rem;">
-            <button type="button" class="ghost-button" data-action="show-registration" style="width: 100%; height: 3.25rem;">
+          <div style="margin-top: 2.5rem; border-top: 1px solid var(--border-light); padding-top: 1rem; display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap;">
+            <button type="button" data-action="show-registration" style="background: none; border: none; padding: 0.5rem 0.25rem; min-height: 2.75rem; font-size: 0.85rem; font-weight: 600; color: var(--accent-primary); cursor: pointer; text-align: left;">
                 Register New Cooperative
             </button>
-            <button type="button" class="ghost-button" data-action="go-landing" style="width: 100%; margin-top: 0.5rem; font-size: 0.82rem; color: var(--text-muted);">
+            <button type="button" data-action="go-landing" style="background: none; border: none; padding: 0.5rem 0.25rem; min-height: 2.75rem; font-size: 0.82rem; color: var(--text-muted); cursor: pointer; text-align: right;">
                 ← Back to home
             </button>
           </div>

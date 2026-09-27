@@ -372,7 +372,10 @@ export async function approveRemittance(remittanceId, approvedBy, bankName, remi
             is_synced: 0
         }
         if (propagateFields) {
-            if (bankName) next.bank_name = bankName
+            // Only the date cascades down. bank_name is deliberately NOT
+            // propagated: autogen children are always created as
+            // 'Internal Transfer', so overwriting here would wrongly stamp the
+            // approver's real bank onto them (and undo the loan/charge fix).
             if (remittanceDate) next.remittance_date = remittanceDate
         }
         await saveDoc('remittance', next)

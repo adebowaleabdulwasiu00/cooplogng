@@ -384,7 +384,7 @@ export function renderLanding(container, callbacks = {}) {
     </section>
 
     <footer class="lp-footer">
-      cooplogNg — Cooperative Log App · Crafted by Adebowale Abdul-wasiu · Works online and offline
+      cooplogNg — Cooperative Log App · Crafted by Imradex Global · Works online and offline
     </footer>
   </div>
   `;

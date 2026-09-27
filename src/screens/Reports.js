@@ -13,6 +13,8 @@ import {
     getPersonalLedgerData,
     getMemberPerformanceAgingData,
     getGeneralNetworthData,
+    buildAccountingPack,
+    exportAccountingPack,
     exportToExcel,
     exportToPDF
 } from '../services/reportsService.js';
@@ -270,6 +272,14 @@ export async function renderReports(container, user) {
                 min-width: 180px;
                 height: 2.75rem;
             }
+            .pack-hint {
+                margin: 0;
+                font-size: 0.8rem;
+                line-height: 1.5;
+                color: var(--text-muted);
+                border-left: 3px solid var(--accent-primary);
+                padding-left: 0.75rem;
+            }
         </style>
         <div class="reports-container">
             <div class="page-header">
@@ -283,29 +293,30 @@ export async function renderReports(container, user) {
                         <label>Report Type</label>
                         <select id="report-type">
                             <option value="">Select Report Type...</option>
-                            <option value="member_list">Member List (Bio-data)</option>
-                            <option value="remittance_list">Remittance List</option>
-                            <option value="enterprise_account">Enterprise Account</option>
-                            <option value="remittance_schedule">Remittance Schedule</option>
-                            <option value="payment_advise">Payment Advise</option>
-                            <option value="eod_report">End of Day (EOD) Report</option>
+                            <option value="member_list">Member Register</option>
+                            <option value="remittance_list">Transaction Journal</option>
+                            <option value="enterprise_account">Member Remittance Record (by Account)</option>
+                            <option value="remittance_schedule">Monthly Deduction Schedule</option>
+                            <option value="payment_advise">Payment Advice</option>
+                            <option value="eod_report">Daily Transactions Summary</option>
                             <option value="trial_balance">Trial Balance</option>
                             <option value="general_ledger">General Ledger</option>
                             <option value="income_expenditure">Income & Expenditure</option>
                             <option value="balance_sheet">Balance Sheet</option>
                             <option value="cash_flow">Cash Flow Statement</option>
-                            <option value="personal_ledger">Personal Ledger</option>
-                            <option value="member_performance_aging">Member Performance & Aging</option>
-                            <option value="general_networth">General Net Worth Balances</option>
+                            <option value="personal_ledger">Member Account Statement</option>
+                            <option value="member_performance_aging">Loan Aging Analysis</option>
+                            <option value="general_networth">Member Balances Summary (As At Date)</option>
+                            <option value="accounting_pack">Accounting Pack (Excel workbook)</option>
                         </select>
                     </div>
                     
                     <div class="control-group filter-eod-date-from" style="display: none;">
-                        <label>EOD Date From</label>
+                        <label>Date From</label>
                         <input type="date" id="eod-date-from">
                     </div>
                     <div class="control-group filter-eod-date-to" style="display: none;">
-                        <label>EOD Date To</label>
+                        <label>Date To</label>
                         <input type="date" id="eod-date-to">
                     </div>
                     
@@ -403,6 +414,11 @@ export async function renderReports(container, user) {
                         <button id="btn-generate" class="btn-generate">Generate Preview</button>
                     </div>
                 </div>
+                <p id="pack-hint" class="pack-hint" style="display: none;">
+                    The Accounting Pack is generated and downloaded as a single Excel workbook with 14 worksheets.
+                    There is no preview step — press the button once and the file is produced straight from the
+                    approved records for the selected dates.
+                </p>
             </div>
 
             <div class="reports-preview">
@@ -633,7 +649,7 @@ export async function renderReports(container, user) {
         glEntFilter.appendChild(optGl);
     });
     
-    // Populate Members for Personal Ledger
+    // Populate Members for Member Account Statement
     const members = await fetchAllMembers(cooperativeId, user.username, user.role === 'admin' || (user.permissions || '').includes('admin'));
     const memberFilter = container.querySelector('#personal-member');
     members.forEach(m => {
@@ -681,7 +697,8 @@ export async function renderReports(container, user) {
 
     const updateUIForType = () => {
         const val = reportTypeSelect.value;
-        container.querySelectorAll('.filter-date').forEach(el => el.style.display = (val === 'remittance_list' || val === 'general_ledger') ? 'flex' : 'none');
+        const isPack = val === 'accounting_pack';
+        container.querySelectorAll('.filter-date').forEach(el => el.style.display = (val === 'remittance_list' || val === 'general_ledger' || isPack) ? 'flex' : 'none');
         container.querySelector('.filter-bank').style.display = (val === 'remittance_list') ? 'flex' : 'none';
         container.querySelector('.filter-enterprise').style.display = (val === 'enterprise_account') ? 'flex' : 'none';
         container.querySelector('.filter-fiscal-year').style.display = (val === 'enterprise_account' || val === 'trial_balance' || val === 'income_expenditure' || val === 'balance_sheet') ? 'flex' : 'none';
@@ -697,7 +714,7 @@ export async function renderReports(container, user) {
         container.querySelector('.filter-networth-date').style.display = (val === 'general_networth') ? 'flex' : 'none';
 
         // Prefill dates
-        if (val === 'remittance_list' || val === 'general_ledger') {
+        if (val === 'remittance_list' || val === 'general_ledger' || isPack) {
             const dateFromInput = container.querySelector('#date-from');
             const dateToInput = container.querySelector('#date-to');
             if (!dateFromInput.value || !dateToInput.value) {
@@ -734,6 +751,16 @@ export async function renderReports(container, user) {
                 ? `${selectedFieldKeys.length} Fields Selected` 
                 : 'Select Fields...';
         }
+
+        // The Accounting Pack is produced directly as a workbook, so it needs
+        // no preview surface and no separate export buttons.
+        btnGenerate.textContent = isPack ? 'Generate Accounting Pack' : 'Generate Preview';
+        const packHint = container.querySelector('#pack-hint');
+        if (packHint) packHint.style.display = isPack ? 'block' : 'none';
+        if (isPack) {
+            btnExport.style.display = 'none';
+            btnPdf.style.display = 'none';
+        }
     };
 
     updateUIForType();
@@ -757,7 +784,9 @@ export async function renderReports(container, user) {
         updateUIForType();
         btnExport.style.display = 'none';
         btnPdf.style.display = 'none';
-        previewBody.innerHTML = '<div class="preview-placeholder">Select filters and click Generate Preview</div>';
+        previewBody.innerHTML = reportTypeSelect.value === 'accounting_pack'
+            ? '<div class="preview-placeholder">The Accounting Pack has no preview. Choose your dates and press Generate Accounting Pack to download the workbook.</div>'
+            : '<div class="preview-placeholder">Select filters and click Generate Preview</div>';
         previewTitle.textContent = 'Report Preview';
         currentReportData = null;
         updateGlobalState();
@@ -766,6 +795,44 @@ export async function renderReports(container, user) {
     btnGenerate.addEventListener('click', async () => {
         const type = reportTypeSelect.value;
         if (!type) return showToast('Please select a report type', 'warning');
+
+        // Accounting Pack: build and download the workbook in one action.
+        // No preview is produced and no separate export step is offered.
+        if (type === 'accounting_pack') {
+            const dateFrom = container.querySelector('#date-from').value;
+            const dateTo = container.querySelector('#date-to').value;
+            if (!dateFrom || !dateTo) return showToast('Please select both a start and an end date', 'warning');
+            if (dateFrom > dateTo) return showToast('Start date must not be after end date', 'warning');
+
+            const originalText = btnGenerate.textContent;
+            btnGenerate.textContent = 'Building workbook...';
+            btnGenerate.disabled = true;
+            try {
+                const pack = await buildAccountingPack({
+                    cooperativeId,
+                    startDate: dateFrom,
+                    endDate: dateTo,
+                    cooperativeName: cooperativeFullName,
+                    generatedBy: user.username || user.fullName || 'System'
+                });
+                const info = await exportAccountingPack(pack);
+                const failed = pack.controlChecks.filter(c => c.status === 'REVIEW');
+                showToast(
+                    `Accounting Pack downloaded (${info.sheets} sheets, ${pack.meta.postedRows} transactions).`
+                    + (failed.length
+                        ? ` ${failed.length} control check${failed.length > 1 ? 's' : ''} need review — see the Control Checks sheet.`
+                        : ' All control checks passed.'),
+                    failed.length ? 'warning' : 'success'
+                );
+            } catch (err) {
+                console.error(err);
+                showToast('Accounting Pack failed: ' + err.message, 'error');
+            } finally {
+                btnGenerate.textContent = originalText;
+                btnGenerate.disabled = false;
+            }
+            return;
+        }
 
         previewBody.innerHTML = '<div class="preview-placeholder">Generating report...</div>';
         btnExport.style.display = 'none';
@@ -780,7 +847,7 @@ export async function renderReports(container, user) {
                     status: container.querySelector('#member-status').value,
                     selectedFields: selectedFieldKeys
                 });
-                title = 'Member List';
+                title = 'Member Register';
             } else if (type === 'remittance_list') {
                 result = await getRemittanceListData(cooperativeId, user, {
                     dateFrom: container.querySelector('#date-from').value,
@@ -788,7 +855,7 @@ export async function renderReports(container, user) {
                     bank: container.querySelector('#bank-filter').value,
                     transactionType: 'All'
                 });
-                title = 'Remittance List';
+                title = 'Transaction Journal';
             } else if (type === 'enterprise_account') {
                 result = await getEnterpriseAccountData(cooperativeId, user, 
                     container.querySelector('#ent-filter').value,
@@ -801,10 +868,10 @@ export async function renderReports(container, user) {
                 const positive = container.querySelector('#schedule-type').value === 'positive';
                 result = await getRemittanceScheduleData(cooperativeId, user, month, year, positive);
                 const monthName = container.querySelector('#schedule-month').selectedOptions[0].textContent;
-                title = `Monthly Schedule for ${monthName} ${year} (${positive ? 'Deposit' : 'Loan'})`;
+                title = `Monthly Deduction Schedule for ${monthName} ${year} (${positive ? 'Deposit' : 'Loan'})`;
             } else if (type === 'payment_advise') {
                 result = await getPaymentAdviseData(cooperativeId);
-                title = 'Payment Advise';
+                title = 'Payment Advice';
             } else if (type === 'eod_report') {
                 const eodDateFrom = container.querySelector('#eod-date-from').value;
                 const eodDateTo = container.querySelector('#eod-date-to').value;

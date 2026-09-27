@@ -8,7 +8,10 @@
  * Security:
  * - Passwords are NEVER stored locally.
  * - Only a session token (SHA-256 of uid+coopId+timestamp+random) is stored.
- * - Sessions expire after 10 minutes of inactivity (sliding window).
+ * - Session life depends ONLY on "Remember me" (same rule for members,
+ *   staff and admins):
+ *     Remember me ON  -> persistent session (no inactivity logout)
+ *     Remember me OFF -> logout after 10 minutes of inactivity (sliding)
  * - Permissions snapshot is compared on revalidation; mismatches force logout.
  */
 
@@ -32,14 +35,9 @@ function generateSecureRandom(length) {
     return Array.from(array, b => b.toString(16).padStart(2, '0')).join('');
 }
 
-const SESSION_TTL_MS = 10 * 60 * 1000  // 10 minutes of inactivity (staff/admin)
-// Members stay logged in until they manually log out: their persistent
-// session gets a very long life and the inactivity watcher skips them.
-// The 10-min window is still used for members, but only to decide when a
-// re-open/refresh counts as a new visit (+1 login_count).
-const MEMBER_TTL_MS = 365 * 24 * 60 * 60 * 1000  // 365 days (effectively "always")
-// Remembered ("Remember me") sessions live much longer and auto-restore on
-// launch, giving zero-typing sign-in without ever storing a password.
+const SESSION_TTL_MS = 10 * 60 * 1000  // 10 minutes of inactivity ("Remember me" OFF)
+// Remembered ("Remember me") sessions are persistent: they live 30 days and
+// the inactivity watcher skips them, so only an explicit Log Out ends them.
 export const REMEMBER_TTL_MS = 30 * 24 * 60 * 60 * 1000  // 30 days
 const SYNC_SESSION_KEY = 'cooplog-web-session'
 // Alias: how long a session may sit idle before auto-logout.
@@ -49,24 +47,29 @@ const ACTIVITY_TOUCH_THROTTLE_MS = 60 * 1000  // extend IndexedDB expiry at most
 const WATCHER_CHECK_MS = 30 * 1000  // inactivity watcher tick
 
 /**
- * Members (members collection / role === 'member') never auto-logout.
- * Staff/admin (users collection) keep the 10-minute inactivity rule.
+ * Members (members collection / role === 'member'). Used ONLY for
+ * member-specific features (cooperative switcher). The session lifetime no
+ * longer depends on the role — see expiryForSession().
  */
 function isMemberSession(s) {
     if (!s) return false
     return s.role === 'member' || s.user_collection === 'members' || s.userCollection === 'members'
 }
 
-function expiryForSession(now, { remembered = false, role = '', userCollection = '' } = {}) {
-    if (role === 'member' || userCollection === 'members') return now + MEMBER_TTL_MS
+/**
+ * Session lifetime, driven solely by "Remember me" for every user type:
+ * remembered = persistent (30 days), otherwise 10 minutes of inactivity.
+ */
+function expiryForSession(now, { remembered = false } = {}) {
     return now + (remembered ? REMEMBER_TTL_MS : SESSION_TTL_MS)
 }
 
 /**
  * Synchronous load for app initialization (main.js state).
  * Uses sessionStorage for immediate tab-session state.
- * Staff/admin sessions return null when idle past the timeout.
- * Member sessions NEVER expire here: an idle member is returned with a
+ * Without "Remember me" a session returns null when idle past the timeout
+ * (all user types, members included).
+ * A remembered session never expires here: an idle one is returned with a
  * `__idleReturn` flag (and a refreshed clock) so bootstrap can count the
  * return visit (+1 login_count) without forcing a fresh login.
  */
@@ -80,9 +83,10 @@ export function loadSavedSession() {
             window.sessionStorage.removeItem(SYNC_SESSION_KEY)
             return null
         }
-        // Members stay logged in: preserve a pending return-count flag across
-        // reloads, otherwise flag idle returns (>10 min) and refresh the clock.
-        if (isMemberSession(session)) {
+        // Remembered ("Remember me") sessions stay logged in: preserve a pending
+        // return-count flag across reloads, otherwise flag idle returns
+        // (>10 min) and refresh the clock.
+        if (session.remember) {
             if (session.__idleReturn) return session
             const lastActive = session.lastActivityTs || 0
             if (lastActive && Date.now() - lastActive > INACTIVITY_TIMEOUT_MS) {
@@ -151,9 +155,10 @@ let _watcherStarted = false
 
 /**
  * Start the inactivity auto-logout watcher (idempotent).
- * Every 30s: if a STAFF/ADMIN session is idle longer than the timeout,
- * `onTimeout` is invoked (the app performs a full logout there).
- * Member sessions are skipped — members stay logged in until manual logout.
+ * Every 30s: if a session WITHOUT "Remember me" is idle longer than the
+ * timeout, `onTimeout` is invoked (the app performs a full logout there).
+ * This applies to every user type (members, staff, admins) — only remembered
+ * sessions are skipped, because they are persistent.
  */
 export function startInactivityWatcher(onTimeout) {
     if (_watcherStarted) return
@@ -164,8 +169,8 @@ export function startInactivityWatcher(onTimeout) {
             if (!raw) return
             const session = JSON.parse(raw)
             if (!session?.cooperativeId) return
-            // Members never auto-logout (only the manual Log Out button).
-            if (isMemberSession(session)) return
+            // "Remember me" sessions are persistent: only manual Log Out ends them.
+            if (session.remember) return
             const lastActive = session.lastActivityTs || 0
             if (Date.now() - lastActive > INACTIVITY_TIMEOUT_MS) {
                 onTimeout && onTimeout()
@@ -315,9 +320,11 @@ export async function restoreSessionFromIndexedDB() {
             console.warn('[OfflineAuth] Restore subscription check skipped:', e?.message)
         }
         welcomeUser.lastActivityTs = Date.now()
-        // Members restored after >10 min idle count as a return visit (+1).
+        // Restored members after >10 min idle count as a return visit (+1).
+        // Only reachable for persistent (Remember-me) sessions: a session
+        // without Remember me has already expired above and never restores.
         // The flag survives the reload below so bootstrap can bump the
-        // counter once the DB is ready; staff/admin restores keep expiry.
+        // counter once the DB is ready.
         if (isMemberSession(welcomeUser)) {
             const idleMs = Date.now() - (session.last_verified_ts || 0)
             if (session.last_verified_ts && idleMs > INACTIVITY_TIMEOUT_MS) {
@@ -335,10 +342,9 @@ export async function restoreSessionFromIndexedDB() {
                 full_name: welcomeUser.fullName || session.full_name || '',
                 username: welcomeUser.username || session.username || '',
                 last_verified_ts: Date.now(),
-                // Members never expire on idle: extend long-lived sessions.
-                session_expires_ts: isMemberSession(welcomeUser)
-                    ? Date.now() + MEMBER_TTL_MS
-                    : session.session_expires_ts,
+                // Remember me -> persistent, otherwise restart the 10-min
+                // inactivity window from this restore.
+                session_expires_ts: expiryForSession(Date.now(), { remembered: !!session.remember }),
             })
         } catch {
             // persist-back is best-effort
@@ -352,8 +358,9 @@ export async function restoreSessionFromIndexedDB() {
 /**
  * Save session for both immediate use and long-term offline persistence.
  * `remember` (from the login screen's Remember-me checkbox) grants the
- * persistent session a 30-day life so launches auto-sign-in; otherwise the
- * standard 10-minute inactivity expiry applies. Passwords are never stored.
+ * persistent session a 30-day life so launches auto-sign-in and the
+ * inactivity watcher skips it; otherwise the standard 10-minute inactivity
+ * expiry applies. Passwords are never stored.
  */
 export async function saveSessionLocally(session, password, remember) {
     if (!session) {
@@ -361,11 +368,25 @@ export async function saveSessionLocally(session, password, remember) {
         return
     }
 
-    // 1. Sync save for main.js state (stamped so idle staff sessions can
-    // expire; members never expire on idle). Strip the one-shot return flag:
+    // Remember-me flag for the tab session: explicit true/false comes from a
+    // login event; undefined means a background re-save (dashboard render,
+    // tab switch) — inherit the stored flag so a re-render can never demote a
+    // remembered session back to the 10-minute rule.
+    let remembered = !!remember
+    if (remember === undefined) {
+        try {
+            const prev = window.sessionStorage.getItem(SYNC_SESSION_KEY)
+            if (prev) remembered = !!JSON.parse(prev).remember
+        } catch {
+            // inherit-best-effort only
+        }
+    }
+
+    // 1. Sync save for main.js state (stamped so idle sessions can
+    // expire; remembered ones never do). Strip the one-shot return flag:
     // a fresh login already counted via validateLogin/validateOfflineLogin.
     const { __idleReturn: _drop, ...sessionSansFlag } = session || {}
-    const payload = { ...sessionSansFlag, lastActivityTs: Date.now() }
+    const payload = { ...sessionSansFlag, lastActivityTs: Date.now(), remember: remembered }
     window.sessionStorage.setItem(SYNC_SESSION_KEY, JSON.stringify(payload))
 
     // 2. Async save for long-term offline login persistence
@@ -518,9 +539,8 @@ export async function saveOfflineSession(sessionData) {
         session_token: token,
         remember: remembered,
         last_verified_ts: now,
-        // Members stay logged in until manual logout; staff/admin keep
-        // 10-min idle expiry (or 30 days when Remember-me is set).
-        session_expires_ts: expiryForSession(now, { remembered, role, userCollection: userCollection || 'users' }),
+        // Remember me -> persistent; otherwise 10-min inactivity window.
+        session_expires_ts: expiryForSession(now, { remembered }),
         created_ts: now,
     })
 
@@ -529,8 +549,8 @@ export async function saveOfflineSession(sessionData) {
 
 /**
  * Load the most recent valid local session.
- * Staff/admin sessions must be unexpired; member sessions are always
- * valid (they only end on manual logout) so idle members restore.
+ * A session is valid while unexpired: 30 days with "Remember me", otherwise
+ * 10 minutes of inactivity (sliding, extended by recordActivity/touchSession).
  * Returns null if no valid session exists.
  */
 export async function loadBestOfflineSession() {
@@ -539,9 +559,9 @@ export async function loadBestOfflineSession() {
         if (!all || all.length === 0) return null
 
         const now = Date.now()
-        // Filter to non-expired sessions (members exempt), pick most recently verified
+        // Filter to non-expired sessions, pick most recently verified
         const valid = all
-            .filter(s => s.session_expires_ts > now || s.role === 'member')
+            .filter(s => s.session_expires_ts > now)
             .sort((a, b) => b.last_verified_ts - a.last_verified_ts)
 
         return valid.length > 0 ? valid[0] : null
@@ -553,8 +573,8 @@ export async function loadBestOfflineSession() {
 
 /**
  * Load a specific session by cooperativeId + userId.
- * Expired staff/admin sessions are deleted; expired member sessions are
- * kept (members never auto-logout).
+ * Expired sessions are deleted (no "Remember me" + 10 min idle, for every
+ * user type) so the app cannot resume them.
  */
 export async function loadOfflineSession(cooperativeId, userId) {
     try {
@@ -562,7 +582,6 @@ export async function loadOfflineSession(cooperativeId, userId) {
         const session = await loadLocalSession(sessionKey)
         if (!session) return null
         if (Date.now() > session.session_expires_ts) {
-            if (session.role === 'member') return session
             await deleteLocalSession(sessionKey)
             return null
         }
@@ -727,7 +746,7 @@ export async function validateOfflineLogin(username, passwordHash, cooperativeId
                 active_tab: 'history',
                 session_token: 'offline_' + now,
                 last_verified_ts: now,
-                session_expires_ts: expiryForSession(now, { role, userCollection: collection }),
+                session_expires_ts: expiryForSession(now),
                 created_ts: now,
             }
             await saveLocalSession(sessionKey, session)
@@ -753,12 +772,10 @@ export async function validateOfflineLogin(username, passwordHash, cooperativeId
                 }
             }
             session.last_verified_ts = _now
-            // Preserve long-lived remembered sessions; standard staff ones
-            // stay 10-min; members always get the long-lived expiry.
+            // Preserve long-lived remembered sessions; otherwise restart the
+            // 10-minute inactivity window.
             session.session_expires_ts = expiryForSession(_now, {
                 remembered: !!session.remember,
-                role: session.role,
-                userCollection: session.user_collection,
             })
             await saveLocalSession(sessionKey, session)
         }
@@ -897,7 +914,8 @@ export async function checkCurrentSessionPolicy(welcomeUser) {
 
 /**
  * Update the last_verified_ts and extend expiry after successful revalidation.
- * Members keep the long-lived expiry; staff/admin keep 10-min/remember rules.
+ * Remembered sessions stay persistent; others get a fresh 10-min inactivity
+ * window.
  */
 export async function touchSession(cooperativeId, userId) {
     const sessionKey = makeSessionKey(cooperativeId, userId)
@@ -909,8 +927,6 @@ export async function touchSession(cooperativeId, userId) {
         last_verified_ts: now,
         session_expires_ts: expiryForSession(now, {
             remembered: !!session.remember,
-            role: session.role,
-            userCollection: session.user_collection,
         }),
     })
 }
@@ -992,7 +1008,7 @@ export async function maybeCountMemberReturnVisit(welcomeUser) {
                 await saveLocalSession(key, {
                     ...existing,
                     last_verified_ts: now,
-                    session_expires_ts: now + MEMBER_TTL_MS,
+                    session_expires_ts: expiryForSession(now, { remembered: !!existing.remember }),
                 }).catch(() => {})
             }
         } catch {}
@@ -1161,7 +1177,7 @@ export async function switchMemberCooperative(targetCoopId) {
             sess.full_name = (`${mrow.last_name || ''} ${mrow.first_name || ''} ${mrow.middle_name || ''}`.trim()
                 || (mrow.username || mrow.mobile || sess.full_name))
             sess.last_verified_ts = now
-            sess.session_expires_ts = now + MEMBER_TTL_MS
+            sess.session_expires_ts = expiryForSession(now, { remembered: !!sess.remember })
             await saveLocalSession(makeSessionKey(target, String(match.memberId)), sess)
         } else {
             let coopName = target
@@ -1182,7 +1198,9 @@ export async function switchMemberCooperative(targetCoopId) {
                     || (mrow.username || mrow.mobile)),
                 cooperativeName: coopName,
                 activeTab: 'dashboard',
-                remember: undefined,
+                // Carry the login's Remember-me choice: a switch must not turn a
+                // persistent session into a 10-minute one (or the reverse).
+                remember: !!current.remember,
             })
             sess = await loadOfflineSession(target, String(match.memberId)).catch(() => null)
             if (!sess) return { ok: false, error: 'Could not open that cooperative. Please try again.' }
@@ -1245,6 +1263,9 @@ export function sessionToWelcomeUser(session) {
         fullName: session.full_name || session.username,
         registrationNo: session.registration_no || '',
         activeTab: session.active_tab || 'history',
+        // Carried so sessionStorage (written on restore / coop switch) keeps
+        // the persistent-vs-10-min rule.
+        remember: !!session.remember,
         isOfflineSession: true,
     }
 }
@@ -1292,7 +1313,7 @@ export async function discoverCooperativesOffline(username) {
         const allSessions = await getAllLocalSessions()
         const now = Date.now()
         allSessions.forEach(s => {
-            if ((s.session_expires_ts > now || s.role === 'member') && (
+            if ((s.session_expires_ts > now) && (
                 String(s.username || '').toLowerCase() === normalizedInput || 
                 String(s.member_id || '').toLowerCase() === normalizedInput || 
                 String(s.registration_no || '').toLowerCase() === normalizedInput ||

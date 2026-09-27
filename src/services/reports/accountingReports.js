@@ -3,7 +3,7 @@ import { fetchEnterprises } from '../dataService.js';
 import { formatDate } from '../../utils/formatters.js';
 
 export async function getEnterpriseAccountData(cooperativeId, user, enterpriseId, fyLabel) {
-    if (!enterpriseId) return { data: [], headers: [], title: 'Enterprise Account' };
+    if (!enterpriseId) return { data: [], headers: [], title: 'Member Remittance Record (by Account)' };
 
     const isAdmin = user.role === 'admin' || (user.permissions || '').includes('admin');
     const baseYear = fyLabel.includes('/') ? parseInt(fyLabel.split('/')[0]) : parseInt(fyLabel);
@@ -284,5 +284,5 @@ export async function getPersonalLedgerData(cooperativeId, memberId) {
         memberName += ` (${useSpecialId ? 'Member ID' : 'Reg No'}: ${memberIdStr})`;
     }
 
-    return { data, headers, title: `Personal Ledger - ${memberName}` };
+    return { data, headers, title: `Member Account Statement - ${memberName}` };
 }

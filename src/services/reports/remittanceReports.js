@@ -223,7 +223,7 @@ export async function getEODReportData(cooperativeId, dateFrom, dateTo) {
 
     const headers = ['S/N', 'Date', useSpecialId ? 'Member ID' : 'Reg No', 'Member', 'Account', 'Type', 'Bank', 'Amount', 'Description'];
     const title = dateFrom === dateTo
-        ? `End of Day Report - ${formatDate(dateFrom)}`
-        : `End of Day Report - ${formatDate(dateFrom)} to ${formatDate(dateTo)}`;
+        ? `Daily Transactions Summary - ${formatDate(dateFrom)}`
+        : `Daily Transactions Summary - ${formatDate(dateFrom)} to ${formatDate(dateTo)}`;
     return { data, headers, title };
 }
