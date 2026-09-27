@@ -11,6 +11,7 @@ function getDefaultTypesAsDocs() {
         classification: tt.classification,
         is_system_default: 1,
         is_active: 1,
+        is_locked: tt.is_locked || 0,
     }))
 }
 

@@ -1,6 +1,6 @@
 import { generateId, generateRemittanceId, escapeHtml, formatDateForInput, formatCurrency, formatNumber } from '../../utils/formatters.js';
 import { addRemittance, buildAccountBalance, fetchMemberDoc, updateMemberPaymentAdvice } from '../../services/dataService.js';
-import { createDuesTransfer, resolveDueFunding, createDueFundingTransfer } from '../../services/data/duesTransfer.js';
+import { createDuesTransfer, createDuesIncomePickup, resolveDueFunding, createDueFundingTransfer } from '../../services/data/duesTransfer.js';
 import { getRemittances } from '../../services/sqliteService.js';
 import { hasPermission } from '../../services/permissionService.js';
 import { showToast } from '../../services/toastService.js';
@@ -301,9 +301,10 @@ export function showBulkRemittanceModal(deps) {
         const creditLabel = overlay.querySelector('#bulk-creditent-label');
         if (direction === 'to_admin') {
             if (creditLabel) creditLabel.textContent = 'Admin transaction type (to House)';
-            overlay.querySelector('#bulk-credit-enterprise').innerHTML = txTypes.map(t =>
-                `<option value="${escapeHtml(t.transaction_type)}" ${t.transaction_type === selectedTxType ? 'selected' : ''}>${escapeHtml(t.transaction_type)}</option>`).join('')
-                || '<option value="">-- No types --</option>';
+            overlay.querySelector('#bulk-credit-enterprise').innerHTML = txTypes.map(t => {
+                    const locked = t.is_locked === 1 || t.is_locked === true;
+                    return `<option value="${escapeHtml(t.transaction_type)}" ${t.transaction_type === selectedTxType ? 'selected' : ''}" ${locked ? 'disabled' : ''}>${escapeHtml(t.transaction_type)}${locked ? ' Ⓒ' : ''}</option>`;
+                }).join('') || '<option value="">-- No types --</option>';
         } else {
             if (creditLabel) creditLabel.textContent = 'Credit enterprise (to)';
             if (isTransferDir()) overlay.querySelector('#bulk-credit-enterprise').innerHTML = entOptions(list, selectedCreditEntId);
@@ -876,26 +877,20 @@ export function showBulkRemittanceModal(deps) {
                                 details: [{ id: generateId(), enterprise_id: item.enterprise_id, amount: neg, notes: item.name }]
                             }, createdBy);
                         }
-                        const totalDue = validItems.reduce((s, it) => s + Math.abs(parseFloat(it.amount || 0)), 0);
-                        if (totalDue > 0) {
-                            await addRemittance({
-                                id: `${parentRemId}-INCOME`,
-                                cooperative_id: coopId,
-                                member_id: '0000000000',
-                                amount: totalDue,
-                                remittance_date: date,
-                                bank_name: 'Internal Transfer',
-                                transaction_type: 'Other Income',
-                                description: `Auto Other Income (Dues & Penalties) - ${nameOf(mid)}`,
-                                autogen: 1,
-                                loan_id: parentRemId,
-                                        status,
-                                user_role: user.role || 'member',
-                                user_roles: [user.role || 'member']
-                            }, createdBy);
-                            // Settlement transfer (header 0): -side from this
-                            // deposit, +side split per due enterprise.
-                            await createDuesTransfer({
+                         await createDuesIncomePickup({
+                             cooperativeId: coopId,
+                             parentId: parentRemId,
+                             duesItems: validItems,
+                             enterpriseData: enterpriseData || [],
+                             memberName: nameOf(mid),
+                             date,
+                             status,
+                             actor: createdBy,
+                             role: user.role || 'member'
+                         });
+                         // Settlement transfer (header 0): -side from this
+                         // deposit, +side split per due enterprise.
+                         await createDuesTransfer({
                                 cooperativeId: coopId,
                                 parentId: parentRemId,
                                 memberId: mid,
@@ -906,14 +901,14 @@ export function showBulkRemittanceModal(deps) {
                                 role: user.role || 'member',
                                 savingsLines: _bulkSavLines,
                                 duesItems: validItems
-                            });
-                        }
-                    }
-                } else {
+                             });
+                     }
+                 } else {
                     // Due / Penalty bulk charge (per-member pickups): the member
                     // is debited negative on the due/penalty enterprise and the
-                    // same value is credited positive to Other Income header-only
-                    // under admin 0000000000 (Detail = none — same convention as
+                    // same value is credited positive to the enterprise-named
+                    // header-only pickup under admin 0000000000
+                    // (Detail = none — same convention as
                     // the normal remittance dues flow and loan income pickup).
                     // No dues popup (the batch IS the charge), no advice.
                     // Funding child (Child D): the charge must be funded from a
@@ -950,21 +945,18 @@ export function showBulkRemittanceModal(deps) {
                         loan_status: status === 'Approved' ? 'Active' : 'Pending',
                         details: [{ id: generateId(), enterprise_id: ent.id, amount: chargeVal, notes: ent.account_name || ent.id }]
                     }, createdBy);
-                    await addRemittance({
-                        id: `${parentRemId}-INCOME`,
-                        cooperative_id: coopId,
-                        member_id: '0000000000',
-                        amount: creditVal,
-                        remittance_date: date,
-                        bank_name: 'Internal Transfer',
-                        transaction_type: 'Other Income',
-                        description: `Auto Other Income (Dues & Penalties) - ${nameOf(mid)}`,
-                        autogen: 1,
-                        loan_id: parentRemId,
+                    const _elseValidItems = (duesDecision?.items || []).filter(it => parseFloat(it.amount || 0) > 0);
+                    await createDuesIncomePickup({
+                        cooperativeId: coopId,
+                        parentId: parentRemId,
+                        duesItems: _elseValidItems,
+                        enterpriseData: enterpriseData || [],
+                        memberName: nameOf(mid),
+                        date,
                         status,
-                        user_role: user.role || 'member',
-                        user_roles: [user.role || 'member']
-                    }, createdBy);
+                        actor: createdBy,
+                        role: user.role || 'member'
+                    });
                     // Funding transfer child (header 0): -side (full amount) on
                     // the resolved savings/loan account, +side back onto the
                     // charge enterprise so the due/penalty balance nets to zero.

@@ -735,9 +735,35 @@ function incomeExpenseSheet(wb, pack, kind) {
     if (rows.length) {
         noteRow(ws, r, headers.length, 'Each row is one posting, identified by its remittance id, with the family it belongs to so the related rows generated alongside it can be traced. The Side column shows which side of the entry this account took.');
     }
-    fitColumns(ws);
-    freezeAndFilter(ws, res.headerRow, headers.length);
-    return ws;
+     fitColumns(ws);
+     freezeAndFilter(ws, res.headerRow, headers.length);
+     return ws;
+}
+
+function liabilityDetailSheet(wb, pack) {
+     const ws = wb.addWorksheet('Liability Detail', { pageSetup: { orientation: 'landscape' } });
+     const rows = pack.liabilityDetail;
+     const headers = ['Date', 'Remittance ID', 'Family', 'Transaction Type', 'Category', 'Classification', 'Member', 'Bank', 'Amount', 'Effect', 'Side'];
+     putBanner(ws, pack, 'Liability Detail', `Member liability postings where no enterprise leg exists (e.g. Unknown Payments)`);
+     if (!rows.length) {
+         noteRow(ws, 5, headers.length, 'No member liability postings without an enterprise leg were recorded for this period.');
+         fitColumns(ws);
+         freezeAndFilter(ws, 5, headers.length);
+         return;
+     }
+     const res = writeTable(ws, pack, 5, 'Member liabilities recognised without a matching enterprise detail', headers, rows, {
+         keys: ['date', 'remittanceId', 'family', 'transactionType', 'category', 'classification', 'member', 'bank', 'amount', 'effect', 'side'],
+         numericCols: [8, 9]
+     });
+     let r = res.nextRow;
+     totalRow(ws, r, headers.length, 'TOTAL MEMBER LIABILITY (net)', [
+         [9, round2(rows.reduce((s, x) => s + x.amount, 0))],
+         [10, round2(rows.reduce((s, x) => s + x.effect, 0))]
+     ]);
+     r += 2;
+     noteRow(ws, r, headers.length, 'These are member liability postings (e.g. Unknown Payments) that have no enterprise detail leg. The offsetting liability account keeps the trial balance in equilibrium so they do not contribute to the control difference. Control C14 on the Control Checks sheet proves this section agrees with the trial balance.');
+     fitColumns(ws);
+     freezeAndFilter(ws, res.headerRow, headers.length);
 }
 
 function mappingSheet(wb, pack) {
@@ -905,9 +931,10 @@ export async function buildAccountingPackWorkbook(pack) {
     memberSheet(wb, pack);
     loanSheet(wb, pack);
     loanMovementsSheet(wb, pack);
-    incomeExpenseSheet(wb, pack, 'income');
-    incomeExpenseSheet(wb, pack, 'expense');
-    mappingSheet(wb, pack);
+     incomeExpenseSheet(wb, pack, 'income');
+     incomeExpenseSheet(wb, pack, 'expense');
+     liabilityDetailSheet(wb, pack);
+     mappingSheet(wb, pack);
     bankRecSheet(wb, pack);
     auditSheet(wb, pack);
     exceptionSheet(wb, pack);

@@ -151,9 +151,20 @@ export async function updateRemittance(id, data, modifiedBy) {
     const existing = await getDocById_Global('remittance', id)
     if (!existing) throw new Error('Remittance not found')
     const now = new Date().toISOString()
+    let category = data.category || existing.category || '';
+    if (!data.category && data.transaction_type && data.cooperative_id) {
+        try {
+            const types = await getTransactionTypes(String(data.cooperative_id));
+            const tt = types.find(t => t.transaction_type === data.transaction_type);
+            if (tt && tt.classification) {
+                category = tt.classification;
+            }
+        } catch (e) { }
+    }
     const doc = {
         ...existing,
         ...data,
+        category,
         id: existing.id,
         is_deleted: 0,
         modified_at: now,

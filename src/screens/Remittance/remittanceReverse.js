@@ -6,7 +6,7 @@ import { hasPermission } from '../../services/permissionService.js';
 import { showToast } from '../../services/toastService.js';
 
 // --- Reverse transaction(s): mirror a remittance group (parent + ALL autogen
-// children, including the +ve admin 0000000000 Other Income pickup) with
+// children, including the +ve admin 0000000000 enterprise-named pickup) with
 // negated amounts. Multi-select cascades exactly like delete: the selected
 // ids plus every descendant are collected first and each mirrored once.
 // Mirrors are INDEPENDENT records (no loan_id back to the original group;
@@ -159,7 +159,7 @@ export async function showReverseModal(deps) {
           <button type="button" id="reverse-close" style="background: transparent; border: none; font-size: 1.5rem; cursor: pointer; color: var(--text-muted);">&times;</button>
         </div>
         <div style="padding: 1.1rem 1.25rem; overflow-y: auto;">
-          <p style="margin: 0 0 0.75rem 0; font-size: 0.85rem; color: var(--text-muted);">Each record below is mirrored with the opposite amount (dated today). Children — dues debits and the admin Other Income pickup included — are reversed with their parent. Originals stay untouched.</p>
+          <p style="margin: 0 0 0.75rem 0; font-size: 0.85rem; color: var(--text-muted);">Each record below is mirrored with the opposite amount (dated today). Children — dues debits and the admin enterprise-named pickup included — are reversed with their parent. Originals stay untouched.</p>
           ${groups.map(g => `
             <div style="border: 1px solid var(--border-light); border-radius: var(--radius-sm); padding: 0.6rem 0.8rem; margin-bottom: 0.5rem; font-size: 0.83rem;">
               <div style="font-weight: 700; color: var(--text-primary);">R-${shortRef(g.parent.id)} — ${escapeHtml(g.parent.description || g.parent.transaction_type || '')}</div>

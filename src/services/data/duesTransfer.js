@@ -9,6 +9,10 @@
 // dues were funded out of this payment's savings. Same family conventions as
 // the DUE/INCOME children (autogen=1, loan_id=parent id, Internal Transfer)
 // so approve/decline/delete/reverse cascades follow the parent.
+//
+// The INCOME pickup (Child B) now uses the enterprise name as transaction type
+// dynamically: if the enterprise is marked revenue, classification is
+// "Operating Income"; otherwise "Member Liability".
 import { generateId } from '../../utils/formatters.js';
 import { addRemittance } from './remittances.js';
 import { getDocById_Global, saveDoc } from '../sqliteService.js';
@@ -169,31 +173,45 @@ export async function createDueDebitChildren({ cooperativeId, parentId, memberId
     return { count: idx, total, ids };
 }
 
-// Admin pickup (Child B): header-only, Detail = none. Returns id or null.
-export async function createDuesIncomePickup({ cooperativeId, parentId, memberName, date, status, actor, role, total, parentCreatedAt, parentModifiedAt }) {
-    if (!(total > 0)) return null;
-    const id = await freeChildId(`${String(parentId)}-INCOME`);
-    await addRemittance({
-        id,
-        cooperative_id: String(cooperativeId),
-        member_id: '0000000000',
-        amount: total,
-        remittance_date: date,
-        bank_name: 'Internal Transfer',
-        transaction_type: 'Other Income',
-        description: `Auto Other Income (Dues & Penalties) - ${memberName || ''}`.trim(),
-        autogen: 1,
-        loan_id: String(parentId),
-        parent_remittance_id: String(parentId),
-        status,
-        user_role: role || 'admin',
-        user_roles: [role || 'admin']
-    }, actor);
-    if (parentCreatedAt) {
-        const hdr = await getDocById_Global('remittance', id).catch(() => null);
-        if (hdr) await alignChildToParent(hdr, { created_at: parentCreatedAt, modified_at: parentModifiedAt, actor });
+// Admin pickup (Child B): header-only, Detail = none. One pickup per
+// due/penalty enterprise. Transaction type is the enterprise name
+// (dynamic per cooperative); classification is "Operating Income"
+// when the enterprise is marked revenue, else "Member Liability".
+// Returns array of ids or empty array.
+export async function createDuesIncomePickup({ cooperativeId, parentId, duesItems, enterpriseData, memberName, date, status, actor, role, parentCreatedAt, parentModifiedAt }) {
+    if (!duesItems || duesItems.length === 0) return [];
+    const totalsByEnt = duesTotalsByEnt(duesItems);
+    const ids = [];
+    for (const [eid, v] of Object.entries(totalsByEnt)) {
+        const ent = (enterpriseData || []).find(e => String(e.id) === String(eid));
+        const entName = ent?.account_name || eid;
+        const isRevenue = !!ent?.revenue;
+        const classification = isRevenue ? 'Operating Income' : 'Member Liability';
+        const id = await freeChildId(`${String(parentId)}-INCOME`);
+        await addRemittance({
+            id,
+            cooperative_id: String(cooperativeId),
+            member_id: '0000000000',
+            amount: v.amount,
+            remittance_date: date,
+            bank_name: 'Internal Transfer',
+            transaction_type: entName,
+            category: classification,
+            description: `Auto ${entName} (Dues & Penalties) - ${memberName || ''}`.trim(),
+            autogen: 1,
+            loan_id: String(parentId),
+            parent_remittance_id: String(parentId),
+            status,
+            user_role: role || 'admin',
+            user_roles: [role || 'admin']
+        }, actor);
+        ids.push(id);
+        if (parentCreatedAt) {
+            const hdr = await getDocById_Global('remittance', id).catch(() => null);
+            if (hdr) await alignChildToParent(hdr, { created_at: parentCreatedAt, modified_at: parentModifiedAt, actor });
+        }
     }
-    return id;
+    return ids;
 }
 
 // The settlement transfer (Child C): header 0, -side peeled from the parent's

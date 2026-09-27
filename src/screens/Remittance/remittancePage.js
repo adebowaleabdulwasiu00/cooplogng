@@ -1,5 +1,5 @@
 import { fetchRemittances, fetchEnterprises, fetchAllMembers, addRemittance, updateRemittance, fetchBanks, buildAccountBalance, fetchLoanById, fetchGuarantorStats, fetchMemberDoc, fetchTransactionTypes, fetchRemittancesPage, deleteRemittance, fetchMemberPaymentAdvise, cleanupRemittanceFamily, updateMemberPaymentAdvice } from '../../services/dataService.js';
-import { createDuesTransfer } from '../../services/data/duesTransfer.js';
+import { createDuesTransfer, createDuesIncomePickup } from '../../services/data/duesTransfer.js';
 import { hasPermission } from '../../services/permissionService.js';
 import { formatCurrency, formatDate, formatDateForInput, escapeHtml, getTimestampMs, generateId, generateRemittanceId, wrapDateInput, formatDateTime, getInitials, timestampTail } from '../../utils/formatters.js';
 import { showToast } from '../../services/toastService.js';
@@ -875,7 +875,7 @@ import { save as persistState, load as loadPersisted } from '../../services/stat
           <h3 style="margin: 0;">Compulsory Dues & Penalties</h3>
           <button type="button" class="close-dues-btn" style="background: transparent; border: none; font-size: 1.5rem; cursor: pointer; color: var(--text-muted);">&times;</button>
         </div>
-        <p style="margin: 0 0 1rem 0; font-size: 0.85rem; color: var(--text-muted);">Set the amounts to charge. They will be debited from the member and credited to Other Income as linked auto entries.</p>
+        <p style="margin: 0 0 1rem 0; font-size: 0.85rem; color: var(--text-muted);">Set the amounts to charge. They will be debited from the member and credited to the enterprise-named pickup as linked auto entries.</p>
         <div style="display: flex; flex-direction: column; gap: 0.6rem;">${rowsHtml}</div>
         <div style="display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 1.5rem; border-top: 1px solid var(--border-light); padding-top: 1.5rem;">
           <button type="button" class="btn btn-secondary dues-dont-charge">Don&apos;t Charge</button>
@@ -1048,7 +1048,14 @@ import { save as persistState, load as loadPersisted } from '../../services/stat
     try {
       formData.details = formData.details.filter(d => parseFloat(d.amount || 0) !== 0 || !!d.loan_info);
       
-      let txType = formData.transaction_type;
+       let txType = formData.transaction_type;
+       const lockedTypes = transactionTypes?.filter(t => t.is_locked === 1 || t.is_locked === true).map(t => t.transaction_type) || [];
+       if (lockedTypes.includes(txType)) {
+        showToast('Validation Error: This transaction type is system-managed and cannot be manually selected.', 'error');
+        if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = editMode ? 'Update Remittance' : 'Save Remittance'; }
+        highlightField('transaction_type');
+        return;
+      }
       let memberId = formData.member_id;
       const amountVal = formData.amount;
       const bankName = formData.bank_name;
@@ -1102,6 +1109,13 @@ import { save as persistState, load as loadPersisted } from '../../services/stat
           return;
         }
         if ((bankName || '').toLowerCase() === 'internal transfer') {
+          const lockedTxTypes = transactionTypes.filter(t => t.is_locked === 1 || t.is_locked === true).map(t => t.transaction_type);
+          if (lockedTxTypes.includes('Internal Transfer')) {
+            showToast('Validation Error: Internal Transfer is system-managed and cannot be manually used.', 'error');
+            if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = editMode ? 'Update Remittance' : 'Save Remittance'; }
+            highlightField('bank_name');
+            return;
+          }
           if (!formData.description.trim()) {
             highlightField('description');
             showToast('Validation Error: Note / Description is required for Internal Transfer.', 'error');
@@ -1117,6 +1131,12 @@ import { save as persistState, load as loadPersisted } from '../../services/stat
         } else {
           if (amountVal === 0) {
             if (formData.details.length > 1 && Math.abs(detailsSum) < 0.01) {
+              const lockedTxTypes = transactionTypes.filter(t => t.is_locked === 1 || t.is_locked === true).map(t => t.transaction_type);
+              if (lockedTxTypes.includes('Internal Transfer')) {
+                showToast('Validation Error: Internal Transfer is system-managed and cannot be manually used.', 'error');
+                if (submitBtn) { submitBtn.disabled = false; submitBtn.innerText = editMode ? 'Update Remittance' : 'Save Remittance'; }
+                return;
+              }
               txType = 'Internal Transfer';
             } else {
               showToast('Validation Error: Amount cannot be zero except for balanced Internal Transfers.', 'error');
@@ -1232,7 +1252,7 @@ import { save as persistState, load as loadPersisted } from '../../services/stat
       // Compulsory dues & penalties: distribution rows for compulsory dues are
       // disabled (always 0 there), so dues are collected here via popup AFTER
       // the user confirms save. Charge => linked autogen children
-      // (member debits + Other Income pickup). Don't charge => parent only.
+      // (member debits + enterprise-named pickup). Don't charge => parent only.
       // Skipped for loan/withdrawal/coop-wide transactions like before.
       const getAccountTypeLocal = (acc) => (acc?.account_type || acc?.type || acc?.Account_Type || '').toLowerCase();
       const localLoanEntIds = enterpriseData.filter(e => getAccountTypeLocal(e) === 'loan').map(e => e.id);
@@ -1499,13 +1519,14 @@ import { save as persistState, load as loadPersisted } from '../../services/stat
       // Child A (per enterprise, member debit): negative amount + negative
       // detail on that enterprise, Internal Transfer. Typing 100 or -100
       // both store -100. Child B (single pickup): positive header-only total
-      // to Other Income under admin 0000000000 with NO details (header
+      // to the enterprise name (transaction_type = enterprise name, category
+      // = Operating Income or Member Liability per the enterprise's revenue flag)
+      // under admin 0000000000 with NO details (header
       // carries the credit; same convention as the loan income pickup).
       // Child C (single settlement transfer): header 0 on the member, -side
       // peeled from this payment's savings lines + +side split per due
       // enterprise (one record covers all charges). Validation above already
       // guaranteed dues <= savings, so the peel cannot shortfall here.
-      // Categories resolve from transaction-type settings inside addRemittance.
       if (duesDecision && duesDecision.charge && Array.isArray(duesDecision.items) && duesDecision.items.length > 0) {
           const validItems = duesDecision.items.filter(it => parseFloat(it.amount || 0) > 0);
           let dueIndex = 0;
@@ -1534,24 +1555,22 @@ import { save as persistState, load as loadPersisted } from '../../services/stat
                   }]
               }, isMember ? 'self' : user.username);
           }
-          const totalDue = validItems.reduce((s, it) => s + Math.abs(parseFloat(it.amount || 0)), 0);
-          if (totalDue > 0) {
-              await addRemittance({
-                  id: `${parentRemId}-INCOME`,
-                  cooperative_id: user.cooperativeId,
-                  member_id: '0000000000',
-                  amount: totalDue,
-                  remittance_date: formData.remittance_date,
-                  bank_name: 'Internal Transfer',
-                  transaction_type: 'Other Income',
-                   description: `Auto Other Income (Dues & Penalties) - ${pickupMemberName}`,
-                  autogen: 1,
-                  loan_id: parentRemId,
-                  status,
-                  user_role: user.role || 'member',
-                  user_roles: [user.role || 'member']
-              }, isMember ? 'self' : user.username);
-              // Child C: settlement transfer (header 0). Funded from this
+           const _pickupMemberName = pickupMemberName || '';
+           const _pickupDate = formData.remittance_date;
+           const _pickupActor = isMember ? 'self' : user.username;
+           const _pickupRole = user.role || 'member';
+           await createDuesIncomePickup({
+               cooperativeId: user.cooperativeId,
+               parentId: parentRemId,
+               duesItems: validItems,
+               enterpriseData: enterpriseData || [],
+               memberName: _pickupMemberName,
+               date: _pickupDate,
+               status,
+               actor: _pickupActor,
+               role: _pickupRole
+           });
+           // Child C: settlement transfer (header 0). Funded from this
               // payment's own savings lines (due/penalty lines excluded).
               const _duePenIdsC = new Set();
               (enterpriseData || []).forEach(ent => {
@@ -1572,15 +1591,14 @@ import { save as persistState, load as loadPersisted } from '../../services/stat
                   role: user.role || 'member',
                   savingsLines: _savLines,
                   duesItems: validItems
-              });
-          }
-      }
+               });
+       }
 
-      // Save savings withdrawal charges autogen remittances (Charge path only).
-      // Child A (per charge, member debit): negative amount + negative detail
-      // on the savings enterprise, Internal Transfer. Child B (single pickup):
-      // positive header-only total to Other Income under admin 0000000000.
-      if (savingsChargesDecision && savingsChargesDecision.charge && Array.isArray(savingsChargesDecision.items) && savingsChargesDecision.items.length > 0) {
+       // Save savings withdrawal charges autogen remittances (Charge path only).
+       // Child A (per charge, member debit): negative amount + negative detail
+       // on the savings enterprise, Internal Transfer. Child B (single pickup):
+       // positive header-only total to Other Income under admin 0000000000.
+       if (savingsChargesDecision && savingsChargesDecision.charge && Array.isArray(savingsChargesDecision.items) && savingsChargesDecision.items.length > 0) {
           const savEntId = formData.details.find(d =>
               localSavingsEntIds.includes(d.enterprise_id || d.item) && d.amount < 0
           );

@@ -282,9 +282,10 @@ export async function buildAccountingPack({ cooperativeId, startDate, endDate, c
     const postings = [];
     const exceptions = [];
     const auditRows = [];
-    const incomeRows = [];
-    const expenseRows = [];
-    const coopAssetRows = [];
+     const incomeRows = [];
+     const expenseRows = [];
+     const liabilityRows = [];
+     const coopAssetRows = [];
     const cashTxRows = [];
     const internalMemo = { rows: [], net: 0 };
     const unattributedLoan = [];
@@ -391,10 +392,20 @@ export async function buildAccountingPack({ cooperativeId, startDate, endDate, c
             }
         }
 
-        // ---- 3. Classification leg
-        const classAcc = getClassAccount(r);
-        if (classAcc && Math.abs(H) >= EPS) {
-            addPosting(classAcc, { date: d, debit: H < 0, amount: Math.abs(H), meta: { remittanceId: String(r.id), leg: 'Classification', detailId: '' } });
+         // ---- 3. Classification leg
+         const classAcc = getClassAccount(r);
+         const type = T(r.transaction_type) || cat || 'Unknown';
+         const hasDetails = rdets.some(d => Math.abs(num(d.amount)) >= EPS);
+         const isMemberLiab = cat === 'Member Liability' || cat === 'Liability';
+         // "Unknown Payment" (Member Liability with no identifiable owner)
+         // needs an offsetting liability posting so the trial balance
+         // does not show a control difference. Only add when there are
+         // no detail legs (no known enterprise/member to credit).
+         const classAccForLiab = (!classAcc && isMemberLiab && !hasDetails)
+             ? reg.get('liability', type) : null;
+         const effectiveClassAcc = classAcc || classAccForLiab;
+        if (effectiveClassAcc && Math.abs(H) >= EPS) {
+            addPosting(effectiveClassAcc, { date: d, debit: H < 0, amount: Math.abs(H), meta: { remittanceId: String(r.id), leg: 'Classification', detailId: '' } });
             if (inPeriod) {
                 const row = {
                     date: d, remittanceId: String(r.id), family, transactionType: txType,
@@ -402,15 +413,12 @@ export async function buildAccountingPack({ cooperativeId, startDate, endDate, c
                     member: isPseudo ? `${PSEUDO_MEMBER} (Cooperative)` : memberName(mem),
                     bank: isBank ? bankName : INTERNAL_TRANSFER,
                     amount: round2(Math.abs(H)),
-                    // Signed effect on the account's own balance: a positive
-                    // income row raises income, a positive expense row raises
-                    // expenditure. A negative header is a reversal, so the
-                    // detail sheet foots to the trial balance, not to gross.
-                    effect: round2(classAcc.type === 'Income' ? H : -H),
+                    effect: round2(effectiveClassAcc.type === 'Income' ? H : -H),
                     side: H < 0 ? 'Debit' : 'Credit'
                 };
-                if (classAcc.type === 'Income') incomeRows.push(row);
-                else if (classAcc.type === 'Expense') expenseRows.push(row);
+                if (effectiveClassAcc.type === 'Income') incomeRows.push(row);
+                else if (effectiveClassAcc.type === 'Expense') expenseRows.push(row);
+                else if (effectiveClassAcc.type === 'Liability') liabilityRows.push(row);
                 else coopAssetRows.push(row);
             }
         }
@@ -429,9 +437,9 @@ export async function buildAccountingPack({ cooperativeId, startDate, endDate, c
 
         // ---- 5. Exception detection
         if (inPeriod) {
-            const legs = (isBank && Math.abs(H) >= EPS ? 1 : 0) + rdets.filter(x => Math.abs(num(x.amount)) >= EPS).length + (classAcc && Math.abs(H) >= EPS ? 1 : 0);
-            const oneLegged = !isBank && rdets.length <= 1 && !classAcc && Math.abs(H) >= EPS;
-            const bankNoDetails = isBank && rdets.length === 0 && !classAcc && Math.abs(H) >= EPS;
+             const legs = (isBank && Math.abs(H) >= EPS ? 1 : 0) + rdets.filter(x => Math.abs(num(x.amount)) >= EPS).length + (effectiveClassAcc && Math.abs(H) >= EPS ? 1 : 0);
+             const oneLegged = !isBank && rdets.length <= 1 && !effectiveClassAcc && Math.abs(H) >= EPS;
+             const bankNoDetails = isBank && rdets.length === 0 && !effectiveClassAcc && Math.abs(H) >= EPS;
             const transferWithBank = isBank && NON_POSTING_CATS.includes(cat) && rdets.length === 0;
 
             if (transferWithBank) {
@@ -988,12 +996,14 @@ export async function buildAccountingPack({ cooperativeId, startDate, endDate, c
 
     const tbLoanAsset = round2(ordered.filter(a => a.bucket === 'loan').reduce((s, a) => s + a.openingNet + a.periodNet, 0));
     const unattributedLoanNet = round2(unattributedLoan.reduce((s, x) => s + x.amount, 0));
-    const incomeDetailTotal = round2(incomeRows.reduce((s, r) => s + r.effect, 0));
-    const tbIncomePeriod = round2(ordered.filter(a => a.bucket === 'income').reduce((s, a) => s + a.periodNet, 0));
-    const expenseDetailTotal = round2(expenseRows.reduce((s, r) => s + r.effect, 0));
-    const tbExpensePeriod = round2(ordered.filter(a => a.bucket === 'expense').reduce((s, a) => s + a.periodNet, 0));
-    const coopAssetTotal = round2(coopAssetRows.reduce((s, r) => s + r.effect, 0));
-    const tbCoopAsset = round2(ordered.filter(a => a.bucket === 'coopAsset').reduce((s, a) => s + a.periodNet, 0));
+     const incomeDetailTotal = round2(incomeRows.reduce((s, r) => s + r.effect, 0));
+     const tbIncomePeriod = round2(ordered.filter(a => a.bucket === 'income').reduce((s, a) => s + a.periodNet, 0));
+     const expenseDetailTotal = round2(expenseRows.reduce((s, r) => s + r.effect, 0));
+     const tbExpensePeriod = round2(ordered.filter(a => a.bucket === 'expense').reduce((s, a) => s + a.periodNet, 0));
+     const coopAssetTotal = round2(coopAssetRows.reduce((s, r) => s + r.effect, 0));
+     const tbCoopAsset = round2(ordered.filter(a => a.bucket === 'coopAsset').reduce((s, a) => s + a.periodNet, 0));
+     const liabilityDetailTotal = round2(liabilityRows.reduce((s, r) => s + r.effect, 0));
+     const tbLiabilityPeriod = round2(ordered.filter(a => a.bucket === 'liability').reduce((s, a) => s + a.periodNet, 0));
 
     // Gross member credits and debits, for the control that proves both sides of
     // the member statement are populated and foot to the period movement.
@@ -1025,8 +1035,9 @@ export async function buildAccountingPack({ cooperativeId, startDate, endDate, c
         { id: 'C11', name: 'Loan movements traceable to a loan record', description: 'Loan account movements that cannot be matched to an individual loan record, counted and quantified.', valueA: unattributedLoan.length, valueB: 0, difference: unattributedLoan.length, status: unattributedLoan.length ? 'REVIEW' : 'PASS', note: `These movements are included in the loan receivable in the trial balance but cannot be shown against an individual loan. Unmatched count ${unattributedLoan.length}, net detail amount ${unattributedLoanNet.toLocaleString()}.` },
         { id: 'C12', name: 'Cooperative asset movements', description: 'Capitalised asset movements must be reported as assets, never as expenditure.', valueA: coopAssetTotal, valueB: tbCoopAsset, difference: round2(coopAssetTotal - tbCoopAsset), status: status(coopAssetTotal - tbCoopAsset), note: 'Confirms the Expense Detail sheet excludes capitalised asset purchases.' },
         { id: 'C13', name: 'One-legged non-cash entries', description: 'Internal transfer rows that form a family of their own and so have no related row to balance them.', valueA: oneLeggedCount, valueB: 0, difference: oneLeggedCount, status: oneLeggedCount ? 'REVIEW' : 'PASS', note: `These rows contribute to the trial balance control difference in C1. Count ${oneLeggedCount}, net header amount ${oneLeggedNet.toLocaleString()}. Each is listed as ONE_LEGGED_NON_CASH on the Data Quality Exceptions sheet, or summarised there when beyond the largest 200. They are overwhelmingly legacy rows that recorded a member balance without a cash leg.` },
-        { id: 'C14', name: 'Loan receivable roll-forward', description: 'Opening loan receivable + disbursements - principal repaid = closing loan receivable.', valueA: tbLoanAssetClosingFromOpening, valueB: tbLoanAsset, difference: loanRollForwardDiff, status: status(loanRollForwardDiff), note: 'Disbursements and repayments are taken from the signed loan-account details posted in the period, so the roll-forward uses the same figures the Loan Movements sheet lists. Any difference is loan-account movement that no detail row explains, and is reported rather than absorbed.' }
-    ];
+         { id: 'C14', name: 'Loan receivable roll-forward', description: 'Opening loan receivable + disbursements - principal repaid = closing loan receivable.', valueA: tbLoanAssetClosingFromOpening, valueB: tbLoanAsset, difference: loanRollForwardDiff, status: status(loanRollForwardDiff), note: 'Disbursements and repayments are taken from the signed loan-account details posted in the period, so the roll-forward uses the same figures the Loan Movements sheet lists. Any difference is loan-account movement that no detail row explains, and is reported rather than absorbed.' },
+         { id: 'C16', name: 'Liability detail vs trial balance', description: 'Sum of signed liability effects must equal the trial balance liability movement for the period.', valueA: liabilityDetailTotal, valueB: tbLiabilityPeriod, difference: round2(liabilityDetailTotal - tbLiabilityPeriod), status: status(liabilityDetailTotal - tbLiabilityPeriod), note: 'Covers member liability postings (e.g. Unknown Payments) that have no enterprise detail leg. The offsetting liability account keeps the trial balance in equilibrium, so these entries do not contribute to the control difference. Confirms the Liability Detail sheet agrees with the trial balance.' }
+     ];
 
     const periodIncome = round2(-tbIncomePeriod);
     const periodExpense = round2(tbExpensePeriod);
@@ -1075,6 +1086,7 @@ export async function buildAccountingPack({ cooperativeId, startDate, endDate, c
         loanRegister: { rows: loanRows, movements: loanMoveRows, outstandingTotal: loanOutstandingTotal, accountClosing: loanAccountClosing },
         incomeDetail: incomeRows,
         expenseDetail: expenseRows,
+        liabilityDetail: liabilityRows,
         coopAssetDetail: coopAssetRows,
         bankReconciliation: bankRecs.map(b => ({
             bank: T(b.bank_name), period: T(b.period_month), status: T(b.status),

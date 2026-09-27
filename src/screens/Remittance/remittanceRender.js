@@ -709,7 +709,10 @@ export function render(container, deps) {
                   <label>Transaction Type</label>
                   <select name="transaction_type" style="width: 100%;" ${previewMode && !editMode ? 'disabled' : ''}>
                     <option value="">-- Select Transaction Type --</option>
-                    ${transactionTypes.filter(t => t.is_active).map(t => `<option value="${t.transaction_type}" ${formData.transaction_type === t.transaction_type ? 'selected' : ''}>${t.transaction_type}</option>`).join('')}
+                    ${transactionTypes.filter(t => t.is_active).map(t => {
+                        const locked = t.is_locked === 1 || t.is_locked === true;
+                        return `<option value="${t.transaction_type}" ${formData.transaction_type === t.transaction_type ? 'selected' : ''} ${locked ? 'disabled title="This transaction type is system-managed and cannot be manually selected"' : ''}>${t.transaction_type}${locked ? ' Ⓒ' : ''}</option>`;
+                    }).join('')}
                   </select>
                 </div>
               </form>
