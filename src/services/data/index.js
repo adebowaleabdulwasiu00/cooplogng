@@ -18,8 +18,8 @@ export {
     approveGuarantorRequest, rejectGuarantorRequest, setGuarantorDecision, approveLoanRequest, declineLoanRequest
 } from './loans.js'
 export {
-    getReconciliationTotals, getReconciliationSummary,
-    saveReconciliationSummary, unsealReconciliation
+    getReconciliationTotals, getReconciliationTotalsByDateRange, getReconciliationSummary,
+    getAllReconciliationSummaries, saveReconciliationSummary, unsealReconciliation
 } from './reconciliation.js'
 export { buildAccountBalance, buildMemberLedger } from './balance.js'
 export {

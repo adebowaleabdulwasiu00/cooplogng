@@ -20,7 +20,7 @@ export const TABLE_COLUMNS = {
     remittance_detail: ['id', 'cooperative_id', 'remittance_id', 'enterprise_id', 'amount', 'auto_description', 'loan_info', 'created_by', 'created_at', 'modified_by', 'modified_at', 'is_synced', 'is_deleted', 'sync_at', 'deleted_at'],
     notifications: ['id', 'cooperative_id', 'recipient_id', 'viewed', 'type', 'title', 'message', 'data', 'is_read', 'created_at', 'created_by', 'modified_at', 'is_synced', 'is_deleted', 'sync_at'],
     payment_advise: ['id', 'cooperative_id', 'member_id', 'enterprise_id', 'amount', 'created_by', 'created_at', 'modified_by', 'modified_at', 'is_synced', 'is_deleted', 'sync_at', 'deleted_at'],
-    bank_reconciliation_summary: ['id', 'cooperative_id', 'bank_name', 'period_month', 'bank_total_cr', 'bank_total_dr', 'system_total_cr', 'system_total_dr', 'status', 'created_at', 'created_by', 'modified_by', 'is_synced', 'is_deleted', 'sync_at'],
+    bank_reconciliation_summary: ['id', 'cooperative_id', 'bank_name', 'period_month', 'period_start', 'period_end', 'bank_total_cr', 'bank_total_dr', 'system_total_cr', 'system_total_dr', 'status', 'created_at', 'created_by', 'modified_by', 'is_synced', 'is_deleted', 'sync_at'],
     feedback: ['id', 'cooperative_id', 'member_id', 'subject', 'message', 'rating', 'created_at', 'created_by', 'modified_at', 'modified_by', 'is_deleted', 'is_synced', 'sync_at'],
     app_settings: ['key', 'value']
 }

@@ -1,4 +1,4 @@
-import { getReconciliationTotals, saveReconciliationSummary, fetchBanks, getReconciliationSummary, unsealReconciliation } from '../services/dataService.js'
+import { getReconciliationTotals, saveReconciliationSummary, fetchBanks, getReconciliationSummary, getAllReconciliationSummaries, unsealReconciliation } from '../services/dataService.js'
 import { hasPermission } from '../services/permissionService.js'
 import { formatCurrency, escapeHtml } from '../utils/formatters.js'
 import { showToast } from '../services/toastService.js'
@@ -21,16 +21,6 @@ export async function renderReconciliation(state, container) {
         </div>
       </div>`
     return
-  }
-
-  // Generate last 12 months
-  const months = []
-  const d = new Date()
-  for (let i = 0; i < 12; i++) {
-    const mm = String(d.getMonth() + 1).padStart(2, '0')
-    const yyyy = d.getFullYear()
-    months.push({ label: `${d.toLocaleString('default', { month: 'long' })} ${yyyy}`, value: `${yyyy}-${mm}` })
-    d.setMonth(d.getMonth() - 1)
   }
 
   // Fetch Banks (spinner first — same workspace loader as other pages)
@@ -67,6 +57,32 @@ export async function renderReconciliation(state, container) {
                 ${months.map(m => `<option value="${m.value}">${m.label}</option>`).join('')}
               </select>
             </label>
+            <div style="margin-top: 0.5rem;">
+              <label class="field">
+                <span>Period From</span>
+                <input type="date" id="recon-from" step="1" style="width: 100%; padding: 0.375rem 0.5rem; font-size: 0.9rem;">
+              </label>
+              <label class="field" style="margin-top: 0.5rem;">
+                <span>Period To</span>
+                <input type="date" id="recon-to" step="1" style="width: 100%; padding: 0.375rem 0.5rem; font-size: 0.9rem;">
+              </label>
+            </div>
+<div id="recon-calendar-legend" style="margin-top: 0.5rem; font-size: 0.75rem; color: var(--text-muted);">
+              <strong>Sealed periods for this bank:</strong> <span id="sealed-periods-text">—</span>
+            </div>
+          </div>
+
+        <!-- Selection Sidebar -->
+        <div class="card" style="background: var(--bg-card); border: 1px solid var(--border-light); height: 100%;">
+          <h3 style="margin-top: 0; font-size: 1.1rem; border-bottom: 1px solid var(--border-light); padding-bottom: 0.75rem; margin-bottom: 1rem; color: var(--text-primary);">Parameters</h3>
+          <div class="form" style="margin-top: 0.5rem;">
+            <label class="field">
+              <span>Period</span>
+              <select id="recon-month">
+                <option value="">Select Month</option>
+                ${months.map(m => `<option value="${m.value}">${m.label}</option>`).join('')}
+              </select>
+            </label>
             <label class="field">
               <span>Bank Account</span>
               <select id="recon-bank">
@@ -76,8 +92,6 @@ export async function renderReconciliation(state, container) {
             </label>
           </div>
         </div>
-
-        <!-- Statement Totals -->
         <div class="card" style="background: var(--bg-card); border: 1px solid var(--border-light); height: 100%;">
           <h3 style="margin-top: 0; font-size: 1.1rem; border-bottom: 1px solid var(--border-light); padding-bottom: 0.75rem; margin-bottom: 1rem; color: var(--text-primary);">Statement Totals</h3>
           <div class="form" style="margin-top: 0.5rem;">
@@ -151,7 +165,7 @@ export async function renderReconciliation(state, container) {
 
   // Persistence logic — uses centralized statePersistence module
   const DRAFT_KEY = `recon-draft-${state.welcomeUser.cooperativeId}`
-  const inputs = ['recon-month', 'recon-bank', 'bank-cr', 'bank-dr']
+  const inputs = ['recon-from', 'recon-to', 'bank-cr', 'bank-dr']
   
   const saveDraft = () => {
     const draft = {}
@@ -175,10 +189,87 @@ export async function renderReconciliation(state, container) {
 
   loadDraft()
 
+  // Compute sealed period breakdown text for a given date range and list of sealed summaries
+  const computeSealedBreakdown = (from, to, summaries) => {
+    if (!from || !to || !summaries || summaries.length === 0) return ''
+    
+    const rangeStart = new Date(from)
+    const rangeEnd = new Date(to)
+    
+    // Collect all sealed intervals that overlap with the range
+    const sealedIntervals = summaries
+      .filter(s => s.status !== 'deleted')
+      .map(s => {
+        const sStart = new Date(String(s.period_start))
+        const sEnd = new Date(String(s.period_end))
+        // Check overlap
+        if (sEnd >= rangeStart && sStart <= rangeEnd) {
+          // Compute overlap
+          const overlapStart = sStart > rangeStart ? sStart : rangeStart
+          const overlapEnd = sEnd < rangeEnd ? sEnd : rangeEnd
+          return { start: overlapStart, end: overlapEnd }
+        }
+        return null
+      })
+      .filter(i => i !== null)
+      .sort((a, b) => a.start - b.start)
+    
+    if (sealedIntervals.length === 0) return 'no sealed periods in this range'
+    
+    // Build the breakdown text
+    const parts = []
+    let current = rangeStart
+    
+    for (const interval of sealedIntervals) {
+      // Add unsealed gap before this sealed interval
+      if (interval.start > current) {
+        const s = formatDate(current)
+        const e = formatDate(new Date(interval.start.getTime() - 86400000)) // day before
+        parts.push(`${s} to ${e} not sealed`)
+      }
+      // Add sealed interval
+      parts.push(`${formatDate(interval.start)} to ${formatDate(interval.end)} sealed`)
+      current = new Date(interval.end.getTime() + 86400000) // next day
+    }
+    
+    // Add remaining unsealed gap after last sealed interval
+    if (current <= rangeEnd) {
+      const s = formatDate(current)
+      const e = formatDate(rangeEnd)
+      parts.push(`${s} to ${e} not sealed`)
+    }
+    
+    return parts.join('; ')
+  }
+  
+  const formatDate = (d) => {
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, '0')
+    const da = String(d.getDate()).padStart(2, '0')
+    return `${y}-${m}-${da}`
+  }
+
+  updateCalendarLegend = async (bankName) => {
+    const from = document.getElementById('recon-from').value
+    const to = document.getElementById('recon-to').value
+    if (!bankName || !from || !to) {
+      document.getElementById('sealed-periods-text').innerText = '—'
+      return
+    }
+    try {
+      const summaries = await getAllReconciliationSummaries(bankName, state.welcomeUser.cooperativeId)
+      const breakdown = computeSealedBreakdown(from, to, summaries)
+      document.getElementById('sealed-periods-text').innerText = breakdown || '—'
+    } catch (err) {
+      console.error("Error updating calendar legend", err)
+      document.getElementById('sealed-periods-text').innerText = '—'
+    }
+  }
+
   inputs.forEach(id => {
       document.getElementById(id)?.addEventListener('input', () => {
           saveDraft()
-          if (id === 'recon-month' || id === 'recon-bank') {
+          if (id === 'recon-from' || id === 'recon-to' || id === 'recon-bank') {
               checkForExistingRecon()
           }
       })
@@ -192,11 +283,23 @@ export async function renderReconciliation(state, container) {
   })
 
   btnCheck.addEventListener('click', async () => {
-    const month = document.getElementById('recon-month').value
+    const from = document.getElementById('recon-from').value
+    const to = document.getElementById('recon-to').value
     const bank = document.getElementById('recon-bank').value
     
-    if (!month || !bank) {
-      showToast("Select Month and Bank Account", "warning")
+    if (!bank) {
+      showToast("Select Bank Account", "warning")
+      return
+    }
+
+    if (!from || !to) {
+      showToast("Enter period From and To dates", "warning")
+      return
+    }
+
+    // Basic date range validation: from should not be after to
+    if (new Date(from) > new Date(to)) {
+      showToast("From date must be before To date", "warning")
       return
     }
 
@@ -215,7 +318,7 @@ export async function renderReconciliation(state, container) {
       btnCheck.disabled = true
       btnCheck.innerText = 'Verifying...'
 
-      const { systemCr, systemDr, relevantIds } = await getReconciliationTotals(bank, month, state.welcomeUser.cooperativeId)
+      const { systemCr, systemDr, relevantIds } = await getReconciliationTotalsByDateRange(state.welcomeUser.cooperativeId, bank, from, to)
       
       document.getElementById('sys-cr').innerText = formatCurrency(systemCr)
       document.getElementById('sys-dr').innerText = formatCurrency(systemDr)
@@ -257,12 +360,13 @@ export async function renderReconciliation(state, container) {
   })
 
   async function checkForExistingRecon() {
-      const month = document.getElementById('recon-month').value
+      const from = document.getElementById('recon-from').value
+      const to = document.getElementById('recon-to').value
       const bank = document.getElementById('recon-bank').value
-      if (!month || !bank) return
+      if (!from || !to || !bank) return
 
       try {
-          const summary = await getReconciliationSummary(bank, month, state.welcomeUser.cooperativeId)
+          const summary = await getReconciliationSummary(bank, from, to, state.welcomeUser.cooperativeId)
           if (summary) {
               currentSummaryId = summary.id
               // Repopulate
@@ -288,7 +392,6 @@ export async function renderReconciliation(state, container) {
               if (btnUnseal) btnUnseal.classList.add('hidden')
               document.getElementById('bank-cr').readOnly = false
               document.getElementById('bank-dr').readOnly = false
-              // Note: We don't clear inputs here to allow "Check Balance" flow if it was a draft
           }
       } catch (err) {
           console.error("Error checking for existing recon", err)
