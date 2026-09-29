@@ -6,6 +6,9 @@
   <link rel="icon" type="image/png" href="/src/icon/Logo.png" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Cooperative Log App</title>
+  <meta name="description" content="Cooperative savings, loans, and remittance management platform" />
+  <meta property="og:title" content="Cooperative Log App" />
+  <meta property="og:description" content="Cooperative savings, loans, and remittance management platform" />
   <link rel="manifest" href="/manifest.json">
   <meta name="theme-color" content="#3b82f6">
 </head>
@@ -22,7 +25,7 @@
     // controllerchange turns into an infinite F5 loop. Production hosting
     // keeps the SW auto-update behaviour unchanged.
     var __host = (location.hostname || '').toLowerCase();
-    var __isDevHost = __host === 'localhost' || __host === '127.0.0.1' || __host === '[::1]' || __host === '';
+    var __isDevHost = __host === 'localhost' || __host === '127.0.0.1' || __host === '[::1]' || __host === '' || __host.indexOf('run.app') !== -1;
     if ('serviceWorker' in navigator && !__isPackagedShell && !__isDevHost) {
       window.addEventListener('load', function() {
         navigator.serviceWorker.register('/sw.js?v=' + SW_BUILD)

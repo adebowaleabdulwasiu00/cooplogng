@@ -7,7 +7,7 @@
   "author": "Imradex Global",
   "description": "CoopLog - cooperative savings, loans and remittance manager",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --host 0.0.0.0 --port 3000",
     "build": "vite build",
     "preview": "vite preview",
     "backfill-search-keys": "node scripts/backfill-search-keys.mjs",

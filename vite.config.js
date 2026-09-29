@@ -3,14 +3,13 @@ import { defineConfig } from 'vite'
 export default defineConfig({
   base: './',
   server: {
-    port: 5173,
-    strictPort: false,
-    hmr: {
-      host: 'localhost',
-    },
+    host: '0.0.0.0',
+    port: 3000,
+    allowedHosts: true,
   },
   preview: {
-    port: 5173,
+    host: '0.0.0.0',
+    port: 3000,
   },
   build: {
     target: 'es2017',

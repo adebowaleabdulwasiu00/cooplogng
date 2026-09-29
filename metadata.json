@@ -1,0 +1,8 @@
+{
+  "name": "CoopLog",
+  "description": "Cooperative savings, loans, and remittance management platform",
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ],
+  "permissions": []
+}
